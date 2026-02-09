@@ -4,8 +4,8 @@
 
 ## Download
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v1.0.0/zClip%20Setup%201.0.0.exe">
-    <img src="https://img.shields.io/badge/GET%20zClip%20for%20Windows-⬇️-black?style=for-the-badge" />
+  <a href="https://github.com/zJay26/zClip/releases/download/v1.0.0/zClip.Setup.1.0.0.exe">
+    <img src="https://img.shields.io/badge/Download_for_Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white" alt="Download for Windows"/>
   </a>
 </p>
 
