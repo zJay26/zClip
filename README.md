@@ -2,10 +2,13 @@
 
 🎬 zClip 是一个轻量级的视频剪辑工具，主打快速裁剪与高效工作流。
 
+ ## Download
+👉 [Download for Windows](https://github.com/zJay/zClip/releases/latest)
+
 ## Features
 - 快速视频裁剪
 - 简洁 UI
-- 本地处理，不上传云端
+-  本地处理，不上传云端
 
 ## Tech Stack
 - Electron
