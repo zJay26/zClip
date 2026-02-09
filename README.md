@@ -4,9 +4,10 @@
 
 <p align="center">
   <a href="https://github.com/zJay26/zClip/releases/download/v1.0.0/zClip%20Setup%201.0.0.exe">
-    <img src="https://img.shields.io/badge/Download-Windows-blue?style=for-the-badge&logo=windows" />
+    <img src="https://img.shields.io/badge/⬇%20Download%20zClip-Windows-111111?style=for-the-badge&logo=windows&logoColor=white" />
   </a>
 </p>
+
 
 ## Features
 - 快速视频裁剪
