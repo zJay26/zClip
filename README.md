@@ -2,9 +2,10 @@
 
 🎬 zClip 是一个轻量级的视频剪辑工具，主打快速裁剪与高效工作流。
 
+## Download
 <p align="center">
   <a href="https://github.com/zJay26/zClip/releases/download/v1.0.0/zClip%20Setup%201.0.0.exe">
-    <img src="https://img.shields.io/badge/⬇%20Download%20zClip-Windows-111111?style=for-the-badge&logo=windows&logoColor=white" />
+    <img src="https://img.shields.io/badge/GET%20zClip%20for%20Windows-⬇️-black?style=for-the-badge" />
   </a>
 </p>
 
