@@ -10,6 +10,8 @@
     "typecheck": "tsc -p tsconfig.web.json --noEmit",
     "test:ui": "vitest run",
     "test:ui:update": "vitest run -u",
+    "readme:generate": "node ./scripts/generate-readme.mjs",
+    "release:prepare": "npm run readme:generate",
     "postinstall": "electron-builder install-app-deps",
     "dist": "electron-builder"
   },
