@@ -46,3 +46,10 @@ export function formatFileSize(bytes: number): string {
 export function uid(): string {
   return crypto.randomUUID()
 }
+
+/**
+ * Join class names safely
+ */
+export function cx(...classes: Array<string | false | null | undefined>): string {
+  return classes.filter(Boolean).join(' ')
+}

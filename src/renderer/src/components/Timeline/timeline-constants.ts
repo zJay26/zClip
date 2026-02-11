@@ -9,7 +9,7 @@ export const GROUP_GAP = 8
 export const HANDLE_WIDTH = 8
 export const MIN_ZOOM = 0.5
 export const MAX_ZOOM = 80
-export const SNAP_THRESHOLD_PX = 6
+export const SNAP_THRESHOLD_PX = 10
 export const HEADER_WIDTH = 72
 export const TIMELINE_TAIL_PX = 220
 

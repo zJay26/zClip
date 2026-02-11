@@ -6,13 +6,11 @@ import React, { useState, useCallback, useEffect } from 'react'
 import { useProjectStore } from '../../stores/project-store'
 import VideoPreview from '../Preview/VideoPreview'
 import Timeline from '../Timeline/Timeline'
-import TrimControl from '../Controls/TrimControl'
-import SpeedControl from '../Controls/SpeedControl'
-import VolumeControl from '../Controls/VolumeControl'
-import PitchControl from '../Controls/PitchControl'
 import ExportDialog from '../Export/ExportDialog'
 import { useVideoPlayer } from '../../hooks/useVideoPlayer'
-import { formatFileSize } from '../../lib/utils'
+import TopToolbar from './TopToolbar'
+import InspectorPanel from './InspectorPanel'
+import OverlayStack from './OverlayStack'
 
 const AppLayout: React.FC = () => {
   const {
@@ -20,6 +18,7 @@ const AppLayout: React.FC = () => {
     sourceFile,
     mediaInfo,
     loading,
+    merging,
     error,
     toast,
     clearToast,
@@ -27,6 +26,9 @@ const AppLayout: React.FC = () => {
     openFiles,
     loadFiles,
     splitClipAtPlayhead,
+    copySelectedClips,
+    cutSelectedClips,
+    pasteCopiedClips,
     deleteSelectedClips,
     selectedClipIds,
     undo,
@@ -47,23 +49,46 @@ const AppLayout: React.FC = () => {
 
   // ---- Keyboard shortcuts ----
   useEffect(() => {
+    const isTextEditableTarget = (target: EventTarget | null): boolean => {
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return true
+      if (target instanceof HTMLElement && target.isContentEditable) return true
+      return false
+    }
     const handler = (e: KeyboardEvent): void => {
+      if (e.code === 'Space') {
+        // Capture and override browser/button default "Space triggers click".
+        e.preventDefault()
+        e.stopPropagation()
+        const activeEl = document.activeElement
+        if (activeEl instanceof HTMLButtonElement) {
+          activeEl.blur()
+        }
+        if (!e.repeat && !merging) {
+          togglePlay()
+        }
+        return
+      }
+      if (merging) {
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
       switch (e.code) {
         case 'KeyZ':
-          if (e.ctrlKey) {
+          if (e.ctrlKey || e.metaKey) {
             e.preventDefault()
-            undo()
+            if (e.shiftKey) {
+              redo()
+            } else {
+              undo()
+            }
           }
           break
         case 'KeyY':
-          if (e.ctrlKey) {
+          if (e.ctrlKey || e.metaKey) {
             e.preventDefault()
             redo()
           }
-          break
-        case 'Space':
-          e.preventDefault()
-          togglePlay()
           break
         case 'KeyJ':
           if (
@@ -90,21 +115,31 @@ const AppLayout: React.FC = () => {
           step(5)
           break
         case 'KeyC':
-          // Razor tool: split at playhead
-          if (
-            e.target instanceof HTMLInputElement ||
-            e.target instanceof HTMLTextAreaElement
-          )
+          if (e.ctrlKey || e.metaKey) {
+            if (isTextEditableTarget(e.target)) return
+            e.preventDefault()
+            copySelectedClips()
             return
+          }
+          // Razor tool: split at playhead
+          if (isTextEditableTarget(e.target)) return
           splitClipAtPlayhead()
+          break
+        case 'KeyX':
+          if (!(e.ctrlKey || e.metaKey)) break
+          if (isTextEditableTarget(e.target)) return
+          e.preventDefault()
+          cutSelectedClips()
+          break
+        case 'KeyV':
+          if (!(e.ctrlKey || e.metaKey)) break
+          if (isTextEditableTarget(e.target)) return
+          e.preventDefault()
+          pasteCopiedClips()
           break
         case 'Delete':
         case 'Backspace':
-          if (
-            e.target instanceof HTMLInputElement ||
-            e.target instanceof HTMLTextAreaElement
-          )
-            return
+          if (isTextEditableTarget(e.target)) return
           deleteSelectedClips()
           break
         case 'ArrowLeft':
@@ -125,9 +160,35 @@ const AppLayout: React.FC = () => {
           break
       }
     }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [togglePlay, step, splitClipAtPlayhead, deleteSelectedClips, selectedClipIds, undo, redo])
+    const keyupHandler = (e: KeyboardEvent): void => {
+      if (e.code === 'Space') {
+        e.preventDefault()
+        e.stopPropagation()
+        const activeEl = document.activeElement
+        if (activeEl instanceof HTMLElement) {
+          activeEl.blur()
+        }
+      }
+    }
+    window.addEventListener('keydown', handler, true)
+    window.addEventListener('keyup', keyupHandler, true)
+    return () => {
+      window.removeEventListener('keydown', handler, true)
+      window.removeEventListener('keyup', keyupHandler, true)
+    }
+  }, [
+    togglePlay,
+    step,
+    splitClipAtPlayhead,
+    copySelectedClips,
+    cutSelectedClips,
+    pasteCopiedClips,
+    deleteSelectedClips,
+    selectedClipIds,
+    undo,
+    redo,
+    merging
+  ])
 
   // ---- Drag & Drop ----
   const [dragActive, setDragActive] = useState(false)
@@ -244,12 +305,18 @@ const AppLayout: React.FC = () => {
     }
   }, [])
 
-  // Extract filename from path
-  const fileName = sourceFile ? sourceFile.split(/[\\/]/).pop() : null
+  useEffect(() => {
+    if (!window.api?.onOpenFile) return
+    const unsubscribe = window.api.onOpenFile((filePaths) => {
+      if (!filePaths || filePaths.length === 0) return
+      loadFiles(filePaths)
+    })
+    return () => unsubscribe()
+  }, [loadFiles])
 
   return (
     <div
-      className="flex flex-col h-screen bg-surface"
+      className="flex flex-col h-screen bg-bg-base"
       onDragOver={handleDragOver}
       onDragOverCapture={handleDragOverCapture}
       onDrop={handleDrop}
@@ -257,65 +324,21 @@ const AppLayout: React.FC = () => {
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
     >
-      {/* ===== Top toolbar ===== */}
-      <header className="flex items-center gap-3 px-4 py-2 bg-surface-light border-b border-surface-border shrink-0">
-        {/* App name */}
-        <span className="text-sm font-bold text-accent tracking-tight">zClip</span>
-
-        <div className="w-px h-4 bg-surface-border" />
-
-        {/* Open file */}
-        <button
-          onClick={openFiles}
-          disabled={loading}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary
-                     rounded-md hover:bg-surface-lighter border border-surface-border transition-colors"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-          </svg>
-          打开文件
-        </button>
-
-        {/* File info */}
-        {fileName && (
-          <div className="flex items-center gap-2 text-xs text-text-muted">
-            <span className="text-text-secondary font-medium max-w-[200px] truncate">
-              {fileName}
-            </span>
-            {mediaInfo && (
-              <span className="text-text-muted">
-                ({formatFileSize(mediaInfo.fileSize)})
-              </span>
-            )}
-            {clips.length > 1 && (
-              <span className="text-text-muted">· {clips.length} 段</span>
-            )}
-          </div>
-        )}
-
-        <div className="flex-1" />
-
-        {/* Export button */}
-        <button
-          onClick={() => setShowExport(true)}
-          disabled={!sourceFile || loading}
-          className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium text-white
-                     bg-accent hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed
-                     rounded-md transition-colors"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-            <polyline points="7,10 12,15 17,10" />
-            <line x1="12" y1="15" x2="12" y2="3" />
-          </svg>
-          导出
-        </button>
-      </header>
+      <TopToolbar
+        loading={loading}
+        sourceFile={sourceFile}
+        mediaInfo={mediaInfo}
+        clips={clips}
+        onOpenFiles={openFiles}
+        onOpenExport={() => setShowExport(true)}
+      />
 
       {/* ===== Main content ===== */}
       <div className="flex-1 flex min-h-0">
-        {/* Left: Video preview */}
+        {/* Left: Parameter controls panel */}
+        {clips.length > 0 && <InspectorPanel />}
+
+        {/* Right: Video preview */}
         <div className="flex-1 flex flex-col p-3 gap-2 min-h-0">
           <VideoPreview
             videoRef={videoRef as React.RefObject<HTMLVideoElement>}
@@ -325,21 +348,6 @@ const AppLayout: React.FC = () => {
             step={step}
           />
         </div>
-
-        {/* Right: Parameter controls panel */}
-        {clips.length > 0 && (
-          <aside className="w-[280px] shrink-0 border-l border-surface-border bg-surface-light overflow-y-auto">
-            <div className="p-4 space-y-5">
-              <TrimControl />
-              <div className="h-px bg-surface-border" />
-              <SpeedControl />
-              <div className="h-px bg-surface-border" />
-              <VolumeControl />
-              <div className="h-px bg-surface-border" />
-              <PitchControl />
-            </div>
-          </aside>
-        )}
       </div>
 
       {/* ===== Bottom: Timeline ===== */}
@@ -348,48 +356,14 @@ const AppLayout: React.FC = () => {
           <Timeline seekTo={seekTo} />
         </div>
       )}
-      {dragActive && (
-        <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/40 backdrop-blur-sm pointer-events-none">
-          <div className="px-5 py-3 rounded-xl border border-accent/40 bg-surface-light text-text-secondary text-sm">
-            松开鼠标以导入多个视频/音频
-          </div>
-        </div>
-      )}
-
-
-      {/* ===== Loading overlay ===== */}
-      {loading && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <div className="flex items-center gap-3 bg-surface-light px-6 py-4 rounded-xl border border-surface-border">
-            <div className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-            <span className="text-sm text-text-secondary">加载中...</span>
-          </div>
-        </div>
-      )}
-
-      {/* ===== Error display ===== */}
-      {error && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-red-500/20 border border-red-500/40 rounded-lg text-sm text-red-300">
-          {error}
-        </div>
-      )}
-
-      {/* ===== Toast ===== */}
-      {toast && (
-        <div
-          className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg text-sm border
-            ${
-              toast.type === 'success'
-                ? 'bg-green-500/20 border-green-500/40 text-green-300'
-                : toast.type === 'error'
-                  ? 'bg-red-500/20 border-red-500/40 text-red-300'
-                  : 'bg-accent/20 border-accent/40 text-accent'
-            }`}
-          onClick={clearToast}
-        >
-          {toast.message}
-        </div>
-      )}
+      <OverlayStack
+        dragActive={dragActive}
+        loading={loading}
+        merging={merging}
+        error={error}
+        toast={toast}
+        clearToast={clearToast}
+      />
 
       {/* ===== Export dialog ===== */}
       <ExportDialog open={showExport} onClose={() => setShowExport(false)} />

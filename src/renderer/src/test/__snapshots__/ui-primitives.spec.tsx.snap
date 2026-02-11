@@ -1,0 +1,52 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`UI primitives visual baseline > badge tones render stable classes 1`] = `
+<div>
+  <span
+    class="ui-badge"
+  >
+    Default
+  </span>
+  <span
+    class="ui-badge border-accent/40 text-indigo-200 bg-accent/10"
+  >
+    Accent
+  </span>
+  <span
+    class="ui-badge border-red-400/40 text-red-200 bg-red-500/10"
+  >
+    Danger
+  </span>
+</div>
+`;
+
+exports[`UI primitives visual baseline > button variants render stable classes 1`] = `
+<div>
+  <button
+    class="ui-btn-primary px-3 py-1.5 text-xs"
+  >
+    Primary
+  </button>
+  <button
+    class="ui-btn px-3 py-1.5 text-xs"
+  >
+    Secondary
+  </button>
+  <button
+    class="ui-btn ui-btn-danger px-3 py-1.5 text-xs"
+  >
+    Danger
+  </button>
+</div>
+`;
+
+exports[`UI primitives visual baseline > progress bar width reflects percent 1`] = `
+<div
+  class="w-full h-2 bg-panel-muted rounded-full overflow-hidden border border-border-subtle"
+>
+  <div
+    class="h-full bg-accent rounded-full transition-all duration-300 ease-out"
+    style="width: 62.5%;"
+  />
+</div>
+`;

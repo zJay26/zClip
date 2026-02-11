@@ -43,6 +43,10 @@ export interface TimelineClip {
   filePath: string
   startTime: number
   duration: number
+  /** 可裁剪媒体区间起点（秒）。未设置时默认为 0。 */
+  trimBoundStart?: number
+  /** 可裁剪媒体区间终点（秒）。未设置时默认为 duration。 */
+  trimBoundEnd?: number
   track: ClipTrack
   trackIndex: number
   mediaInfo: MediaInfo
@@ -51,6 +55,7 @@ export interface TimelineClip {
 /** ffprobe 解析出的媒体信息 */
 export interface MediaInfo {
   duration: number    // seconds
+  containerFormat?: string
   width: number
   height: number
   fps: number
@@ -62,6 +67,9 @@ export interface MediaInfo {
   filePath: string
   hasVideo: boolean   // 是否包含视频流
   hasAudio: boolean   // 是否包含音频流
+  playbackPath?: string
+  playbackIsProxy?: boolean
+  playbackProxyFailed?: boolean
 }
 
 /** 时间轴预览生成选项 */
@@ -80,8 +88,10 @@ export interface TimelinePreviewResult {
 export type ResolutionPreset = 'original' | '1080p' | '720p' | '480p'
 export type QualityPreset = 'high' | 'medium' | 'low'
 
+export type ExportFormat = 'mp4' | 'mov' | 'mkv' | 'webm' | 'mp3' | 'wav' | 'flac' | 'aac' | 'opus'
+
 export interface ExportOptions {
-  format: 'mp4'
+  format: ExportFormat
   resolution: ResolutionPreset
   quality: QualityPreset
   outputPath: string

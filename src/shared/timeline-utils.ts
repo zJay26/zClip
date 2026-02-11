@@ -47,8 +47,7 @@ export function getClipVisibleDuration(
   clip: TimelineClip,
   operationsByClip?: Record<string, MediaOperation[]>
 ): number {
-  const ops = operationsByClip?.[clip.id] || []
-  return getVisibleDurationFromOps(clip.duration, ops)
+  return getClipTimelineRange(clip, operationsByClip).visibleDuration
 }
 
 export function getClipTimelineRange(
@@ -56,7 +55,11 @@ export function getClipTimelineRange(
   operationsByClip?: Record<string, MediaOperation[]>
 ): ClipTimelineRange {
   const ops = operationsByClip?.[clip.id] || []
-  const { trimStart, trimEnd } = getTrimParams(clip.duration, ops)
+  const { trimStart: rawTrimStart, trimEnd: rawTrimEnd } = getTrimParams(clip.duration, ops)
+  const boundStart = Math.max(0, Math.min(clip.trimBoundStart ?? 0, clip.duration))
+  const boundEnd = Math.max(boundStart, Math.min(clip.trimBoundEnd ?? clip.duration, clip.duration))
+  const trimStart = Math.max(boundStart, Math.min(rawTrimStart, boundEnd))
+  const trimEnd = Math.max(trimStart, Math.min(rawTrimEnd, boundEnd))
   const speedRate = getSpeedRate(ops)
   const visibleDuration = Math.max(0, trimEnd - trimStart) / speedRate
   const start = clip.startTime

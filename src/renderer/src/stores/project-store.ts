@@ -20,7 +20,6 @@ import {
   getClipVisibleDuration,
   getSpeedRate,
   getTimelineDuration as getTimelineDurationShared,
-  getTrimParams,
   timelineTimeToMediaTime
 } from '../../../shared/timeline-utils'
 import { uid } from '../lib/utils'
@@ -32,6 +31,12 @@ interface ProjectStore {
   selectedClipIds: string[]
   lastSelectedClipId: string | null
   linkedGroups: Record<string, boolean>
+  clipboard: {
+    clips: TimelineClip[]
+    operationsByClip: Record<string, MediaOperation[]>
+    linkedGroups: Record<string, boolean>
+    minStartTime: number
+  } | null
   historyPast: ProjectSnapshot[]
   historyFuture: ProjectSnapshot[]
   timelineDuration: number
@@ -56,6 +61,7 @@ interface ProjectStore {
   // --- Export ---
   exporting: boolean
   exportProgress: ExportProgress | null
+  merging: boolean
 
   // --- Toast / notifications ---
   toast: { message: string; type: 'info' | 'success' | 'error' } | null
@@ -70,10 +76,22 @@ interface ProjectStore {
   removeVideoTrack: () => void
   addAudioTrack: () => void
   removeAudioTrack: () => void
-  moveClip: (clipId: string, patch: Partial<Pick<TimelineClip, 'startTime' | 'trackIndex'>>) => void
-  trimClipEdge: (clipId: string, edge: 'start' | 'end', deltaSeconds: number) => void
+  moveClip: (
+    clipId: string,
+    patch: Partial<Pick<TimelineClip, 'startTime' | 'trackIndex'>>,
+    options?: { recordHistory?: boolean }
+  ) => void
+  trimClipEdge: (
+    clipId: string,
+    edge: 'start' | 'end',
+    deltaSeconds: number,
+    options?: { recordHistory?: boolean }
+  ) => void
   splitClipAtPlayhead: () => void
-  mergeSelectedClips: () => void
+  copySelectedClips: () => void
+  cutSelectedClips: () => void
+  pasteCopiedClips: () => void
+  mergeSelectedClips: () => Promise<void>
   deleteClip: (clipId: string) => void
   deleteSelectedClips: () => void
   undo: () => void
@@ -103,6 +121,13 @@ interface ProjectStore {
   // Helper: get clip trim info
   getClipTrim: (clipId: string) => { trimStart: number; trimEnd: number }
   getAudioOperationsForSelection: () => MediaOperation[]
+  getMergeSelectionState: () => {
+    canMerge: boolean
+    disabledReason: string | null
+    logicalSelectionCount: number
+    hasVideoSelection: boolean
+    hasAudioSelection: boolean
+  }
 
   // Reset
   reset: () => void
@@ -160,13 +185,19 @@ function clampTimelineTime(time: number, timelineDuration: number): number {
   return Math.max(0, Math.min(time, timelineDuration - 0.0001))
 }
 
+function getClipTrimBounds(clip: TimelineClip): { min: number; max: number } {
+  const min = Math.max(0, Math.min(clip.trimBoundStart ?? 0, clip.duration))
+  const max = Math.max(min, Math.min(clip.trimBoundEnd ?? clip.duration, clip.duration))
+  return { min, max }
+}
+
 /** Get trim in/out points for a clip from its operations */
 function getClipTrimValues(
   clip: TimelineClip,
   operationsByClip?: Record<string, MediaOperation[]>
 ): { trimStart: number; trimEnd: number } {
-  const ops = operationsByClip?.[clip.id] || []
-  return getTrimParams(clip.duration, ops)
+  const range = getClipTimelineRange(clip, operationsByClip)
+  return { trimStart: range.trimStart, trimEnd: range.trimEnd }
 }
 
 function getSelectedClip(clips: TimelineClip[], selectedClipId: string | null): TimelineClip | null {
@@ -234,6 +265,207 @@ function getOrderedClips(clips: TimelineClip[]): TimelineClip[] {
   })
 }
 
+type OverlapEntry = {
+  id: string
+  track: TimelineClip['track']
+  trackIndex: number
+  groupId: string
+  linked: boolean
+  originalStart: number
+  start: number
+  duration: number
+  end: number
+  active: boolean
+}
+
+const OVERLAP_EPS = 0.0001
+const OVERLAP_MIN_DURATION = 0.01
+let mergeOutputSequence = 1
+
+type MergeSelectionMeta = {
+  selectedClips: TimelineClip[]
+  logicalSelectionCount: number
+  hasVideoSelection: boolean
+  hasAudioSelection: boolean
+  canMerge: boolean
+  disabledReason: string | null
+}
+
+function getMergeSelectionMeta(clips: TimelineClip[], selectedClipIds: string[]): MergeSelectionMeta {
+  const selectedIdSet = new Set(selectedClipIds)
+  const selectedClips = clips.filter((clip) => selectedIdSet.has(clip.id))
+  const logicalSelectionCount = new Set(selectedClips.map((clip) => clip.groupId)).size
+  const groupTrackMap = new Map<string, { hasVideo: boolean; hasAudio: boolean }>()
+  selectedClips.forEach((clip) => {
+    const entry = groupTrackMap.get(clip.groupId) || { hasVideo: false, hasAudio: false }
+    if (clip.track === 'video') entry.hasVideo = true
+    if (clip.track === 'audio') entry.hasAudio = true
+    groupTrackMap.set(clip.groupId, entry)
+  })
+
+  const groupSelections = Array.from(groupTrackMap.values())
+  const hasVideoSelection = groupSelections.some((group) => group.hasVideo)
+  const hasAudioSelection = groupSelections.some((group) => group.hasAudio)
+  const allGroupsHaveVideo = groupSelections.length > 0 && groupSelections.every((group) => group.hasVideo)
+  const allGroupsHaveAudio = groupSelections.length > 0 && groupSelections.every((group) => group.hasAudio)
+  const isUniformTrackSelection =
+    (allGroupsHaveVideo && !hasAudioSelection) || // pure video groups
+    (allGroupsHaveAudio && !hasVideoSelection) || // pure audio groups
+    (allGroupsHaveVideo && allGroupsHaveAudio) // full AV groups
+
+  let disabledReason: string | null = null
+  if (selectedClips.length === 0) {
+    disabledReason = '请先选择片段'
+  } else if (!isUniformTrackSelection) {
+    disabledReason = '请仅选择同类型逻辑片段（纯视频、纯音频或完整音画段）'
+  } else if (logicalSelectionCount < 2) {
+    disabledReason = '请至少选择两个逻辑片段以合并'
+  }
+
+  return {
+    selectedClips,
+    logicalSelectionCount,
+    hasVideoSelection,
+    hasAudioSelection,
+    canMerge: disabledReason === null,
+    disabledReason
+  }
+}
+
+function buildOverlapEntries(
+  clips: TimelineClip[],
+  operationsByClip: Record<string, MediaOperation[]>,
+  activeClipIds: Set<string>,
+  linkedGroups: Record<string, boolean>
+): OverlapEntry[] {
+  return clips.map((clip) => {
+    const duration = Math.max(OVERLAP_MIN_DURATION, getClipVisibleDuration(clip, operationsByClip))
+    const start = Math.max(0, clip.startTime)
+    return {
+      id: clip.id,
+      track: clip.track,
+      trackIndex: clip.trackIndex,
+      groupId: clip.groupId,
+      linked: linkedGroups[clip.groupId] !== false,
+      originalStart: start,
+      start,
+      duration,
+      end: start + duration,
+      active: activeClipIds.has(clip.id)
+    }
+  })
+}
+
+function moveEntryRight(entry: OverlapEntry, targetStart: number): void {
+  entry.start = Math.max(0, targetStart)
+  entry.end = entry.start + entry.duration
+}
+
+function moveEntryLeft(entry: OverlapEntry, targetStart: number): boolean {
+  let nextStart = targetStart - entry.duration
+  if (nextStart < 0) {
+    nextStart = 0
+    if (nextStart + entry.duration > targetStart + OVERLAP_EPS) {
+      return false
+    }
+  }
+  entry.start = nextStart
+  entry.end = entry.start + entry.duration
+  return true
+}
+
+function resolveTrackOverlaps(entries: OverlapEntry[]): void {
+  if (entries.length <= 1) return
+  let changed = true
+  let guard = entries.length * entries.length + 8
+  while (changed && guard > 0) {
+    guard -= 1
+    changed = false
+    entries.sort((a, b) => {
+      if (a.start !== b.start) return a.start - b.start
+      return a.id.localeCompare(b.id)
+    })
+    for (let i = 0; i < entries.length - 1; i++) {
+      const current = entries[i]
+      const next = entries[i + 1]
+      if (current.end <= next.start + OVERLAP_EPS) continue
+
+      if (current.active && !next.active) {
+        moveEntryRight(next, current.end)
+      } else if (!current.active && next.active) {
+        const moved = moveEntryLeft(current, next.start)
+        if (!moved) {
+          moveEntryRight(next, current.end)
+        }
+      } else {
+        moveEntryRight(next, current.end)
+      }
+      changed = true
+    }
+  }
+}
+
+function resolveClipOverlaps(
+  clips: TimelineClip[],
+  operationsByClip: Record<string, MediaOperation[]>,
+  activeClipIds: Set<string>,
+  linkedGroups: Record<string, boolean>
+): TimelineClip[] {
+  const entries = buildOverlapEntries(clips, operationsByClip, activeClipIds, linkedGroups)
+  const entriesByTrack = new Map<string, OverlapEntry[]>()
+  entries.forEach((entry) => {
+    const key = `${entry.track}-${entry.trackIndex}`
+    const list = entriesByTrack.get(key)
+    if (list) {
+      list.push(entry)
+    } else {
+      entriesByTrack.set(key, [entry])
+    }
+  })
+
+  entriesByTrack.forEach((group) => resolveTrackOverlaps(group))
+
+  const linkedMovedIds = new Set<string>()
+  const groupEntriesMap = new Map<string, OverlapEntry[]>()
+  entries.forEach((entry) => {
+    if (!entry.linked) return
+    const list = groupEntriesMap.get(entry.groupId)
+    if (list) {
+      list.push(entry)
+    } else {
+      groupEntriesMap.set(entry.groupId, [entry])
+    }
+  })
+  groupEntriesMap.forEach((groupEntries) => {
+    const movedRef = groupEntries.find(
+      (entry) => Math.abs(entry.start - entry.originalStart) > OVERLAP_EPS
+    )
+    if (!movedRef) return
+    const delta = movedRef.start - movedRef.originalStart
+    groupEntries.forEach((entry) => {
+      entry.start = Math.max(0, entry.originalStart + delta)
+      entry.end = entry.start + entry.duration
+      linkedMovedIds.add(entry.id)
+    })
+  })
+
+  if (linkedMovedIds.size > 0) {
+    const reinforcedActiveIds = new Set(activeClipIds)
+    linkedMovedIds.forEach((id) => reinforcedActiveIds.add(id))
+    entries.forEach((entry) => {
+      entry.active = reinforcedActiveIds.has(entry.id)
+    })
+    entriesByTrack.forEach((group) => resolveTrackOverlaps(group))
+  }
+
+  const startMap = new Map(entries.map((entry) => [entry.id, entry.start]))
+  return clips.map((clip) => {
+    const nextStart = startMap.get(clip.id)
+    if (nextStart === undefined || nextStart === clip.startTime) return clip
+    return { ...clip, startTime: nextStart }
+  })
+}
+
 function areOpsCompatibleForMerge(
   baseOps: MediaOperation[],
   candidateOps: MediaOperation[]
@@ -265,6 +497,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   selectedClipIds: [],
   lastSelectedClipId: null,
   linkedGroups: {},
+  clipboard: null,
   historyPast: [],
   historyFuture: [],
   timelineDuration: 0,
@@ -281,6 +514,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   duration: 0,
   exporting: false,
   exportProgress: null,
+  merging: false,
   toast: null,
 
   openFiles: async () => {
@@ -297,11 +531,12 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   },
 
   loadFiles: async (filePaths: string[]) => {
+    const stateBeforeImport = get()
     set({ loading: true, error: null })
     try {
-      const existingClips = get().clips
-      let timelineEnd = getTimelineDuration(existingClips, get().operationsByClip)
-      const { videoTrackCount, audioTrackCount } = get()
+      const existingClips = stateBeforeImport.clips
+      let timelineEnd = getTimelineDuration(existingClips, stateBeforeImport.operationsByClip)
+      const { videoTrackCount, audioTrackCount } = stateBeforeImport
       let videoClipCounter = existingClips.filter((clip) => clip.track === 'video').length
       let audioClipCounter = existingClips.filter((clip) => clip.track === 'audio').length
       const newClips: TimelineClip[] = []
@@ -327,6 +562,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             filePath,
             startTime,
             duration,
+            trimBoundStart: 0,
+            trimBoundEnd: duration,
             track: 'video',
             trackIndex,
             mediaInfo: info
@@ -343,6 +580,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             filePath,
             startTime,
             duration,
+            trimBoundStart: 0,
+            trimBoundEnd: duration,
             track: 'audio',
             trackIndex,
             mediaInfo: info
@@ -356,30 +595,41 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       }
 
       const mergedClips = [...existingClips, ...newClips]
+      if (newClips.length === 0) {
+        set({ loading: false, error: null })
+        return
+      }
+
+      const combinedOps = { ...stateBeforeImport.operationsByClip, ...newOperationsByClip }
+      const resolvedClips = resolveClipOverlaps(
+        mergedClips,
+        combinedOps,
+        new Set(newClips.map((clip) => clip.id)),
+        { ...stateBeforeImport.linkedGroups, ...newLinkedGroups }
+      )
       const nextSelectedClipId =
-        get().selectedClipId ||
+        stateBeforeImport.selectedClipId ||
         newClips.find((clip) => clip.track === 'video')?.id ||
         newClips[0]?.id ||
         null
-      const selectedClip = getSelectedClip(mergedClips, nextSelectedClipId)
+      const selectedClip = getSelectedClip(resolvedClips, nextSelectedClipId)
+      const historyPast = [...stateBeforeImport.historyPast, takeSnapshot(stateBeforeImport)]
 
       set({
-        clips: mergedClips,
+        clips: resolvedClips,
         selectedClipId: nextSelectedClipId,
         selectedClipIds: nextSelectedClipId ? [nextSelectedClipId] : [],
         lastSelectedClipId: nextSelectedClipId,
-        timelineDuration: getTimelineDuration(mergedClips, { ...get().operationsByClip, ...newOperationsByClip }),
-        operationsByClip: { ...get().operationsByClip, ...newOperationsByClip },
-        linkedGroups: { ...get().linkedGroups, ...newLinkedGroups },
-        historyPast: [],
+        timelineDuration: getTimelineDuration(resolvedClips, combinedOps),
+        operationsByClip: combinedOps,
+        linkedGroups: { ...stateBeforeImport.linkedGroups, ...newLinkedGroups },
+        historyPast,
         historyFuture: [],
-        operations: selectedClip
-          ? (get().operationsByClip[selectedClip.id] || newOperationsByClip[selectedClip.id] || [])
-          : [],
+        operations: selectedClip ? (combinedOps[selectedClip.id] || []) : [],
         sourceFile: selectedClip?.filePath ?? null,
         mediaInfo: selectedClip?.mediaInfo ?? null,
         duration: selectedClip?.duration ?? 0,
-        currentTime: selectedClip ? selectedClip.startTime : get().currentTime,
+        currentTime: selectedClip ? selectedClip.startTime : stateBeforeImport.currentTime,
         playing: false,
         loading: false,
         error: null
@@ -505,11 +755,14 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       return { audioTrackCount: nextCount, clips: updatedClips }
     }),
 
-  moveClip: (clipId, patch) =>
+  moveClip: (clipId, patch, options) =>
     set((state) => {
-      const historyPast = [...state.historyPast, takeSnapshot(state)]
       const clip = state.clips.find((c) => c.id === clipId)
       if (!clip) return state
+      const shouldRecordHistory = options?.recordHistory !== false
+      const historyPast = shouldRecordHistory
+        ? [...state.historyPast, takeSnapshot(state)]
+        : state.historyPast
 
       const nextStartTime = patch.startTime ?? clip.startTime
       const delta = nextStartTime - clip.startTime
@@ -535,6 +788,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         addLinkedGroup(clip)
       }
 
+      const activeClipIds = new Set(affectedIds)
       const updatedClips = state.clips.map((c) => {
         if (!affectedIds.has(c.id)) return c
         const next: TimelineClip = {
@@ -546,22 +800,31 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         }
         return next
       })
-      const nextTimelineDuration = getTimelineDuration(updatedClips, state.operationsByClip)
+      const resolvedClips = resolveClipOverlaps(
+        updatedClips,
+        state.operationsByClip,
+        activeClipIds,
+        state.linkedGroups
+      )
+      const nextTimelineDuration = getTimelineDuration(resolvedClips, state.operationsByClip)
 
       return {
-        clips: updatedClips,
+        clips: resolvedClips,
         timelineDuration: nextTimelineDuration,
         currentTime: clampTimelineTime(state.currentTime, nextTimelineDuration),
         historyPast,
-        historyFuture: []
+        historyFuture: shouldRecordHistory ? [] : state.historyFuture
       }
     }),
 
-  trimClipEdge: (clipId, edge, deltaSeconds) =>
+  trimClipEdge: (clipId, edge, deltaSeconds, options) =>
     set((state) => {
-      const historyPast = [...state.historyPast, takeSnapshot(state)]
       const clip = state.clips.find((c) => c.id === clipId)
       if (!clip) return state
+      const shouldRecordHistory = options?.recordHistory !== false
+      const historyPast = shouldRecordHistory
+        ? [...state.historyPast, takeSnapshot(state)]
+        : state.historyPast
 
       const isLinked = state.linkedGroups[clip.groupId] !== false
       const affectedClips = isLinked
@@ -576,22 +839,23 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         const ops = newOperationsByClip[target.id] || createDefaultOperations(target.duration)
         const trimOp = ops.find((op) => op.type === 'trim')
         if (!trimOp) continue
+        const bounds = getClipTrimBounds(target)
         const params = trimOp.params as TrimParams
         const speedRate = getSpeedRate(ops)
         const deltaMedia = deltaSeconds * speedRate
         const minVisibleMedia = MIN_VISIBLE * speedRate
 
-        let newTrimStart = params.startTime
-        let newTrimEnd = params.endTime
+        let newTrimStart = Math.max(bounds.min, Math.min(params.startTime, bounds.max))
+        let newTrimEnd = Math.max(newTrimStart, Math.min(params.endTime, bounds.max))
         let newStartTime = target.startTime
 
         if (edge === 'start') {
-          newTrimStart = Math.max(0, Math.min(params.startTime + deltaMedia, newTrimEnd - minVisibleMedia))
+          newTrimStart = Math.max(bounds.min, Math.min(params.startTime + deltaMedia, newTrimEnd - minVisibleMedia))
           const actualDeltaMedia = newTrimStart - params.startTime
           const actualDeltaTimeline = actualDeltaMedia / speedRate
           newStartTime = target.startTime + actualDeltaTimeline
         } else {
-          newTrimEnd = Math.min(target.duration, Math.max(params.endTime + deltaMedia, newTrimStart + minVisibleMedia))
+          newTrimEnd = Math.min(bounds.max, Math.max(params.endTime + deltaMedia, newTrimStart + minVisibleMedia))
         }
 
         const updatedOps = ops.map((op) =>
@@ -606,16 +870,23 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
           updatedClips[idx] = { ...updatedClips[idx], startTime: newStartTime }
         }
       }
-      const nextTimelineDuration = getTimelineDuration(updatedClips, newOperationsByClip)
+      const activeClipIds = new Set(affectedClips.map((clipItem) => clipItem.id))
+      const resolvedClips = resolveClipOverlaps(
+        updatedClips,
+        newOperationsByClip,
+        activeClipIds,
+        state.linkedGroups
+      )
+      const nextTimelineDuration = getTimelineDuration(resolvedClips, newOperationsByClip)
 
       return {
-        clips: updatedClips,
+        clips: resolvedClips,
         operationsByClip: newOperationsByClip,
         operations: state.selectedClipId ? (newOperationsByClip[state.selectedClipId] || state.operations) : state.operations,
         timelineDuration: nextTimelineDuration,
         currentTime: clampTimelineTime(state.currentTime, nextTimelineDuration),
         historyPast,
-        historyFuture: []
+        historyFuture: shouldRecordHistory ? [] : state.historyFuture
       }
     }),
 
@@ -639,6 +910,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       const newOpsByClip = { ...operationsByClip }
       const newLinkedGroups = { ...state.linkedGroups }
       const groupIdMap = new Map<string, { groupA: string; groupB: string }>()
+      const activeClipIds = new Set<string>()
 
       for (const clip of clipsToSplit) {
         if (!groupIdMap.has(clip.groupId)) {
@@ -647,7 +919,12 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         const groups = groupIdMap.get(clip.groupId)
         if (!groups) continue
 
-        const localSplitTime = timelineTimeToMediaTime(clip, operationsByClip, currentTime)
+        const clipBounds = getClipTrimBounds(clip)
+        const localSplitTime = Math.max(
+          clipBounds.min,
+          Math.min(timelineTimeToMediaTime(clip, operationsByClip, currentTime), clipBounds.max)
+        )
+        const trim = getClipTrimValues(clip, operationsByClip)
 
         // Clip A: original clip, trimEnd = localSplitTime
         const opsA = (operationsByClip[clip.id] || createDefaultOperations(clip.duration)).map((op) =>
@@ -669,6 +946,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
           filePath: clip.filePath,
           startTime: currentTime,
           duration: clip.duration,
+          trimBoundStart: localSplitTime,
+          trimBoundEnd: clipBounds.max,
           track: clip.track,
           trackIndex: clip.trackIndex,
           mediaInfo: clip.mediaInfo
@@ -683,7 +962,11 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         }))
 
         // Update clips array
-        newClips = newClips.map((c) => (c.id === clip.id ? { ...c, groupId: groups.groupA } : c))
+        newClips = newClips.map((c) =>
+          c.id === clip.id
+            ? { ...c, groupId: groups.groupA, trimBoundStart: clipBounds.min, trimBoundEnd: localSplitTime }
+            : c
+        )
         const clipIndex = newClips.findIndex((c) => c.id === clip.id)
         newClips.splice(clipIndex + 1, 0, clipB)
 
@@ -691,90 +974,310 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         newOpsByClip[clipBId] = opsB
         newLinkedGroups[groups.groupA] = true
         newLinkedGroups[groups.groupB] = true
+        activeClipIds.add(clip.id)
+        activeClipIds.add(clipBId)
       }
 
+      const resolvedClips = resolveClipOverlaps(
+        newClips,
+        newOpsByClip,
+        activeClipIds,
+        newLinkedGroups
+      )
       return {
-        clips: newClips,
+        clips: resolvedClips,
         operationsByClip: newOpsByClip,
         operations: state.selectedClipId ? (newOpsByClip[state.selectedClipId] || state.operations) : state.operations,
-        timelineDuration: getTimelineDuration(newClips, newOpsByClip),
+        timelineDuration: getTimelineDuration(resolvedClips, newOpsByClip),
         linkedGroups: newLinkedGroups,
         historyPast,
         historyFuture: []
       }
     }),
 
-  mergeSelectedClips: () =>
+  copySelectedClips: () =>
     set((state) => {
+      if (state.selectedClipIds.length === 0) {
+        return state
+      }
+      const selectedIdSet = new Set(state.selectedClipIds)
+      const selectedClips = state.clips.filter((clip) => selectedIdSet.has(clip.id))
+      if (selectedClips.length === 0) {
+        return state
+      }
+      const minStartTime = Math.min(...selectedClips.map((clip) => clip.startTime))
+      const copiedClips = structuredClone(selectedClips)
+      const copiedOps: Record<string, MediaOperation[]> = {}
+      const copiedLinkedGroups: Record<string, boolean> = {}
+      copiedClips.forEach((clip) => {
+        copiedOps[clip.id] = structuredClone(
+          state.operationsByClip[clip.id] || createDefaultOperations(clip.duration)
+        )
+        copiedLinkedGroups[clip.groupId] = state.linkedGroups[clip.groupId] !== false
+      })
+      return {
+        clipboard: {
+          clips: copiedClips,
+          operationsByClip: copiedOps,
+          linkedGroups: copiedLinkedGroups,
+          minStartTime
+        }
+      }
+    }),
+
+  cutSelectedClips: () => {
+    const { selectedClipIds, copySelectedClips, deleteSelectedClips } = get()
+    if (selectedClipIds.length === 0) {
+      return
+    }
+    copySelectedClips()
+    deleteSelectedClips()
+  },
+
+  pasteCopiedClips: () =>
+    set((state) => {
+      const clipboard = state.clipboard
+      if (!clipboard || clipboard.clips.length === 0) {
+        return state
+      }
+
       const historyPast = [...state.historyPast, takeSnapshot(state)]
-      if (state.selectedClipIds.length < 2) {
-        get().showToast('请先选择至少两段以合并', 'info')
-        return state
-      }
-
-      const selectedClips = state.clips.filter((c) => state.selectedClipIds.includes(c.id))
-      const base = selectedClips[0]
-      if (!base) return state
-      const sameTrack = selectedClips.every(
-        (c) => c.track === base.track && c.trackIndex === base.trackIndex && c.groupId === base.groupId
-      )
-      if (!sameTrack) {
-        get().showToast('仅支持同一轨道且同一来源的片段合并', 'error')
-        return state
-      }
-
-      const ordered = [...selectedClips].sort((a, b) => a.startTime - b.startTime)
-      const baseOps = state.operationsByClip[base.id] || createDefaultOperations(base.duration)
-      const eps = 0.02
-      for (let i = 0; i < ordered.length; i++) {
-        const clip = ordered[i]
-        const ops = state.operationsByClip[clip.id] || createDefaultOperations(clip.duration)
-        if (!areOpsCompatibleForMerge(baseOps, ops)) {
-          get().showToast('片段参数不一致，无法合并', 'error')
-          return state
+      const groupMap = new Map<string, string>()
+      const oldClipIdByNewClipId = new Map<string, string>()
+      clipboard.clips.forEach((clip) => {
+        if (!groupMap.has(clip.groupId)) {
+          groupMap.set(clip.groupId, uid())
         }
-        if (i > 0) {
-          const prev = ordered[i - 1]
-          const prevDuration = getClipVisibleDuration(prev, state.operationsByClip)
-          const prevEnd = prev.startTime + prevDuration
-          if (Math.abs(clip.startTime - prevEnd) > eps) {
-            get().showToast('片段不相邻，无法合并', 'error')
-            return state
-          }
-        }
-      }
-
-      const first = ordered[0]
-      const last = ordered[ordered.length - 1]
-      const firstTrim = getClipTrimValues(first, state.operationsByClip)
-      const lastTrim = getClipTrimValues(last, state.operationsByClip)
-      const mergedOps = (state.operationsByClip[first.id] || createDefaultOperations(first.duration)).map((op) =>
-        op.type === 'trim'
-          ? { ...op, enabled: true, params: { startTime: firstTrim.trimStart, endTime: lastTrim.trimEnd } as TrimParams }
-          : op
-      )
-
-      const remainingClips = state.clips.filter((c) => !state.selectedClipIds.includes(c.id) || c.id === first.id)
-      const updatedClips = remainingClips.map((c) =>
-        c.id === first.id ? { ...c, startTime: first.startTime } : c
-      )
-      const newOpsByClip = { ...state.operationsByClip, [first.id]: mergedOps }
-      ordered.slice(1).forEach((c) => {
-        delete newOpsByClip[c.id]
       })
 
+      const pastedClips = clipboard.clips.map((clip) => {
+        const newId = uid()
+        oldClipIdByNewClipId.set(newId, clip.id)
+        const mappedGroupId = groupMap.get(clip.groupId) || uid()
+        const offset = clip.startTime - clipboard.minStartTime
+        return {
+          ...clip,
+          id: newId,
+          groupId: mappedGroupId,
+          startTime: Math.max(0, state.currentTime + offset)
+        }
+      })
+
+      const pastedOpsByClip: Record<string, MediaOperation[]> = {}
+      pastedClips.forEach((clip) => {
+        const sourceClipId = oldClipIdByNewClipId.get(clip.id)
+        if (!sourceClipId) {
+          pastedOpsByClip[clip.id] = createDefaultOperations(clip.duration)
+          return
+        }
+        const sourceOps = clipboard.operationsByClip[sourceClipId] || createDefaultOperations(clip.duration)
+        pastedOpsByClip[clip.id] = sourceOps.map((op) => ({ ...op, id: uid(), params: structuredClone(op.params) }))
+      })
+
+      const nextOpsByClip = { ...state.operationsByClip, ...pastedOpsByClip }
+      const nextLinkedGroups = { ...state.linkedGroups }
+      groupMap.forEach((newGroupId, oldGroupId) => {
+        nextLinkedGroups[newGroupId] = clipboard.linkedGroups[oldGroupId] !== false
+      })
+
+      const resolvedClips = resolveClipOverlaps(
+        [...state.clips, ...pastedClips],
+        nextOpsByClip,
+        new Set(pastedClips.map((clip) => clip.id)),
+        nextLinkedGroups
+      )
+      const nextTimelineDuration = getTimelineDuration(resolvedClips, nextOpsByClip)
+      const nextSelectedClipId =
+        pastedClips.find((clip) => clip.track === 'video')?.id ||
+        pastedClips[0]?.id ||
+        null
+      const nextSelectedClipIds = pastedClips.map((clip) => clip.id)
+      const selectedClip = nextSelectedClipId
+        ? resolvedClips.find((clip) => clip.id === nextSelectedClipId) || null
+        : null
+
       return {
-        clips: updatedClips,
-        operationsByClip: newOpsByClip,
-        selectedClipId: first.id,
-        selectedClipIds: [first.id],
-        lastSelectedClipId: first.id,
-        operations: mergedOps,
-        timelineDuration: getTimelineDuration(updatedClips, newOpsByClip),
+        clips: resolvedClips,
+        operationsByClip: nextOpsByClip,
+        linkedGroups: nextLinkedGroups,
+        selectedClipId: nextSelectedClipId,
+        selectedClipIds: nextSelectedClipIds,
+        lastSelectedClipId: nextSelectedClipId,
+        operations: selectedClip ? (nextOpsByClip[selectedClip.id] || []) : [],
+        sourceFile: selectedClip?.filePath ?? null,
+        mediaInfo: selectedClip?.mediaInfo ?? null,
+        duration: selectedClip?.duration ?? 0,
+        timelineDuration: nextTimelineDuration,
+        currentTime: clampTimelineTime(state.currentTime, nextTimelineDuration),
         historyPast,
         historyFuture: []
       }
     }),
+
+  mergeSelectedClips: async () => {
+    const state = get()
+    const mergeSelection = getMergeSelectionMeta(state.clips, state.selectedClipIds)
+    if (!mergeSelection.canMerge) {
+      get().showToast(mergeSelection.disabledReason || '当前选区不可合并', 'info')
+      return
+    }
+
+    const selectedIdSet = new Set(state.selectedClipIds)
+    const selectedClips = mergeSelection.selectedClips
+      .sort((a, b) => a.startTime - b.startTime)
+
+    const minStart = selectedClips[0]?.startTime ?? 0
+    const normalizedClips = selectedClips.map((clip) => ({
+      ...clip,
+      startTime: Math.max(0, clip.startTime - minStart)
+    }))
+    const normalizedOpsByClip: Record<string, MediaOperation[]> = {}
+    normalizedClips.forEach((clip) => {
+      normalizedOpsByClip[clip.id] = state.operationsByClip[clip.id] || createDefaultOperations(clip.duration)
+    })
+
+    const hasVideoSelection = normalizedClips.some((clip) => clip.track === 'video' && clip.mediaInfo.hasVideo)
+    const hasAudioSelection = normalizedClips.some((clip) => clip.track === 'audio' && clip.mediaInfo.hasAudio)
+    if (!hasVideoSelection && !hasAudioSelection) {
+      get().showToast('所选片段不包含可合并的音视频流', 'error')
+      return
+    }
+
+    const firstClip = selectedClips[0]
+    if (!firstClip) return
+    const slashIdx = Math.max(firstClip.filePath.lastIndexOf('/'), firstClip.filePath.lastIndexOf('\\'))
+    const baseDir = slashIdx >= 0 ? firstClip.filePath.slice(0, slashIdx) : '.'
+    const sep = firstClip.filePath.includes('\\') ? '\\' : '/'
+    const outputFormat = hasVideoSelection ? 'mp4' : 'wav'
+    const outputName = `zclip_merge_${mergeOutputSequence}`
+    const suggestedPath = `${baseDir}${sep}${outputName}.${outputFormat}`
+    const outputPath = await window.api.showSaveDialog(suggestedPath)
+    if (!outputPath) return
+    mergeOutputSequence += 1
+
+    set({ exporting: true, exportProgress: null, merging: true })
+    try {
+      const exportResult = await window.api.startExport({
+        clips: normalizedClips,
+        operationsByClip: normalizedOpsByClip,
+        exportOptions: {
+          format: outputFormat,
+          resolution: 'original',
+          quality: 'high',
+          outputPath
+        }
+      })
+      if (!exportResult.success) {
+        throw new Error(exportResult.error || '合并导出失败')
+      }
+
+      const infoResult = await window.api.getMediaInfo(outputPath)
+      if (!infoResult.success || !infoResult.data) {
+        throw new Error(infoResult.error || '无法读取合并后的媒体信息')
+      }
+      const mergedInfo = infoResult.data
+
+      const latest = get()
+      const unchangedSelection =
+        latest.selectedClipIds.length === state.selectedClipIds.length &&
+        latest.selectedClipIds.every((id) => selectedIdSet.has(id))
+      if (!unchangedSelection) {
+        get().showToast('合并期间选区已变化，结果文件已生成但未自动替换', 'info')
+        return
+      }
+
+      const historyPast = [...latest.historyPast, takeSnapshot(latest)]
+      const firstVideo = selectedClips.find((clip) => clip.track === 'video')
+      const firstAudio = selectedClips.find((clip) => clip.track === 'audio')
+      const mergedGroupId = uid()
+      const createdClips: TimelineClip[] = []
+
+      if (hasVideoSelection && mergedInfo.hasVideo && firstVideo) {
+        createdClips.push({
+          id: uid(),
+          groupId: mergedGroupId,
+          filePath: outputPath,
+          startTime: minStart,
+          duration: mergedInfo.duration,
+          trimBoundStart: 0,
+          trimBoundEnd: mergedInfo.duration,
+          track: 'video',
+          trackIndex: firstVideo.trackIndex,
+          mediaInfo: mergedInfo
+        })
+      }
+      if (hasAudioSelection && mergedInfo.hasAudio && firstAudio) {
+        createdClips.push({
+          id: uid(),
+          groupId: mergedGroupId,
+          filePath: outputPath,
+          startTime: minStart,
+          duration: mergedInfo.duration,
+          trimBoundStart: 0,
+          trimBoundEnd: mergedInfo.duration,
+          track: 'audio',
+          trackIndex: firstAudio.trackIndex,
+          mediaInfo: mergedInfo
+        })
+      }
+
+      if (createdClips.length === 0) {
+        throw new Error('合并输出未包含可用的音视频流')
+      }
+
+      const newOpsByClip = { ...latest.operationsByClip }
+      selectedIdSet.forEach((id) => {
+        delete newOpsByClip[id]
+      })
+      createdClips.forEach((clip) => {
+        newOpsByClip[clip.id] = createDefaultOperations(clip.duration)
+      })
+
+      const remainingClips = latest.clips.filter((clip) => !selectedIdSet.has(clip.id))
+      const linkedGroups = { ...latest.linkedGroups, [mergedGroupId]: true }
+      const resolvedClips = resolveClipOverlaps(
+        [...remainingClips, ...createdClips],
+        newOpsByClip,
+        new Set(createdClips.map((clip) => clip.id)),
+        linkedGroups
+      )
+      const nextSelectedClipId =
+        createdClips.find((clip) => clip.track === 'video')?.id ||
+        createdClips[0]?.id ||
+        null
+      const selectedClip = nextSelectedClipId
+        ? resolvedClips.find((clip) => clip.id === nextSelectedClipId) || null
+        : null
+      const nextTimelineDuration = getTimelineDuration(resolvedClips, newOpsByClip)
+      const nextCurrentTime = selectedClip
+        ? clampTimelineTime(selectedClip.startTime, nextTimelineDuration)
+        : clampTimelineTime(latest.currentTime, nextTimelineDuration)
+
+      set({
+        clips: resolvedClips,
+        operationsByClip: newOpsByClip,
+        selectedClipId: nextSelectedClipId,
+        selectedClipIds: nextSelectedClipId ? [nextSelectedClipId] : [],
+        lastSelectedClipId: nextSelectedClipId,
+        operations: selectedClip ? (newOpsByClip[selectedClip.id] || []) : [],
+        sourceFile: selectedClip?.filePath ?? null,
+        mediaInfo: selectedClip?.mediaInfo ?? null,
+        duration: selectedClip?.duration ?? 0,
+        timelineDuration: nextTimelineDuration,
+        currentTime: nextCurrentTime,
+        linkedGroups,
+        historyPast,
+        historyFuture: []
+      })
+      setDocumentTitle(selectedClip?.filePath ?? null, resolvedClips.length)
+      get().showToast('合并完成', 'success')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '片段合并失败'
+      get().showToast(`片段合并失败: ${message}`, 'error')
+    } finally {
+      set({ exporting: false, exportProgress: null, merging: false })
+    }
+  },
 
   deleteClip: (clipId) =>
     set((state) => {
@@ -782,16 +1285,17 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       const updatedClips = state.clips.filter((c) => c.id !== clipId)
       const newOpsByClip = { ...state.operationsByClip }
       delete newOpsByClip[clipId]
+      const resolvedClips = resolveClipOverlaps(updatedClips, newOpsByClip, new Set(), state.linkedGroups)
 
       const needNewSelection = state.selectedClipId === clipId
       const nextSelectedId = needNewSelection
-        ? (updatedClips[0]?.id ?? null)
+        ? (resolvedClips[0]?.id ?? null)
         : state.selectedClipId
-      const nextClip = updatedClips.find((c) => c.id === nextSelectedId) ?? null
+      const nextClip = resolvedClips.find((c) => c.id === nextSelectedId) ?? null
       const nextSelectedIds = state.selectedClipIds.filter((id) => id !== clipId)
 
       return {
-        clips: updatedClips,
+        clips: resolvedClips,
         operationsByClip: newOpsByClip,
         selectedClipId: nextSelectedId,
         selectedClipIds: nextSelectedIds.length > 0 ? nextSelectedIds : nextSelectedId ? [nextSelectedId] : [],
@@ -800,7 +1304,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         mediaInfo: nextClip?.mediaInfo ?? null,
         duration: nextClip?.duration ?? 0,
         operations: nextSelectedId ? (newOpsByClip[nextSelectedId] || []) : [],
-        timelineDuration: getTimelineDuration(updatedClips, newOpsByClip),
+        timelineDuration: getTimelineDuration(resolvedClips, newOpsByClip),
         historyPast,
         historyFuture: []
       }
@@ -811,15 +1315,25 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       const historyPast = [...state.historyPast, takeSnapshot(state)]
       if (state.selectedClipIds.length === 0) return state
       const removeSet = new Set(state.selectedClipIds)
+      state.selectedClipIds.forEach((id) => {
+        const base = state.clips.find((clip) => clip.id === id)
+        if (!base) return
+        const isLinked = state.linkedGroups[base.groupId] !== false
+        if (!isLinked) return
+        state.clips.forEach((clip) => {
+          if (clip.groupId === base.groupId) removeSet.add(clip.id)
+        })
+      })
       const updatedClips = state.clips.filter((c) => !removeSet.has(c.id))
       const newOpsByClip = { ...state.operationsByClip }
-      state.selectedClipIds.forEach((id) => delete newOpsByClip[id])
+      removeSet.forEach((id) => delete newOpsByClip[id])
+      const resolvedClips = resolveClipOverlaps(updatedClips, newOpsByClip, new Set(), state.linkedGroups)
 
-      const nextSelectedId = updatedClips[0]?.id ?? null
-      const nextClip = updatedClips.find((c) => c.id === nextSelectedId) ?? null
+      const nextSelectedId = resolvedClips[0]?.id ?? null
+      const nextClip = resolvedClips.find((c) => c.id === nextSelectedId) ?? null
 
       return {
-        clips: updatedClips,
+        clips: resolvedClips,
         operationsByClip: newOpsByClip,
         selectedClipId: nextSelectedId,
         selectedClipIds: nextSelectedId ? [nextSelectedId] : [],
@@ -828,7 +1342,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         mediaInfo: nextClip?.mediaInfo ?? null,
         duration: nextClip?.duration ?? 0,
         operations: nextSelectedId ? (newOpsByClip[nextSelectedId] || []) : [],
-        timelineDuration: getTimelineDuration(updatedClips, newOpsByClip),
+        timelineDuration: getTimelineDuration(resolvedClips, newOpsByClip),
         historyPast,
         historyFuture: []
       }
@@ -851,11 +1365,22 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         : op
     )
     const nextOpsByClip = { ...operationsByClip, [clipId]: nextOps }
-    const nextClips = clips.map((c) => (c.id === clipId ? { ...c, duration } : c))
+    const nextClips = clips.map((c) => {
+      if (c.id !== clipId) return c
+      const nextBoundStart = Math.max(0, Math.min(c.trimBoundStart ?? 0, duration))
+      const nextBoundEnd = Math.max(nextBoundStart, Math.min(c.trimBoundEnd ?? duration, duration))
+      return { ...c, duration, trimBoundStart: nextBoundStart, trimBoundEnd: nextBoundEnd }
+    })
     const nextOperations = clipId === selectedClipId ? nextOps : get().operations
-    const nextTimelineDuration = getTimelineDuration(nextClips, nextOpsByClip)
+    const resolvedClips = resolveClipOverlaps(
+      nextClips,
+      nextOpsByClip,
+      new Set([clipId]),
+      get().linkedGroups
+    )
+    const nextTimelineDuration = getTimelineDuration(resolvedClips, nextOpsByClip)
     set({
-      clips: nextClips,
+      clips: resolvedClips,
       duration: clipId === selectedClipId ? duration : get().duration,
       operations: nextOperations,
       operationsByClip: nextOpsByClip,
@@ -908,12 +1433,26 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       const updated = state.operations.map((op) =>
         op.id === id ? { ...op, ...patch } : op
       )
+      const targetOp = updated.find((op) => op.id === id)
+      const shouldUpdateTimeline = targetOp?.type === 'speed' || targetOp?.type === 'trim'
+      const nextOpsByClip = {
+        ...state.operationsByClip,
+        [state.selectedClipId]: updated
+      }
+      const resolvedClips = shouldUpdateTimeline
+        ? resolveClipOverlaps(state.clips, nextOpsByClip, new Set([state.selectedClipId]), state.linkedGroups)
+        : state.clips
+      const nextTimelineDuration = shouldUpdateTimeline
+        ? getTimelineDuration(resolvedClips, nextOpsByClip)
+        : state.timelineDuration
       return {
         operations: updated,
-        operationsByClip: {
-          ...state.operationsByClip,
-          [state.selectedClipId]: updated
-        }
+        operationsByClip: nextOpsByClip,
+        clips: resolvedClips,
+        timelineDuration: nextTimelineDuration,
+        currentTime: shouldUpdateTimeline
+          ? clampTimelineTime(state.currentTime, nextTimelineDuration)
+          : state.currentTime
       }
     }),
 
@@ -921,19 +1460,44 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     set((state) => {
       const historyPast = [...state.historyPast, takeSnapshot(state)]
       if (!state.selectedClipId) return state
+      const selectedClip = state.clips.find((clip) => clip.id === state.selectedClipId)
+      if (!selectedClip) return state
+      const bounds = getClipTrimBounds(selectedClip)
+      const MIN_VISIBLE = 0.05
       const updated = state.operations.map((op) =>
-        op.type === 'trim'
-          ? { ...op, enabled: true, params: { ...op.params, ...params } }
-          : op
+        op.type !== 'trim'
+          ? op
+          : (() => {
+              const current = op.params as TrimParams
+              const startCandidate = params.startTime ?? current.startTime
+              const endCandidate = params.endTime ?? current.endTime
+              let nextStart = Math.max(bounds.min, Math.min(startCandidate, bounds.max))
+              let nextEnd = Math.max(nextStart, Math.min(endCandidate, bounds.max))
+              if (nextEnd - nextStart < MIN_VISIBLE) {
+                if (params.startTime !== undefined && params.endTime === undefined) {
+                  nextStart = Math.max(bounds.min, nextEnd - MIN_VISIBLE)
+                } else {
+                  nextEnd = Math.min(bounds.max, nextStart + MIN_VISIBLE)
+                }
+              }
+              return { ...op, enabled: true, params: { startTime: nextStart, endTime: nextEnd } as TrimParams }
+            })()
       )
       const newOpsByClip = {
         ...state.operationsByClip,
         [state.selectedClipId]: updated
       }
-      const nextTimelineDuration = getTimelineDuration(state.clips, newOpsByClip)
+      const resolvedClips = resolveClipOverlaps(
+        state.clips,
+        newOpsByClip,
+        new Set([state.selectedClipId]),
+        state.linkedGroups
+      )
+      const nextTimelineDuration = getTimelineDuration(resolvedClips, newOpsByClip)
       return {
         operations: updated,
         operationsByClip: newOpsByClip,
+        clips: resolvedClips,
         timelineDuration: nextTimelineDuration,
         currentTime: clampTimelineTime(state.currentTime, nextTimelineDuration),
         historyPast,
@@ -962,11 +1526,19 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         )
         newOpsByClip[clip.id] = nextOps
       })
+      const activeClipIds = new Set(targetClips.map((clip) => clip.id))
+      const resolvedClips = resolveClipOverlaps(
+        state.clips,
+        newOpsByClip,
+        activeClipIds,
+        state.linkedGroups
+      )
       const updated = newOpsByClip[state.selectedClipId] || state.operations
-      const nextTimelineDuration = getTimelineDuration(state.clips, newOpsByClip)
+      const nextTimelineDuration = getTimelineDuration(resolvedClips, newOpsByClip)
       return {
         operations: updated,
         operationsByClip: newOpsByClip,
+        clips: resolvedClips,
         timelineDuration: nextTimelineDuration,
         currentTime: clampTimelineTime(state.currentTime, nextTimelineDuration),
         historyPast,
@@ -1043,12 +1615,16 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         [targetId]: updated
       }
       const shouldUpdateTimeline = type === 'speed' || type === 'trim'
+      const resolvedClips = shouldUpdateTimeline
+        ? resolveClipOverlaps(state.clips, newOpsByClip, new Set([targetId]), state.linkedGroups)
+        : state.clips
       const nextTimelineDuration = shouldUpdateTimeline
-        ? getTimelineDuration(state.clips, newOpsByClip)
+        ? getTimelineDuration(resolvedClips, newOpsByClip)
         : state.timelineDuration
       return {
         operations: targetId === state.selectedClipId ? updated : state.operations,
         operationsByClip: newOpsByClip,
+        clips: resolvedClips,
         timelineDuration: nextTimelineDuration,
         currentTime: shouldUpdateTimeline
           ? clampTimelineTime(state.currentTime, nextTimelineDuration)
@@ -1108,6 +1684,18 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     return operationsByClip[targetId] || []
   },
 
+  getMergeSelectionState: () => {
+    const { clips, selectedClipIds } = get()
+    const meta = getMergeSelectionMeta(clips, selectedClipIds)
+    return {
+      canMerge: meta.canMerge,
+      disabledReason: meta.disabledReason,
+      logicalSelectionCount: meta.logicalSelectionCount,
+      hasVideoSelection: meta.hasVideoSelection,
+      hasAudioSelection: meta.hasAudioSelection
+    }
+  },
+
   reset: () => {
     set({
       clips: [],
@@ -1115,6 +1703,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       selectedClipIds: [],
       lastSelectedClipId: null,
       linkedGroups: {},
+      clipboard: null,
       historyPast: [],
       historyFuture: [],
       timelineDuration: 0,
@@ -1130,7 +1719,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       playing: false,
       duration: 0,
       exporting: false,
-      exportProgress: null
+      exportProgress: null,
+      merging: false
     })
     setDocumentTitle(null, 0)
   }

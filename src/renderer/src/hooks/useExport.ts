@@ -4,7 +4,7 @@
 
 import { useEffect, useCallback, useRef } from 'react'
 import { useProjectStore } from '../stores/project-store'
-import type { ExportOptions, ResolutionPreset, QualityPreset } from '../../../shared/types'
+import type { ExportOptions, ResolutionPreset, QualityPreset, ExportFormat } from '../../../shared/types'
 
 interface UseExportOptions {
   /** 导出成功后的回调（用于关闭弹窗等） */
@@ -56,7 +56,7 @@ export function useExport(opts?: UseExportOptions) {
   }, [setExporting, setExportProgress, showToast])
 
   const startExport = useCallback(
-    async (resolution: ResolutionPreset, quality: QualityPreset) => {
+    async (resolution: ResolutionPreset, quality: QualityPreset, format: ExportFormat) => {
       if (!mediaInfo && clips.length === 0) return
 
       // Ask user where to save
@@ -64,12 +64,11 @@ export function useExport(opts?: UseExportOptions) {
         ? mediaInfo.filePath.split(/[\\/]/).pop() || 'output'
         : 'zclip_timeline'
       const nameWithoutExt = baseName.replace(/\.[^.]+$/, '')
-      const defaultExt = mediaInfo.hasVideo ? 'mp4' : 'mp4'
-      const outputPath = await window.api.showSaveDialog(`${nameWithoutExt}_edited.${defaultExt}`)
+      const outputPath = await window.api.showSaveDialog(`${nameWithoutExt}_edited.${format}`)
       if (!outputPath) return
 
       const exportOptions: ExportOptions = {
-        format: 'mp4',
+        format,
         resolution,
         quality,
         outputPath
@@ -79,7 +78,7 @@ export function useExport(opts?: UseExportOptions) {
       setExportProgress(null)
 
       await window.api.startExport({
-        mediaInfo,
+        mediaInfo: mediaInfo ?? undefined,
         operations,
         clips,
         operationsByClip,

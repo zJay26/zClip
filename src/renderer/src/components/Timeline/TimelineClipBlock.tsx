@@ -28,6 +28,7 @@ interface TimelineClipBlockProps {
 }
 
 type DragMode = 'move' | 'trim-start' | 'trim-end' | null
+const DRAG_EPSILON_SECONDS = 0.0001
 
 const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
   clip,
@@ -58,6 +59,7 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
 
   const [dragMode, setDragMode] = useState<DragMode>(null)
   const dragStartRef = useRef({ clientX: 0, startTime: 0, visibleDuration: 0 })
+  const historyCapturedRef = useRef(false)
   const [dragOriginTime, setDragOriginTime] = useState<number | null>(null)
   const [previewUrls, setPreviewUrls] = useState<{ video?: string; audio?: string }>({})
   const isSelected = selectedClipIds.includes(clip.id)
@@ -187,6 +189,7 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
         selectClip(clip.id, 'single')
       }
       setDragMode('move')
+      historyCapturedRef.current = false
       dragStartRef.current = {
         clientX: e.clientX,
         startTime: clip.startTime,
@@ -207,6 +210,7 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
         selectClip(clip.id, 'single')
       }
       setDragMode(edge)
+      historyCapturedRef.current = false
       dragStartRef.current = {
         clientX: e.clientX,
         startTime: clip.startTime,
@@ -227,7 +231,12 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
 
       if (dragMode === 'move') {
         const rawTime = dragStartRef.current.startTime + deltaSec
-        const snapped = snap.checkSnap(rawTime, pixelsPerSecond, clip.id)
+        const snapped = snap.checkMoveSnap(
+          rawTime,
+          dragStartRef.current.visibleDuration,
+          pixelsPerSecond,
+          clip.id
+        )
         const newStart = Math.max(0, snapped.time)
 
         // Calculate track index from mouse Y
@@ -236,28 +245,43 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
           const relativeY = y - baseTrackTop
           let nextTrackIndex = Math.floor(relativeY / (TRACK_HEIGHT + TRACK_GAP))
           nextTrackIndex = clamp(nextTrackIndex, 0, Math.max(trackCount - 1, 0))
-          moveClip(clip.id, { startTime: newStart, trackIndex: nextTrackIndex })
+          const hasEffectiveChange =
+            Math.abs(newStart - clip.startTime) > DRAG_EPSILON_SECONDS || nextTrackIndex !== clip.trackIndex
+          if (!hasEffectiveChange) return
+          const recordHistory = !historyCapturedRef.current
+          moveClip(clip.id, { startTime: newStart, trackIndex: nextTrackIndex }, { recordHistory })
+          historyCapturedRef.current = true
         } else {
-          moveClip(clip.id, { startTime: newStart })
+          if (Math.abs(newStart - clip.startTime) <= DRAG_EPSILON_SECONDS) return
+          const recordHistory = !historyCapturedRef.current
+          moveClip(clip.id, { startTime: newStart }, { recordHistory })
+          historyCapturedRef.current = true
         }
       } else if (dragMode === 'trim-start') {
         // Snap the left edge position (timeline time)
         const rawEdgeTime = dragStartRef.current.startTime + deltaSec
         const snapped = snap.checkSnap(rawEdgeTime, pixelsPerSecond, clip.id)
         const deltaTimeline = snapped.time - clip.startTime
-        trimClipEdge(clip.id, 'start', deltaTimeline)
+        if (Math.abs(deltaTimeline) <= DRAG_EPSILON_SECONDS) return
+        const recordHistory = !historyCapturedRef.current
+        trimClipEdge(clip.id, 'start', deltaTimeline, { recordHistory })
+        historyCapturedRef.current = true
       } else if (dragMode === 'trim-end') {
         const currentVisEnd = clip.startTime + visibleDuration
         const rawEdgeTime = dragStartRef.current.startTime + dragStartRef.current.visibleDuration + deltaSec
         const snapped = snap.checkSnap(rawEdgeTime, pixelsPerSecond, clip.id)
         const deltaTimeline = snapped.time - currentVisEnd
-        trimClipEdge(clip.id, 'end', deltaTimeline)
+        if (Math.abs(deltaTimeline) <= DRAG_EPSILON_SECONDS) return
+        const recordHistory = !historyCapturedRef.current
+        trimClipEdge(clip.id, 'end', deltaTimeline, { recordHistory })
+        historyCapturedRef.current = true
       }
     }
 
     const handleUp = (): void => {
       setDragMode(null)
       setDragOriginTime(null)
+      historyCapturedRef.current = false
       snap.clearSnapLine()
     }
 
@@ -272,6 +296,7 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
     pixelsPerSecond,
     clip.id,
     clip.startTime,
+    clip.trackIndex,
     snap,
     moveClip,
     trimClipEdge,

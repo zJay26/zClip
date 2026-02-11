@@ -40,5 +40,14 @@ npm install
 npm run dev
 ```
 
+## UI Quality Checks
+```bash
+# Type safety
+npm run typecheck
+
+# UI snapshot baseline (visual regression)
+npm run test:ui
+```
+
 ## License
 MIT

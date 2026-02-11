@@ -18,6 +18,8 @@ export interface SnapResult {
 export interface SnapEngine {
   /** Check if a time should snap, returns snapped time */
   checkSnap: (time: number, pixelsPerSecond: number, excludeClipId?: string) => SnapResult
+  /** Check snap for moving clip (start/end edges) */
+  checkMoveSnap: (startTime: number, duration: number, pixelsPerSecond: number, excludeClipId?: string) => SnapResult
   /** Current visible snap line position (time), or null */
   snapLineTime: number | null
   /** Clear snap line */
@@ -27,6 +29,7 @@ export interface SnapEngine {
 export function useSnap(): SnapEngine {
   const { clips, currentTime, operationsByClip } = useProjectStore()
   const [snapLineTime, setSnapLineTime] = useState<number | null>(null)
+  const [lockedSnapTime, setLockedSnapTime] = useState<number | null>(null)
 
   // Collect all snap points: clip edges + playhead
   const snapPoints = useMemo(() => {
@@ -38,14 +41,11 @@ export function useSnap(): SnapEngine {
     }
 
     // Deduplicate & sort
-    return [...new Set(points)].sort((a, b) => a - b)
+    return points.filter((point, idx, list) => list.indexOf(point) === idx).sort((a, b) => a - b)
   }, [clips, currentTime, operationsByClip])
 
-  const checkSnap = useCallback(
-    (time: number, pixelsPerSecond: number, excludeClipId?: string): SnapResult => {
-      const threshold = SNAP_THRESHOLD_PX / pixelsPerSecond
-
-      // Build filtered snap points excluding the dragged clip's own edges
+  const getFilteredPoints = useCallback(
+    (excludeClipId?: string): number[] => {
       let filteredPoints = snapPoints
       if (excludeClipId) {
         const clip = clips.find((c) => c.id === excludeClipId)
@@ -56,26 +56,121 @@ export function useSnap(): SnapEngine {
           )
         }
       }
+      return filteredPoints
+    },
+    [snapPoints, clips, operationsByClip]
+  )
+
+  const checkSnap = useCallback(
+    (time: number, pixelsPerSecond: number, excludeClipId?: string): SnapResult => {
+      const enterThreshold = SNAP_THRESHOLD_PX / pixelsPerSecond
+      const exitThreshold = (SNAP_THRESHOLD_PX * 1.5) / pixelsPerSecond
+      const filteredPoints = getFilteredPoints(excludeClipId)
 
       let bestDist = Infinity
       let bestTime = time
 
       for (const point of filteredPoints) {
         const dist = Math.abs(time - point)
-        if (dist < threshold && dist < bestDist) {
+        if (dist < enterThreshold && dist < bestDist) {
           bestDist = dist
           bestTime = point
         }
       }
 
-      const snapped = bestDist < threshold
-      setSnapLineTime(snapped ? bestTime : null)
-      return { time: snapped ? bestTime : time, snapped }
+      const hasCandidate = bestDist < enterThreshold
+
+      if (lockedSnapTime !== null) {
+        const lockedDist = Math.abs(time - lockedSnapTime)
+        const canSwitch = hasCandidate && bestTime !== lockedSnapTime && bestDist <= lockedDist + 1e-6
+        if (canSwitch) {
+          setLockedSnapTime(bestTime)
+          setSnapLineTime(bestTime)
+          return { time: bestTime, snapped: true }
+        }
+        if (lockedDist <= exitThreshold) {
+          setSnapLineTime(lockedSnapTime)
+          return { time: lockedSnapTime, snapped: true }
+        }
+        setLockedSnapTime(null)
+      }
+
+      if (hasCandidate) {
+        setLockedSnapTime(bestTime)
+        setSnapLineTime(bestTime)
+        return { time: bestTime, snapped: true }
+      }
+
+      setSnapLineTime(null)
+      return { time, snapped: false }
     },
-    [snapPoints, clips, operationsByClip]
+    [getFilteredPoints, lockedSnapTime]
   )
 
-  const clearSnapLine = useCallback(() => setSnapLineTime(null), [])
+  const checkMoveSnap = useCallback(
+    (startTime: number, duration: number, pixelsPerSecond: number, excludeClipId?: string): SnapResult => {
+      const enterThreshold = SNAP_THRESHOLD_PX / pixelsPerSecond
+      const exitThreshold = (SNAP_THRESHOLD_PX * 1.5) / pixelsPerSecond
+      const filteredPoints = getFilteredPoints(excludeClipId)
+      const endTime = startTime + duration
 
-  return { checkSnap, snapLineTime, clearSnapLine }
+      let bestDist = Infinity
+      let bestTime = startTime
+      let bestIsEnd = false
+
+      for (const point of filteredPoints) {
+        const distStart = Math.abs(startTime - point)
+        if (distStart < enterThreshold && distStart < bestDist) {
+          bestDist = distStart
+          bestTime = point
+          bestIsEnd = false
+        }
+        const distEnd = Math.abs(endTime - point)
+        if (distEnd < enterThreshold && distEnd < bestDist) {
+          bestDist = distEnd
+          bestTime = point
+          bestIsEnd = true
+        }
+      }
+
+      const hasCandidate = bestDist < enterThreshold
+
+      if (lockedSnapTime !== null) {
+        const distStart = Math.abs(startTime - lockedSnapTime)
+        const distEnd = Math.abs(endTime - lockedSnapTime)
+        const lockedDist = Math.min(distStart, distEnd)
+        const canSwitch = hasCandidate && bestTime !== lockedSnapTime && bestDist <= lockedDist + 1e-6
+        if (canSwitch) {
+          setLockedSnapTime(bestTime)
+          setSnapLineTime(bestTime)
+          const nextStart = bestIsEnd ? bestTime - duration : bestTime
+          return { time: nextStart, snapped: true }
+        }
+        if (lockedDist <= exitThreshold) {
+          const nextStart = distEnd < distStart ? lockedSnapTime - duration : lockedSnapTime
+          setSnapLineTime(lockedSnapTime)
+          return { time: nextStart, snapped: true }
+        }
+        setLockedSnapTime(null)
+      }
+
+      if (hasCandidate) {
+        setLockedSnapTime(bestTime)
+        setSnapLineTime(bestTime)
+        const nextStart = bestIsEnd ? bestTime - duration : bestTime
+        return { time: nextStart, snapped: true }
+      }
+
+      setSnapLineTime(null)
+      return { time: startTime, snapped: false }
+    },
+    [getFilteredPoints, lockedSnapTime]
+  )
+
+  const clearSnapLine = useCallback(() => {
+    setSnapLineTime(null)
+    setLockedSnapTime(null)
+  }, [])
+
+  return { checkSnap, checkMoveSnap, snapLineTime, clearSnapLine }
 }

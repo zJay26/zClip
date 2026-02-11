@@ -9,7 +9,8 @@ import type {
   TrimParams,
   SpeedParams,
   VolumeParams,
-  PitchParams
+  PitchParams,
+  ExportFormat
 } from '../../shared/types'
 import { probe } from './ffmpeg'
 
@@ -37,6 +38,7 @@ export function parseMediaInfo(probeData: Record<string, unknown>, filePath: str
 
   return {
     duration: parseFloat(format?.duration as string) || 0,
+    containerFormat: (format?.format_name as string) || '',
     width: (videoStream?.width as number) || 0,
     height: (videoStream?.height as number) || 0,
     fps: hasVideo ? fps : 0,
@@ -69,9 +71,10 @@ export function buildFFmpegArgs(
   outputPath: string,
   operations: MediaOperation[],
   mediaInfo: MediaInfo,
-  options: { crf?: number; resolution?: { w: number; h: number } | null }
+  options: { crf?: number; resolution?: { w: number; h: number } | null; format: ExportFormat }
 ): string[] {
   const enabledOps = operations.filter((op) => op.enabled)
+  const audioOnlyFormat = isAudioFormat(options.format)
 
   // Extract each operation type
   const trim = enabledOps.find((op) => op.type === 'trim')
@@ -142,7 +145,7 @@ export function buildFFmpegArgs(
   }
 
   // Apply filter chains
-  if (vFilters.length > 0 && mediaInfo.hasVideo) {
+  if (vFilters.length > 0 && mediaInfo.hasVideo && !audioOnlyFormat) {
     args.push('-vf', vFilters.join(','))
   }
   if (aFilters.length > 0 && mediaInfo.hasAudio) {
@@ -150,23 +153,30 @@ export function buildFFmpegArgs(
   }
 
   // --- Output options ---
-  if (mediaInfo.hasVideo) {
-    args.push('-c:v', 'libx264')
-    args.push('-preset', 'medium')
-    args.push('-crf', String(options.crf ?? 23))
+  if (!audioOnlyFormat && mediaInfo.hasVideo) {
+    if (options.format === 'webm') {
+      args.push('-c:v', 'libvpx-vp9')
+      args.push('-b:v', '0')
+      args.push('-crf', String(mapVp9Crf(options.crf ?? 23)))
+    } else {
+      args.push('-c:v', 'libx264')
+      args.push('-preset', 'medium')
+      args.push('-crf', String(options.crf ?? 23))
+    }
   } else {
-    // Audio-only: no video stream
     args.push('-vn')
   }
 
   if (mediaInfo.hasAudio) {
-    args.push('-c:a', 'aac')
-    args.push('-b:a', '192k')
+    const audioArgs = getAudioCodecArgs(options.format)
+    args.push(...audioArgs)
   } else {
     args.push('-an')
   }
 
-  args.push('-movflags', '+faststart')
+  if (options.format === 'mp4' || options.format === 'mov') {
+    args.push('-movflags', '+faststart')
+  }
   args.push(outputPath)
 
   return args
@@ -192,4 +202,34 @@ function buildTempoChain(targetTempo: number): string[] {
 
   filters.push(`atempo=${remaining.toFixed(4)}`)
   return filters
+}
+
+function isAudioFormat(format: ExportFormat): boolean {
+  return ['mp3', 'wav', 'flac', 'aac', 'opus'].includes(format)
+}
+
+function getAudioCodecArgs(format: ExportFormat): string[] {
+  switch (format) {
+    case 'mp3':
+      return ['-c:a', 'libmp3lame', '-b:a', '192k']
+    case 'wav':
+      return ['-c:a', 'pcm_s16le']
+    case 'flac':
+      return ['-c:a', 'flac']
+    case 'opus':
+      return ['-c:a', 'libopus', '-b:a', '160k']
+    case 'webm':
+      return ['-c:a', 'libopus', '-b:a', '160k']
+    case 'aac':
+    case 'mp4':
+    case 'mov':
+    case 'mkv':
+    default:
+      return ['-c:a', 'aac', '-b:a', '192k']
+  }
+}
+
+function mapVp9Crf(x264Crf: number): number {
+  const vp9 = Math.round(x264Crf + 10)
+  return Math.max(0, Math.min(63, vp9))
 }

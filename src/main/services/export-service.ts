@@ -57,7 +57,7 @@ export async function startExport(
     exportOptions.outputPath,
     operations,
     mediaInfo,
-    { crf, resolution }
+    { crf, resolution, format: exportOptions.format }
   )
 
   const onProgress = (progress: FFmpegProgress): void => {
@@ -80,10 +80,11 @@ export async function startExport(
       win.webContents.send(IPC_CHANNELS.EXPORT_COMPLETE, exportOptions.outputPath)
     }
   } catch (error) {
+    const message = formatExportError(error)
     if (!win.isDestroyed()) {
       win.webContents.send(
         IPC_CHANNELS.EXPORT_ERROR,
-        error instanceof Error ? error.message : 'Unknown export error'
+        message
       )
     }
   } finally {
@@ -115,7 +116,8 @@ export async function startTimelineExport(
     exportOptions.outputPath,
     outputSize,
     timelineDuration,
-    crf
+    crf,
+    exportOptions.format
   )
 
   const onProgress = (progress: FFmpegProgress): void => {
@@ -138,10 +140,11 @@ export async function startTimelineExport(
       win.webContents.send(IPC_CHANNELS.EXPORT_COMPLETE, exportOptions.outputPath)
     }
   } catch (error) {
+    const message = formatExportError(error)
     if (!win.isDestroyed()) {
       win.webContents.send(
         IPC_CHANNELS.EXPORT_ERROR,
-        error instanceof Error ? error.message : 'Unknown export error'
+        message
       )
     }
   } finally {
@@ -171,9 +174,11 @@ function buildTimelineFFmpegArgs(
   outputPath: string,
   outputSize: { w: number; h: number } | null,
   timelineDuration: number,
-  crf: number
+  crf: number,
+  format: ExportOptions['format']
 ): string[] {
   const args: string[] = ['-y']
+  const audioOnlyFormat = isAudioFormat(format)
 
   const inputs: TimelineClip[] = [...clips]
   inputs.forEach((clip) => {
@@ -194,7 +199,7 @@ function buildTimelineFFmpegArgs(
     const trimStart = trim ? (trim.params as TrimParams).startTime : 0
     const trimEnd = trim ? (trim.params as TrimParams).endTime : clip.duration
 
-    if (clip.track === 'video' && clip.mediaInfo.hasVideo) {
+    if (clip.track === 'video' && clip.mediaInfo.hasVideo && !audioOnlyFormat) {
       const vFilters: string[] = []
       vFilters.push(`trim=start=${trimStart}:end=${trimEnd}`)
       vFilters.push('setpts=PTS-STARTPTS')
@@ -242,7 +247,9 @@ function buildTimelineFFmpegArgs(
       }
 
       const delayMs = Math.max(0, Math.round(clip.startTime * 1000))
-      aFilters.push(`adelay=${delayMs}`)
+      // Use legacy-compatible list syntax instead of `all=1` for older FFmpeg builds.
+      const adelayDelays = Array(16).fill(delayMs).join('|')
+      aFilters.push(`adelay=${adelayDelays}`)
       filterParts.push(`[${index}:a]${aFilters.join(',')}[a${index}]`)
       audioLabels.push(`a${index}`)
     }
@@ -295,19 +302,26 @@ function buildTimelineFFmpegArgs(
 
   if (videoOutLabel) {
     args.push('-map', `[${videoOutLabel}]`)
-    args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', String(crf))
+    if (format === 'webm') {
+      args.push('-c:v', 'libvpx-vp9', '-b:v', '0', '-crf', String(mapVp9Crf(crf)))
+    } else {
+      args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', String(crf))
+    }
   } else {
     args.push('-vn')
   }
 
   if (audioOutLabel) {
     args.push('-map', `[${audioOutLabel}]`)
-    args.push('-c:a', 'aac', '-b:a', '192k')
+    args.push(...getAudioCodecArgs(format))
   } else {
     args.push('-an')
   }
 
-  args.push('-movflags', '+faststart', outputPath)
+  if (format === 'mp4' || format === 'mov') {
+    args.push('-movflags', '+faststart')
+  }
+  args.push(outputPath)
   return args
 }
 
@@ -327,4 +341,43 @@ function buildTempoChain(targetTempo: number): string[] {
 
   filters.push(`atempo=${remaining.toFixed(4)}`)
   return filters
+}
+
+function formatExportError(error: unknown): string {
+  if (!(error instanceof Error)) return 'Unknown export error'
+  const message = error.message || ''
+  if (/Unknown encoder|Encoder .* not found/i.test(message)) {
+    return `当前 FFmpeg 缺少所需编码器，导出失败。${message}`
+  }
+  return message
+}
+
+function isAudioFormat(format: ExportOptions['format']): boolean {
+  return ['mp3', 'wav', 'flac', 'aac', 'opus'].includes(format)
+}
+
+function getAudioCodecArgs(format: ExportOptions['format']): string[] {
+  switch (format) {
+    case 'mp3':
+      return ['-c:a', 'libmp3lame', '-b:a', '192k']
+    case 'wav':
+      return ['-c:a', 'pcm_s16le']
+    case 'flac':
+      return ['-c:a', 'flac']
+    case 'opus':
+      return ['-c:a', 'libopus', '-b:a', '160k']
+    case 'webm':
+      return ['-c:a', 'libopus', '-b:a', '160k']
+    case 'aac':
+    case 'mp4':
+    case 'mov':
+    case 'mkv':
+    default:
+      return ['-c:a', 'aac', '-b:a', '192k']
+  }
+}
+
+function mapVp9Crf(x264Crf: number): number {
+  const vp9 = Math.round(x264Crf + 10)
+  return Math.max(0, Math.min(63, vp9))
 }

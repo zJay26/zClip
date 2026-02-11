@@ -34,6 +34,7 @@ export interface ElectronAPI {
   onExportProgress: (callback: (progress: ExportProgress) => void) => () => void
   onExportComplete: (callback: (outputPath: string) => void) => () => void
   onExportError: (callback: (error: string) => void) => () => void
+  onOpenFile: (callback: (filePaths: string[]) => void) => () => void
 }
 
 const api: ElectronAPI = {
@@ -78,6 +79,14 @@ const api: ElectronAPI = {
     }
     ipcRenderer.on(IPC_CHANNELS.EXPORT_ERROR, handler)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.EXPORT_ERROR, handler)
+  },
+
+  onOpenFile: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, filePaths: string[]): void => {
+      callback(filePaths)
+    }
+    ipcRenderer.on(IPC_CHANNELS.OPEN_FILE, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.OPEN_FILE, handler)
   }
 }
 

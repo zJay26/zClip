@@ -38,7 +38,7 @@ export type ProgressCallback = (progress: FFmpegProgress) => void
 export function probe(filePath: string): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const args = [
-      '-v', 'quiet',
+      '-v', 'error',
       '-print_format', 'json',
       '-show_format',
       '-show_streams',
@@ -60,7 +60,8 @@ export function probe(filePath: string): Promise<Record<string, unknown>> {
           reject(new Error(`ffprobe JSON parse error: ${stdout}`))
         }
       } else {
-        reject(new Error(`ffprobe exited with code ${code}: ${stderr}`))
+        const detail = stderr.trim() || 'unknown error'
+        reject(new Error(`ffprobe exited with code ${code} for ${filePath}: ${detail}`))
       }
     })
 

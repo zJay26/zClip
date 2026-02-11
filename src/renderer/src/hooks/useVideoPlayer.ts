@@ -60,6 +60,7 @@ export function useVideoPlayer() {
     ((clip: NonNullable<typeof selectedClip>, timelineTime: number, autoPlay: boolean) => void) | null
   >(null)
   const syncVideoRateRef = useRef<((clipId: string | null) => void) | null>(null)
+  const lastVideoClockRef = useRef<{ clipId: string; mediaTime: number } | null>(null)
   const currentTimeRef = useRef(0)
   const lastTickRef = useRef<number>(0)
   const playingRef = useRef(false)
@@ -121,6 +122,15 @@ export function useVideoPlayer() {
     [operationsByClip]
   )
 
+  const clampTimelineTimeSafe = useCallback(
+    (time: number): number => {
+      const safeEnd = timelineDuration > 0 ? Math.max(0, timelineDuration - 0.0001) : 0
+      if (!Number.isFinite(time)) return 0
+      return Math.max(0, Math.min(time, safeEnd))
+    },
+    [timelineDuration]
+  )
+
   const findClipAtTime = useCallback(
     (time: number) => {
       if (clips.length === 0) return null
@@ -138,6 +148,65 @@ export function useVideoPlayer() {
     },
     [clips, getClipRange]
   )
+
+  const findClipStartingAt = useCallback(
+    (time: number) => {
+      if (clips.length === 0) return null
+      const EPS = 0.0005
+      let best: TimelineClip | null = null
+      clips.forEach((clip) => {
+        const range = getClipRange(clip)
+        if (!range || range.visibleDuration <= 0) return
+        if (Math.abs(range.start - time) > EPS) return
+        if (
+          !best ||
+          (best.track !== 'video' && clip.track === 'video') ||
+          (clip.track === best.track && clip.trackIndex < best.trackIndex) ||
+          (clip.track === best.track &&
+            clip.trackIndex === best.trackIndex &&
+            clip.id.localeCompare(best.id) < 0)
+        ) {
+          best = clip
+        }
+      })
+      return best
+    },
+    [clips, getClipRange]
+  )
+
+  const findNextClipAfter = useCallback(
+    (time: number) => {
+      if (clips.length === 0) return null
+      const EPS = 0.0005
+      let best: TimelineClip | null = null
+      let bestStart = Infinity
+      clips.forEach((clip) => {
+        const range = getClipRange(clip)
+        if (!range || range.visibleDuration <= 0) return
+        if (range.start < time - EPS) return
+        const sameStart = Math.abs(range.start - bestStart) <= EPS
+        if (
+          !best ||
+          range.start < bestStart - EPS ||
+          (sameStart &&
+            ((best.track !== 'video' && clip.track === 'video') ||
+              (clip.track === best.track && clip.trackIndex < best.trackIndex) ||
+              (clip.track === best.track &&
+                clip.trackIndex === best.trackIndex &&
+                clip.id.localeCompare(best.id) < 0)))
+        ) {
+          best = clip
+          bestStart = range.start
+        }
+      })
+      return best
+    },
+    [clips, getClipRange]
+  )
+
+  const getPlaybackPath = useCallback((clip: TimelineClip): string => {
+    return clip.mediaInfo.playbackPath || clip.filePath
+  }, [])
 
   const toMediaURL = useCallback((filePath: string): string => {
     const normalizedPath = filePath.replace(/\\/g, '/')
@@ -171,7 +240,7 @@ export function useVideoPlayer() {
 
       const loadPromise = (async () => {
         try {
-          const response = await fetch(toMediaURL(clip.filePath))
+          const response = await fetch(toMediaURL(getPlaybackPath(clip)))
           const data = await response.arrayBuffer()
           const buffer = await ctx.decodeAudioData(data.slice(0))
           const shifter = new PitchShifter(ctx, buffer, 1024)
@@ -191,7 +260,7 @@ export function useVideoPlayer() {
 
       audioLoadingRef.current.set(clip.id, loadPromise)
     },
-    [toMediaURL, getAudioContext]
+    [toMediaURL, getAudioContext, getPlaybackPath]
   )
 
   const ensureAudioElementPipeline = useCallback(
@@ -201,7 +270,7 @@ export function useVideoPlayer() {
       const ctx = getAudioContext()
       let audio = audioElementRef.current.get(clip.id)
       if (!audio) {
-        audio = new Audio(toMediaURL(clip.filePath))
+        audio = new Audio(toMediaURL(getPlaybackPath(clip)))
         audio.preload = 'auto'
         audioElementRef.current.set(clip.id, audio)
       }
@@ -211,7 +280,7 @@ export function useVideoPlayer() {
       audioElementPipelinesRef.current.set(clip.id, pipeline)
       return pipeline
     },
-    [getAudioContext, toMediaURL]
+    [getAudioContext, toMediaURL, getPlaybackPath]
   )
 
   const sliceAudioBuffer = useCallback(
@@ -262,7 +331,7 @@ export function useVideoPlayer() {
       const video = videoRef.current
       if (video) {
         syncVideoPlaybackRate(clip.id)
-        const expectedSrc = toMediaURL(clip.filePath)
+        const expectedSrc = toMediaURL(getPlaybackPath(clip))
         const currentSrc = video.currentSrc || ''
         const normalizeUrl = (url: string): string =>
           decodeURIComponent(url)
@@ -274,19 +343,38 @@ export function useVideoPlayer() {
         const isSameSource =
           normalizedCurrent === normalizedExpected || normalizedCurrent.endsWith(normalizedExpected)
 
+        if (!isSameSource) {
+          video.pause()
+          video.src = expectedSrc
+          video.load()
+          lastVideoClockRef.current = null
+          pendingSeekRef.current = localTime
+          pendingAutoPlayRef.current = autoPlay
+          return
+        }
+
         if ((selectedClipId === clip.id || isSameSource) && video.readyState >= 1) {
           video.currentTime = localTime
+          lastVideoClockRef.current = { clipId: clip.id, mediaTime: localTime }
           if (autoPlay) {
-            video.play()
+            video.play().catch(() => {
+              pendingSeekRef.current = localTime
+              pendingAutoPlayRef.current = true
+              video.load()
+            })
           }
           return
+        }
+        if (video.readyState === 0) {
+          video.load()
         }
       }
 
       pendingSeekRef.current = localTime
       pendingAutoPlayRef.current = autoPlay
+      lastVideoClockRef.current = { clipId: clip.id, mediaTime: localTime }
     },
-    [getClipRange, selectedClipId, operationsByClip, toMediaURL, syncVideoPlaybackRate]
+    [getClipRange, selectedClipId, operationsByClip, toMediaURL, syncVideoPlaybackRate, getPlaybackPath]
   )
 
   const syncAudioForTime = useCallback(
@@ -576,7 +664,7 @@ export function useVideoPlayer() {
       if (currentSrc) {
         const normalizedCurrent = normalizeUrl(currentSrc)
         const hasSource = clips.some((clip) => {
-          const normalizedClip = normalizeUrl(clip.filePath)
+          const normalizedClip = normalizeUrl(getPlaybackPath(clip))
           return normalizedCurrent === normalizedClip || normalizedCurrent.endsWith(normalizedClip)
         })
         if (!hasSource) {
@@ -601,14 +689,15 @@ export function useVideoPlayer() {
       playingRef.current = false
       setPlaying(false)
     }
-  }, [clips, timelineDuration, setCurrentTime, findClipAtTime, stopAllAudio, stopTimeLoop, setPlaying])
+  }, [clips, timelineDuration, setCurrentTime, findClipAtTime, stopAllAudio, stopTimeLoop, setPlaying, getPlaybackPath])
 
   const commitTimelineTime = useCallback(
     (time: number) => {
-      currentTimeRef.current = time
-      setCurrentTime(time)
+      const next = clampTimelineTimeSafe(time)
+      currentTimeRef.current = next
+      setCurrentTime(next)
     },
-    [setCurrentTime]
+    [setCurrentTime, clampTimelineTimeSafe]
   )
 
   // Time update loop — more responsive than 'timeupdate' event
@@ -652,19 +741,35 @@ export function useVideoPlayer() {
         syncVideoRate(active.id)
         const range = getClipRange(active)
         if (!range) return
-        const time = video.currentTime
+        const rawTime = Number.isFinite(video.currentTime) ? video.currentTime : range.trimEnd
+        let time = rawTime
+        const last = lastVideoClockRef.current
+        const wrappedToStart =
+          !!last &&
+          last.clipId === active.id &&
+          rawTime + 0.25 < last.mediaTime &&
+          timelineTime > range.start + 0.5
+        if (wrappedToStart) {
+          // Some containers/codecs may silently wrap to 0 instead of firing a stable ended state.
+          // Treat it as reached trim end to avoid endless restart loop.
+          time = range.trimEnd
+        }
+        lastVideoClockRef.current = { clipId: active.id, mediaTime: Math.max(0, time) }
 
         if (time >= range.trimEnd) {
-          const nextTime = range.end + 0.0001
+          const nextTime = timelineTime + delta
           const nextActive = findClipAtTime(nextTime)
-          if (nextActive && nextActive.track === 'video') {
-            commitTimelineTime(nextTime)
-            seekVideo(nextActive, nextTime, true)
-            syncAudio(nextTime, true)
-            animFrameRef.current = requestAnimationFrame(tick)
+          if (!nextActive) {
+            // End of timeline: stop loop immediately to avoid pause/play/seek flicker.
+            const endTime = timelineDuration > 0 ? Math.max(0, timelineDuration - 0.0001) : 0
+            commitTimelineTime(endTime)
+            setPlaying(false)
+            playingRef.current = false
+            stopAllAudio()
+            stopTimeLoop()
             return
           }
-          // No next clip at this time; keep moving through the gap
+          // Keep timeline moving linearly when there is still content ahead.
           video.pause()
           commitTimelineTime(nextTime)
           syncAudio(nextTime, true)
@@ -680,22 +785,15 @@ export function useVideoPlayer() {
       }
 
       if (active && active.track === 'audio') {
+        lastVideoClockRef.current = null
         const range = getClipRange(active)
         if (!range) return
         const pitchPercent = getPitchForClip(active.id)
         const nextTime = timelineTime + delta
         if (nextTime >= range.end - 0.0001) {
-          const nextSeek = range.end + 0.0001
-          const nextActive = findClipAtTime(nextSeek)
-          if (nextActive) {
-            commitTimelineTime(nextSeek)
-            syncAudio(nextSeek, true)
-            animFrameRef.current = requestAnimationFrame(tick)
-            return
-          }
-          // No next clip at this time; continue through gap
-          commitTimelineTime(nextSeek)
-          syncAudio(nextSeek, true)
+          // Keep timeline moving linearly; do not jump over gaps.
+          commitTimelineTime(nextTime)
+          syncAudio(nextTime, true)
           animFrameRef.current = requestAnimationFrame(tick)
           return
         }
@@ -706,6 +804,7 @@ export function useVideoPlayer() {
       }
 
       const nextTime = timelineTime + delta
+      lastVideoClockRef.current = null
       commitTimelineTime(nextTime)
       syncAudio(nextTime, true)
       animFrameRef.current = requestAnimationFrame(tick)
@@ -816,9 +915,19 @@ export function useVideoPlayer() {
       const active = findClipAtTime(currentTimeRef.current)
       if (active) {
         setClipDuration(active.id, video.duration)
+        if (active.track === 'video') {
+          const targetTime = timelineTimeToMediaTime(active, operationsByClip, currentTimeRef.current)
+          if (Number.isFinite(targetTime)) {
+            video.currentTime = targetTime
+          }
+        }
       }
       if (pendingSeekRef.current !== null) {
         video.currentTime = pendingSeekRef.current
+        lastVideoClockRef.current = {
+          clipId: active?.id || '',
+          mediaTime: pendingSeekRef.current
+        }
         pendingSeekRef.current = null
         if (pendingAutoPlayRef.current) {
           pendingAutoPlayRef.current = false
@@ -828,21 +937,44 @@ export function useVideoPlayer() {
         }
       }
     }
-  }, [findClipAtTime, setClipDuration, setPlaying, startTimeLoop])
+  }, [findClipAtTime, setClipDuration, setPlaying, startTimeLoop, operationsByClip])
+
+  // Keep paused video frame in sync when source/clip changes.
+  useEffect(() => {
+    if (playingRef.current) return
+    const active = findClipAtTime(currentTimeRef.current)
+    if (!active || active.track !== 'video') return
+    seekVideoForTime(active, currentTimeRef.current, false)
+  }, [clips, operationsByClip, currentTime, findClipAtTime, seekVideoForTime])
 
   // Handle video ended
   const onEnded = useCallback(() => {
-    if (!selectedClip) return
-    const range = getClipRange(selectedClip)
+    const active = findClipAtTime(currentTimeRef.current)
+    if (!active || active.track !== 'video') return
+    const range = getClipRange(active)
     if (!range) return
     const safeEnd = timelineDuration > 0 ? Math.max(0, timelineDuration - 0.0001) : 0
     const target = Math.min(range.end, safeEnd)
+    lastVideoClockRef.current = { clipId: active.id, mediaTime: range.trimEnd }
     setCurrentTime(target)
+    const nextClip = findClipAtTime(target + 0.001) || findNextClipAfter(target + 0.001)
+    if (!nextClip) {
+      setPlaying(false)
+      playingRef.current = false
+      stopAllAudio()
+      stopTimeLoop()
+      syncAudioForTime(target, false)
+      return
+    }
     syncAudioForTime(target, true)
   }, [
+    findClipAtTime,
+    findNextClipAfter,
     getClipRange,
-    selectedClip,
     setCurrentTime,
+    setPlaying,
+    stopAllAudio,
+    stopTimeLoop,
     syncAudioForTime,
     timelineDuration
   ])

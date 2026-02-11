@@ -13,6 +13,7 @@ interface ParamSliderProps {
   max: number
   step: number
   unit?: string
+  showInput?: boolean
   disabled?: boolean
   onChange: (value: number) => void
   /** Format value for display in the number input */
@@ -28,6 +29,7 @@ const ParamSlider: React.FC<ParamSliderProps> = ({
   max,
   step,
   unit = '',
+  showInput = true,
   disabled = false,
   onChange,
   formatValue,
@@ -76,25 +78,26 @@ const ParamSlider: React.FC<ParamSliderProps> = ({
 
   return (
     <div className={`flex flex-col gap-1.5 ${disabled ? 'opacity-40 pointer-events-none' : ''}`}>
-      <div className="flex items-center justify-between">
-        <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">
-          {label}
-        </label>
-        <div className="flex items-center gap-1">
-          <input
-            type="text"
-            className="w-16 px-1.5 py-0.5 text-xs text-right font-mono bg-surface border border-surface-border rounded
-                       text-text-primary focus:border-accent transition-colors"
-            value={editing ? inputValue : displayValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            onFocus={handleInputFocus}
-            onBlur={handleInputBlur}
-            onKeyDown={handleInputKeyDown}
-            disabled={disabled}
-          />
-          {unit && <span className="text-xs text-text-muted">{unit}</span>}
+      {(showInput || label) && (
+        <div className="flex items-center justify-between">
+          {label ? <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">{label}</label> : <span />}
+          {showInput && (
+            <div className="flex items-center gap-1">
+              <input
+                type="text"
+                className="ui-input w-16 text-right font-mono text-xs"
+                value={editing ? inputValue : displayValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                onFocus={handleInputFocus}
+                onBlur={handleInputBlur}
+                onKeyDown={handleInputKeyDown}
+                disabled={disabled}
+              />
+              {unit && <span className="text-xs text-text-muted">{unit}</span>}
+            </div>
+          )}
         </div>
-      </div>
+      )}
       <div className="relative">
         <input
           type="range"

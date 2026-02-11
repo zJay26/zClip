@@ -22,6 +22,7 @@ import TimelineTrackHeader from './TimelineTrackHeader'
 import TimelineClipBlock from './TimelineClipBlock'
 import TimelinePlayhead from './TimelinePlayhead'
 import type { TrimParams } from '../../../../shared/types'
+import { Badge, Button, Panel } from '../ui'
 
 interface TimelineProps {
   seekTo: (time: number) => void
@@ -45,6 +46,7 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
     removeAudioTrack,
     splitClipAtPlayhead,
     mergeSelectedClips,
+    getMergeSelectionState,
     selectedClipIds
   } = useProjectStore()
 
@@ -133,6 +135,11 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
     }
   }, [selectedClipId, clips, operationsByClip])
 
+  const mergeSelectionState = useMemo(
+    () => getMergeSelectionState(),
+    [getMergeSelectionState, clips, selectedClipId, selectedClipIds]
+  )
+
   if (timelineDuration <= 0) return null
 
   const handleWheelWithLock = useCallback(
@@ -148,7 +155,7 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
   )
 
   return (
-    <div className="flex flex-col bg-surface-light rounded-lg border border-surface-border overflow-hidden">
+    <Panel className="flex flex-col bg-panel overflow-hidden">
       {/* Main area: header + scrollable tracks */}
       <div className="flex">
         {/* Left: Track headers */}
@@ -293,9 +300,9 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
       </div>
 
       {/* Bottom toolbar */}
-      <div className="flex items-center gap-3 px-3 py-1.5 border-t border-surface-border bg-surface-light">
+      <div className="flex items-center gap-2 px-3 py-2 border-t border-border bg-panel">
         {/* Zoom controls */}
-        <span className="text-[10px] text-text-muted uppercase tracking-wider font-mono">缩放</span>
+        <Badge className="uppercase tracking-wider font-mono">缩放</Badge>
         <input
           type="range"
           min={MIN_ZOOM * 0.5}
@@ -306,45 +313,37 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
           className="w-20 accent-accent"
         />
         {/* Zoom to fit */}
-        <button
-          onClick={zoomToFit}
-          className="px-2 py-0.5 text-[10px] text-text-muted hover:text-text-secondary
-                     border border-surface-border rounded hover:bg-surface-lighter transition-colors"
-          title="适配全部"
-        >
+        <Button onClick={zoomToFit} size="sm" variant="secondary" className="text-[10px]" title="适配全部">
           适配
-        </button>
+        </Button>
 
         {/* Separator */}
         <div className="w-px h-3 bg-surface-border" />
 
         {/* Razor / Split button */}
-        <button
-          onClick={splitClipAtPlayhead}
-          className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-text-muted hover:text-text-secondary
-                     border border-surface-border rounded hover:bg-surface-lighter transition-colors"
-          title="在播放头位置分割 (C)"
-        >
+        <Button onClick={splitClipAtPlayhead} size="sm" variant="secondary" className="text-[10px]" title="在播放头位置分割 (C)">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <line x1="12" y1="2" x2="12" y2="22" />
             <path d="M4 12h4M16 12h4" />
           </svg>
           分割
-        </button>
+        </Button>
 
         {/* Merge button */}
-        <button
+        <Button
           onClick={mergeSelectedClips}
-          className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-text-muted hover:text-text-secondary
-                     border border-surface-border rounded hover:bg-surface-lighter transition-colors"
-          title={selectedClipIds.length >= 2 ? '合并所选片段' : '选择至少两段以合并'}
+          disabled={!mergeSelectionState.canMerge}
+          size="sm"
+          variant={mergeSelectionState.canMerge ? 'primary' : 'secondary'}
+          className="text-[10px]"
+          title={mergeSelectionState.canMerge ? '合并所选片段' : (mergeSelectionState.disabledReason || '当前选区不可合并')}
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M8 3v6a4 4 0 0 0 4 4h4" />
             <path d="M16 21v-6a4 4 0 0 0-4-4H8" />
           </svg>
           合并
-        </button>
+        </Button>
 
         <div className="flex-1" />
 
@@ -357,13 +356,13 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
         {selectedClipTrimInfo && (
           <>
             <div className="w-px h-3 bg-surface-border" />
-            <span className="text-[10px] font-mono text-text-muted">
+            <span className="text-[10px] font-mono text-text-muted px-1">
               入点/出点: {formatTime(selectedClipTrimInfo.trimStart)} – {formatTime(selectedClipTrimInfo.trimEnd)}
             </span>
           </>
         )}
       </div>
-    </div>
+    </Panel>
   )
 }
 
