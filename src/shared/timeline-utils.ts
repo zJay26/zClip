@@ -83,7 +83,8 @@ export function mediaTimeToTimelineTime(
   mediaTime: number
 ): number {
   const range = getClipTimelineRange(clip, operationsByClip)
-  return range.start + (mediaTime - range.trimStart) / range.speedRate
+  const clampedMedia = Math.min(range.trimEnd, Math.max(range.trimStart, mediaTime))
+  return range.start + (clampedMedia - range.trimStart) / range.speedRate
 }
 
 export function getTimelineDuration(

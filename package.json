@@ -1,6 +1,6 @@
 {
   "name": "zClip",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "极简 Windows 视频剪辑工具",
   "main": "./out/main/index.js",
   "scripts": {

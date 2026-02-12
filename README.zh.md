@@ -9,12 +9,18 @@ zClip 是一个面向 Windows 的本地视频剪辑工具，强调「上手快�
 
 项目基于 Electron + React 构建，使用 FFmpeg 进行媒体解析与导出，适合快速裁剪、拼接和导出常见视频/音频素材。
 
-## 下载
-
-> 当前仓库版本：`2.0.0`
+## 演示
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.0.0/zClip.Setup.2.0.0.exe">
+  <img src="./docs/demo/demo.webp" alt="zClip 演示" />
+</p>
+
+## 下载
+
+> 当前仓库版本：`2.1.0`
+
+<p align="center">
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.1.0/zClip.Setup.2.1.0.exe">
     <img src="https://img.shields.io/badge/Download_for_Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white" alt="Download for Windows"/>
   </a>
 </p>
@@ -41,7 +47,7 @@ zClip 目前未进行商业代码签名，首次下载运行时 Windows 可能�
 - 常用编辑能力：分割、复制/剪切/粘贴、删除、撤销/重做
 - 参数调整：片段裁剪（Trim）、倍速（0.1x~16x）、音量（0%~1000%）、音调（25%~400%）
 - 导出能力：
-  - 视频格式：`mp4` / `mov` / `mkv` / `webm`
+  - 视频格式：`mp4` / `mov` / `mkv` / `webm` / `gif` / `webp`
   - 音频格式：`mp3` / `wav` / `flac` / `aac` / `opus`
   - 分辨率档位：`original` / `1080p` / `720p` / `480p`
   - 质量档位：`high` / `medium` / `low`

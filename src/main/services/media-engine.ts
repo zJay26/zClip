@@ -10,7 +10,8 @@ import type {
   SpeedParams,
   VolumeParams,
   PitchParams,
-  ExportFormat
+  ExportFormat,
+  GifLoopMode
 } from '../../shared/types'
 import { probe } from './ffmpeg'
 
@@ -71,10 +72,18 @@ export function buildFFmpegArgs(
   outputPath: string,
   operations: MediaOperation[],
   mediaInfo: MediaInfo,
-  options: { crf?: number; resolution?: { w: number; h: number } | null; format: ExportFormat }
+  options: {
+    crf?: number
+    resolution?: { w: number; h: number } | null
+    format: ExportFormat
+    gifLoop?: GifLoopMode
+  }
 ): string[] {
   const enabledOps = operations.filter((op) => op.enabled)
   const audioOnlyFormat = isAudioFormat(options.format)
+  const gifFormat = options.format === 'gif'
+  const webpFormat = options.format === 'webp'
+  const animatedImageFormat = gifFormat || webpFormat
 
   // Extract each operation type
   const trim = enabledOps.find((op) => op.type === 'trim')
@@ -145,16 +154,33 @@ export function buildFFmpegArgs(
   }
 
   // Apply filter chains
-  if (vFilters.length > 0 && mediaInfo.hasVideo && !audioOnlyFormat) {
+  if (vFilters.length > 0 && mediaInfo.hasVideo && !audioOnlyFormat && !animatedImageFormat) {
     args.push('-vf', vFilters.join(','))
   }
-  if (aFilters.length > 0 && mediaInfo.hasAudio) {
+  if (aFilters.length > 0 && mediaInfo.hasAudio && !animatedImageFormat) {
     args.push('-af', aFilters.join(','))
   }
 
   // --- Output options ---
   if (!audioOnlyFormat && mediaInfo.hasVideo) {
-    if (options.format === 'webm') {
+    if (gifFormat) {
+      const gifFilters = [...vFilters, `fps=${getGifFps(mediaInfo.fps)}`]
+      args.push(
+        '-filter_complex',
+        `[0:v]${gifFilters.join(',')},split[g0][g1];[g0]palettegen=stats_mode=diff[pal];[g1][pal]paletteuse=dither=sierra2_4a[vout]`
+      )
+      args.push('-map', '[vout]')
+      args.push('-loop', options.gifLoop === 'once' ? '1' : '0')
+    } else if (webpFormat) {
+      const webpFilters = [...vFilters, `fps=${getGifFps(mediaInfo.fps)}`]
+      args.push('-vf', webpFilters.join(','))
+      args.push('-loop', options.gifLoop === 'once' ? '1' : '0')
+      // Use libwebp for broader FFmpeg compatibility across bundled builds.
+      args.push('-c:v', 'libwebp')
+      args.push('-lossless', '0')
+      args.push('-quality', String(mapWebpQuality(options.crf ?? 23)))
+      args.push('-compression_level', '6')
+    } else if (options.format === 'webm') {
       args.push('-c:v', 'libvpx-vp9')
       args.push('-b:v', '0')
       args.push('-crf', String(mapVp9Crf(options.crf ?? 23)))
@@ -167,7 +193,9 @@ export function buildFFmpegArgs(
     args.push('-vn')
   }
 
-  if (mediaInfo.hasAudio) {
+  if (animatedImageFormat) {
+    args.push('-an')
+  } else if (mediaInfo.hasAudio) {
     const audioArgs = getAudioCodecArgs(options.format)
     args.push(...audioArgs)
   } else {
@@ -232,4 +260,15 @@ function getAudioCodecArgs(format: ExportFormat): string[] {
 function mapVp9Crf(x264Crf: number): number {
   const vp9 = Math.round(x264Crf + 10)
   return Math.max(0, Math.min(63, vp9))
+}
+
+function mapWebpQuality(x264Crf: number): number {
+  // x264 CRF lower means better quality. WebP quality is inverse in [0,100].
+  const q = Math.round(100 - (x264Crf - 18) * 2.5)
+  return Math.max(35, Math.min(95, q))
+}
+
+function getGifFps(inputFps: number): number {
+  if (!Number.isFinite(inputFps) || inputFps <= 0) return 15
+  return Math.max(5, Math.min(20, Math.round(inputFps)))
 }

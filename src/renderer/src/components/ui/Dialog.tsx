@@ -12,8 +12,12 @@ interface DialogProps {
 const Dialog: React.FC<DialogProps> = ({ open, title, children, onClose, className }) => {
   if (!open) return null
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" role="dialog" aria-modal="true">
-      <div className={cx('ui-dialog-surface w-[460px] max-w-[92vw]', className)}>
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-4 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div className={cx('ui-dialog-surface my-4 w-[460px] max-h-[calc(100vh-2rem)] max-w-[92vw] overflow-y-auto', className)}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-text-primary">{title}</h2>
           {onClose && (

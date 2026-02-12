@@ -9,12 +9,18 @@ This project is open-sourced under the MIT license. Feel free to use it and buil
 
 zClip is built with Electron + React and uses FFmpeg for media analysis and export. It is designed for quickly trimming, assembling, and exporting common video/audio assets.
 
-## Download
-
-> Current release in this repo: `2.0.0`
+## Demo
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.0.0/zClip.Setup.2.0.0.exe">
+  <img src="./docs/demo/demo.webp" alt="zClip demo" />
+</p>
+
+## Download
+
+> Current release in this repo: `2.1.0`
+
+<p align="center">
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.1.0/zClip.Setup.2.1.0.exe">
     <img src="https://img.shields.io/badge/Download_for_Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white" alt="Download for Windows"/>
   </a>
 </p>
@@ -41,7 +47,7 @@ If you want to add "Open with zClip" to the first-level right-click menu on Wind
 - Common editing tools: split, copy/cut/paste, delete, undo/redo
 - Parameter controls: trim, speed (0.1x~16x), volume (0%~1000%), pitch (25%~400%)
 - Export options:
-  - Video formats: `mp4` / `mov` / `mkv` / `webm`
+  - Video formats: `mp4` / `mov` / `mkv` / `webm` / `gif` / `webp`
   - Audio formats: `mp3` / `wav` / `flac` / `aac` / `opus`
   - Resolution presets: `original` / `1080p` / `720p` / `480p`
   - Quality presets: `high` / `medium` / `low`

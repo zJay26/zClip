@@ -9,17 +9,6 @@ import { formatTime } from '../../lib/utils'
 import { getClipTimelineRange } from '../../../../shared/timeline-utils'
 import { Badge, Button, Panel } from '../ui'
 
-function toMediaURL(filePath: string): string {
-  // Windows: C:\path → file:///C:/path
-  // Unix: /path → file:///path
-  const normalizedPath = filePath.replace(/\\/g, '/')
-  const url = normalizedPath.startsWith('/') 
-    ? 'file://' + normalizedPath 
-    : 'file:///' + normalizedPath
-  
-  return url
-}
-
 interface VideoPreviewProps {
   videoRef: React.RefObject<HTMLVideoElement>
   onLoadedMetadata: () => void
@@ -56,7 +45,6 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
     }) || null
 
   const sourceFile = activeVideoClip?.filePath ?? null
-  const playbackPath = activeVideoClip?.mediaInfo?.playbackPath || sourceFile
   const mediaInfo = activeVideoClip?.mediaInfo ?? null
   const pixelFormat = mediaInfo?.pixelFormat || ''
   const playbackProxyFailed = mediaInfo?.playbackProxyFailed
@@ -132,7 +120,6 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
           /* Video: normal <video> element */
           <video
             ref={videoRef}
-            src={toMediaURL(playbackPath || sourceFile || '')}
             className="max-w-full max-h-full object-contain"
             onLoadedMetadata={onLoadedMetadata}
             onEnded={onEnded}

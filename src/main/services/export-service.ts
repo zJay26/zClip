@@ -36,6 +36,82 @@ const CRF_MAP: Record<string, number> = {
 }
 
 let currentExportProcess: ChildProcess | null = null
+const ETA_HISTORY_SIZE = 6
+
+function formatEta(seconds: number): string {
+  const safe = Math.max(0, Math.round(seconds))
+  if (safe <= 0) return '即将完成'
+  const hours = Math.floor(safe / 3600)
+  const minutes = Math.floor((safe % 3600) / 60)
+  const secs = safe % 60
+
+  if (hours > 0) {
+    return `${hours}小时${minutes}分${secs}秒`
+  }
+  if (minutes > 0) {
+    return `${minutes}分${secs}秒`
+  }
+  return `${secs}秒`
+}
+
+function calcEtaFromMediaRate(totalDuration: number, currentTime: number, elapsed: number): number | null {
+  if (!Number.isFinite(totalDuration) || totalDuration <= 0) return null
+  if (!Number.isFinite(currentTime) || currentTime <= 0.05) return null
+  if (!Number.isFinite(elapsed) || elapsed <= 0.3) return null
+
+  const mediaPerSecond = currentTime / elapsed
+  if (!Number.isFinite(mediaPerSecond) || mediaPerSecond <= 0) return null
+
+  const remaining = Math.max(0, totalDuration - currentTime)
+  if (remaining <= 0.2) return 0
+  const eta = remaining / mediaPerSecond
+  return Number.isFinite(eta) ? eta : null
+}
+
+function calcEtaFromPercent(percent: number, elapsed: number): number | null {
+  if (!Number.isFinite(percent) || percent <= 0.05 || percent >= 100) return null
+  if (!Number.isFinite(elapsed) || elapsed <= 0.3) return null
+  const eta = elapsed * (100 - percent) / percent
+  return Number.isFinite(eta) ? eta : null
+}
+
+function clampEta(etaSeconds: number | null): number | null {
+  if (etaSeconds === null) return null
+  if (!Number.isFinite(etaSeconds) || etaSeconds < 0 || etaSeconds > 604800) return null
+  return etaSeconds
+}
+
+function smoothEta(history: number[], etaSeconds: number): number {
+  history.push(etaSeconds)
+  if (history.length > ETA_HISTORY_SIZE) {
+    history.shift()
+  }
+  const sorted = [...history].sort((a, b) => a - b)
+  return sorted[Math.floor(sorted.length / 2)]
+}
+
+function buildEta(
+  totalDuration: number,
+  currentTime: number,
+  startedAt: number,
+  percent: number,
+  etaHistory: number[],
+  lastEtaRef: { value: string }
+): string {
+  if (percent >= 99.6) return '即将完成'
+  const elapsed = (Date.now() - startedAt) / 1000
+
+  const etaPrimary = clampEta(calcEtaFromMediaRate(totalDuration, currentTime, elapsed))
+  const etaFallback = clampEta(calcEtaFromPercent(percent, elapsed))
+  const etaRaw = etaPrimary ?? etaFallback
+  if (etaRaw === null) return lastEtaRef.value
+
+  const etaStable = smoothEta(etaHistory, etaRaw)
+  if (etaStable <= 1.2) return '即将完成'
+  const etaText = formatEta(etaStable)
+  lastEtaRef.value = etaText
+  return etaText
+}
 
 /**
  * Start an export job. Progress is sent to the renderer via IPC events.
@@ -48,6 +124,9 @@ export async function startExport(
 ): Promise<void> {
   const resolution = RESOLUTION_MAP[exportOptions.resolution]
   const crf = CRF_MAP[exportOptions.quality] ?? 23
+  const startedAt = Date.now()
+  const etaHistory: number[] = []
+  const lastEtaRef = { value: '' }
 
   // Calculate effective duration for progress tracking
   const duration = getVisibleDurationFromOps(mediaInfo.duration, operations)
@@ -57,16 +136,17 @@ export async function startExport(
     exportOptions.outputPath,
     operations,
     mediaInfo,
-    { crf, resolution, format: exportOptions.format }
+    { crf, resolution, format: exportOptions.format, gifLoop: exportOptions.gifLoop }
   )
 
   const onProgress = (progress: FFmpegProgress): void => {
     if (!win.isDestroyed()) {
+      const normalizedPercent = Math.round(progress.percent * 100) / 100
       win.webContents.send(IPC_CHANNELS.EXPORT_PROGRESS, {
-        percent: Math.round(progress.percent * 100) / 100,
+        percent: normalizedPercent,
         currentTime: progress.time,
         speed: progress.speed,
-        eta: ''
+        eta: buildEta(duration, progress.time, startedAt, normalizedPercent, etaHistory, lastEtaRef)
       })
     }
   }
@@ -103,6 +183,9 @@ export async function startTimelineExport(
 ): Promise<void> {
   const resolution = RESOLUTION_MAP[exportOptions.resolution]
   const crf = CRF_MAP[exportOptions.quality] ?? 23
+  const startedAt = Date.now()
+  const etaHistory: number[] = []
+  const lastEtaRef = { value: '' }
 
   const videoClips = clips.filter((clip) => clip.track === 'video' && clip.mediaInfo.hasVideo)
   const audioClips = clips.filter((clip) => clip.track === 'audio' && clip.mediaInfo.hasAudio)
@@ -117,16 +200,18 @@ export async function startTimelineExport(
     outputSize,
     timelineDuration,
     crf,
-    exportOptions.format
+    exportOptions.format,
+    exportOptions.gifLoop
   )
 
   const onProgress = (progress: FFmpegProgress): void => {
     if (!win.isDestroyed()) {
+      const normalizedPercent = Math.round(progress.percent * 100) / 100
       win.webContents.send(IPC_CHANNELS.EXPORT_PROGRESS, {
-        percent: Math.round(progress.percent * 100) / 100,
+        percent: normalizedPercent,
         currentTime: progress.time,
         speed: progress.speed,
-        eta: ''
+        eta: buildEta(timelineDuration, progress.time, startedAt, normalizedPercent, etaHistory, lastEtaRef)
       })
     }
   }
@@ -175,10 +260,14 @@ function buildTimelineFFmpegArgs(
   outputSize: { w: number; h: number } | null,
   timelineDuration: number,
   crf: number,
-  format: ExportOptions['format']
+  format: ExportOptions['format'],
+  gifLoop?: ExportOptions['gifLoop']
 ): string[] {
   const args: string[] = ['-y']
   const audioOnlyFormat = isAudioFormat(format)
+  const gifFormat = format === 'gif'
+  const webpFormat = format === 'webp'
+  const animatedImageFormat = gifFormat || webpFormat
 
   const inputs: TimelineClip[] = [...clips]
   inputs.forEach((clip) => {
@@ -215,7 +304,7 @@ function buildTimelineFFmpegArgs(
       videoLabels.push({ label: `v${index}`, trackIndex: clip.trackIndex, startTime: clip.startTime })
     }
 
-    if (clip.track === 'audio' && clip.mediaInfo.hasAudio) {
+    if (!animatedImageFormat && clip.track === 'audio' && clip.mediaInfo.hasAudio) {
       const aFilters: string[] = []
       aFilters.push(`atrim=start=${trimStart}:end=${trimEnd}`)
       aFilters.push('asetpts=PTS-STARTPTS')
@@ -270,6 +359,18 @@ function buildTimelineFFmpegArgs(
     videoOutLabel = current
   }
 
+  if (gifFormat && videoOutLabel) {
+    const gifFps = getTimelineAnimatedImageFps(clips)
+    filterParts.push(
+      `[${videoOutLabel}]fps=${gifFps},split[g0][g1];[g0]palettegen=stats_mode=diff[pal];[g1][pal]paletteuse=dither=sierra2_4a[gifout]`
+    )
+    videoOutLabel = 'gifout'
+  } else if (webpFormat && videoOutLabel) {
+    const webpFps = getTimelineAnimatedImageFps(clips)
+    filterParts.push(`[${videoOutLabel}]fps=${webpFps}[webpout]`)
+    videoOutLabel = 'webpout'
+  }
+
   let audioOutLabel = ''
   if (audioLabels.length > 0) {
     if (audioLabels.length === 1) {
@@ -302,7 +403,13 @@ function buildTimelineFFmpegArgs(
 
   if (videoOutLabel) {
     args.push('-map', `[${videoOutLabel}]`)
-    if (format === 'webm') {
+    if (animatedImageFormat) {
+      args.push('-loop', gifLoop === 'once' ? '1' : '0')
+      if (webpFormat) {
+        // Use libwebp for broader FFmpeg compatibility across bundled builds.
+        args.push('-c:v', 'libwebp', '-lossless', '0', '-quality', String(mapWebpQuality(crf)), '-compression_level', '6')
+      }
+    } else if (format === 'webm') {
       args.push('-c:v', 'libvpx-vp9', '-b:v', '0', '-crf', String(mapVp9Crf(crf)))
     } else {
       args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', String(crf))
@@ -311,7 +418,9 @@ function buildTimelineFFmpegArgs(
     args.push('-vn')
   }
 
-  if (audioOutLabel) {
+  if (animatedImageFormat) {
+    args.push('-an')
+  } else if (audioOutLabel) {
     args.push('-map', `[${audioOutLabel}]`)
     args.push(...getAudioCodecArgs(format))
   } else {
@@ -380,4 +489,19 @@ function getAudioCodecArgs(format: ExportOptions['format']): string[] {
 function mapVp9Crf(x264Crf: number): number {
   const vp9 = Math.round(x264Crf + 10)
   return Math.max(0, Math.min(63, vp9))
+}
+
+function mapWebpQuality(x264Crf: number): number {
+  // x264 CRF lower means better quality. WebP quality is inverse in [0,100].
+  const q = Math.round(100 - (x264Crf - 18) * 2.5)
+  return Math.max(35, Math.min(95, q))
+}
+
+function getTimelineAnimatedImageFps(clips: TimelineClip[]): number {
+  const videoFps = clips
+    .filter((clip) => clip.track === 'video' && clip.mediaInfo.hasVideo)
+    .map((clip) => clip.mediaInfo.fps)
+    .find((fps) => Number.isFinite(fps) && fps > 0)
+  if (!videoFps) return 15
+  return Math.max(5, Math.min(20, Math.round(videoFps)))
 }

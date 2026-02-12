@@ -360,14 +360,12 @@ export function useVideoPlayer() {
             video.play().catch(() => {
               pendingSeekRef.current = localTime
               pendingAutoPlayRef.current = true
-              video.load()
             })
           }
           return
         }
-        if (video.readyState === 0) {
-          video.load()
-        }
+        // Source is already set but metadata is not ready yet.
+        // Avoid calling load() every frame, which can cause decode thrash/flicker.
       }
 
       pendingSeekRef.current = localTime
@@ -757,22 +755,20 @@ export function useVideoPlayer() {
         lastVideoClockRef.current = { clipId: active.id, mediaTime: Math.max(0, time) }
 
         if (time >= range.trimEnd) {
-          const nextTime = timelineTime + delta
-          const nextActive = findClipAtTime(nextTime)
-          if (!nextActive) {
-            // End of timeline: stop loop immediately to avoid pause/play/seek flicker.
-            const endTime = timelineDuration > 0 ? Math.max(0, timelineDuration - 0.0001) : 0
-            commitTimelineTime(endTime)
-            setPlaying(false)
-            playingRef.current = false
-            stopAllAudio()
-            stopTimeLoop()
-            return
-          }
+          const boundaryEpsilon = 0.0005
+          // Ensure we move past current clip boundary, otherwise high-speed playback
+          // can repeatedly re-enter the same tail frame and cause flicker.
+          // Do not carry a potentially large frame delta across clip boundaries,
+          // otherwise we may occasionally skip most of the next clip.
+          const nextTime = range.end + boundaryEpsilon
           // Keep timeline moving linearly when there is still content ahead.
           video.pause()
           commitTimelineTime(nextTime)
           syncAudio(nextTime, true)
+          const nextActive = findClipAtTime(nextTime)
+          if (nextActive && nextActive.track === 'video') {
+            seekVideo(nextActive, nextTime, true)
+          }
           animFrameRef.current = requestAnimationFrame(tick)
           return
         }

@@ -4,11 +4,15 @@
 
 import { useEffect, useCallback, useRef } from 'react'
 import { useProjectStore } from '../stores/project-store'
-import type { ExportOptions, ResolutionPreset, QualityPreset, ExportFormat } from '../../../shared/types'
+import type { ExportOptions, ResolutionPreset, QualityPreset, ExportFormat, GifLoopMode } from '../../../shared/types'
 
 interface UseExportOptions {
   /** 导出成功后的回调（用于关闭弹窗等） */
   onComplete?: () => void
+}
+
+function isAnimatedImageFormat(format: ExportFormat): boolean {
+  return format === 'gif' || format === 'webp'
 }
 
 export function useExport(opts?: UseExportOptions) {
@@ -56,7 +60,12 @@ export function useExport(opts?: UseExportOptions) {
   }, [setExporting, setExportProgress, showToast])
 
   const startExport = useCallback(
-    async (resolution: ResolutionPreset, quality: QualityPreset, format: ExportFormat) => {
+    async (
+      resolution: ResolutionPreset,
+      quality: QualityPreset,
+      format: ExportFormat,
+      gifLoop: GifLoopMode = 'infinite'
+    ) => {
       if (!mediaInfo && clips.length === 0) return
 
       // Ask user where to save
@@ -71,7 +80,8 @@ export function useExport(opts?: UseExportOptions) {
         format,
         resolution,
         quality,
-        outputPath
+        outputPath,
+        gifLoop: isAnimatedImageFormat(format) ? gifLoop : undefined
       }
 
       setExporting(true)

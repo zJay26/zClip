@@ -82,26 +82,47 @@ export function runFFmpeg(
 
   const promise = new Promise<void>((resolve, reject) => {
     let stderr = ''
+    let lastTime = 0
+    let lastSpeed = '0x'
 
     proc.stderr?.on('data', (data: Buffer) => {
-      const line = data.toString()
-      stderr += line
+      const chunk = data.toString()
+      stderr += chunk
 
-      // Parse progress: "time=00:01:23.45"
-      if (onProgress && durationSeconds > 0) {
-        const timeMatch = line.match(/time=(\d+):(\d+):(\d+\.\d+)/)
-        if (timeMatch) {
-          const hours = parseFloat(timeMatch[1])
-          const minutes = parseFloat(timeMatch[2])
-          const seconds = parseFloat(timeMatch[3])
-          const currentTime = hours * 3600 + minutes * 60 + seconds
-          const percent = Math.min(100, (currentTime / durationSeconds) * 100)
+      if (!onProgress || durationSeconds <= 0) return
 
-          const speedMatch = line.match(/speed=\s*([\d.]+)x/)
-          const speed = speedMatch ? `${speedMatch[1]}x` : '0x'
+      const timeRegex = /time=\s*(\d+):(\d+):(\d+(?:\.\d+)?)/g
+      const speedRegex = /speed=\s*(\d+(?:\.\d+)?)x/gi
 
-          onProgress({ percent, time: currentTime, speed })
+      let timeMatch: RegExpExecArray | null = null
+      let latestTimeMatch: RegExpExecArray | null = null
+      while ((timeMatch = timeRegex.exec(chunk)) !== null) {
+        latestTimeMatch = timeMatch
+      }
+
+      let speedMatch: RegExpExecArray | null = null
+      let latestSpeedMatch: RegExpExecArray | null = null
+      while ((speedMatch = speedRegex.exec(chunk)) !== null) {
+        latestSpeedMatch = speedMatch
+      }
+
+      if (latestTimeMatch) {
+        const hours = Number(latestTimeMatch[1])
+        const minutes = Number(latestTimeMatch[2])
+        const seconds = Number(latestTimeMatch[3])
+        const parsedTime = hours * 3600 + minutes * 60 + seconds
+        if (Number.isFinite(parsedTime) && parsedTime >= 0) {
+          lastTime = parsedTime
         }
+      }
+
+      if (latestSpeedMatch) {
+        lastSpeed = `${latestSpeedMatch[1]}x`
+      }
+
+      if (lastTime > 0) {
+        const percent = Math.min(100, (lastTime / durationSeconds) * 100)
+        onProgress({ percent, time: lastTime, speed: lastSpeed })
       }
     })
 

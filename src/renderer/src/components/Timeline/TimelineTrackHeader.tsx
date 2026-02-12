@@ -14,6 +14,26 @@ interface TimelineTrackHeaderProps {
   removeAudioTrack: () => void
 }
 
+interface TrackActionButtonProps {
+  onClick: () => void
+  title: string
+  type: 'add' | 'remove'
+}
+
+const TrackActionButton: React.FC<TrackActionButtonProps> = ({ onClick, title, type }) => (
+  <button
+    className="relative w-5 h-5 rounded text-text-muted hover:text-text-secondary hover:bg-surface-lighter transition-colors"
+    onClick={onClick}
+    title={title}
+    aria-label={title}
+  >
+    <span className="absolute left-1/2 top-1/2 w-2.5 h-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-current" />
+    {type === 'add' && (
+      <span className="absolute left-1/2 top-1/2 w-0.5 h-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-current" />
+    )}
+  </button>
+)
+
 const TimelineTrackHeader: React.FC<TimelineTrackHeaderProps> = ({
   videoTrackCount,
   audioTrackCount,
@@ -54,22 +74,8 @@ const TimelineTrackHeader: React.FC<TimelineTrackHeaderProps> = ({
             </span>
             {i === videoTrackCount - 1 && (
               <div className="flex items-center gap-0.5">
-                <button
-                  className="w-4 h-4 flex items-center justify-center rounded text-[11px]
-                             text-text-muted hover:text-text-secondary hover:bg-surface-lighter transition-colors"
-                  onClick={removeVideoTrack}
-                  title="减少画面轨道"
-                >
-                  -
-                </button>
-                <button
-                  className="w-4 h-4 flex items-center justify-center rounded text-[11px]
-                             text-text-muted hover:text-text-secondary hover:bg-surface-lighter transition-colors"
-                  onClick={addVideoTrack}
-                  title="增加画面轨道"
-                >
-                  +
-                </button>
+                <TrackActionButton onClick={removeVideoTrack} title="减少画面轨道" type="remove" />
+                <TrackActionButton onClick={addVideoTrack} title="增加画面轨道" type="add" />
               </div>
             )}
           </div>
@@ -97,22 +103,8 @@ const TimelineTrackHeader: React.FC<TimelineTrackHeaderProps> = ({
             </span>
             {i === audioTrackCount - 1 && (
               <div className="flex items-center gap-0.5">
-                <button
-                  className="w-4 h-4 flex items-center justify-center rounded text-[11px]
-                             text-text-muted hover:text-text-secondary hover:bg-surface-lighter transition-colors"
-                  onClick={removeAudioTrack}
-                  title="减少音频轨道"
-                >
-                  -
-                </button>
-                <button
-                  className="w-4 h-4 flex items-center justify-center rounded text-[11px]
-                             text-text-muted hover:text-text-secondary hover:bg-surface-lighter transition-colors"
-                  onClick={addAudioTrack}
-                  title="增加音频轨道"
-                >
-                  +
-                </button>
+                <TrackActionButton onClick={removeAudioTrack} title="减少音频轨道" type="remove" />
+                <TrackActionButton onClick={addAudioTrack} title="增加音频轨道" type="add" />
               </div>
             )}
           </div>

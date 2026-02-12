@@ -16,7 +16,7 @@ export function registerExportHandlers(): void {
     const result = await dialog.showSaveDialog(win, {
       defaultPath: defaultName,
       filters: [
-        { name: '视频文件', extensions: ['mp4', 'mov', 'mkv', 'webm'] },
+        { name: '视频文件', extensions: ['mp4', 'mov', 'mkv', 'webm', 'gif', 'webp'] },
         { name: '音频文件', extensions: ['mp3', 'wav', 'flac', 'aac', 'opus'] },
         { name: '所有文件', extensions: ['*'] }
       ]

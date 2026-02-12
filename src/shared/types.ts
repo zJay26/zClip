@@ -88,13 +88,17 @@ export interface TimelinePreviewResult {
 export type ResolutionPreset = 'original' | '1080p' | '720p' | '480p'
 export type QualityPreset = 'high' | 'medium' | 'low'
 
-export type ExportFormat = 'mp4' | 'mov' | 'mkv' | 'webm' | 'mp3' | 'wav' | 'flac' | 'aac' | 'opus'
+export type ExportFormat = 'mp4' | 'mov' | 'mkv' | 'webm' | 'gif' | 'webp' | 'mp3' | 'wav' | 'flac' | 'aac' | 'opus'
+export type AnimatedLoopMode = 'infinite' | 'once'
+export type GifLoopMode = AnimatedLoopMode
 
 export interface ExportOptions {
   format: ExportFormat
   resolution: ResolutionPreset
   quality: QualityPreset
   outputPath: string
+  /** 循环模式：用于 gif/webp 等动图格式 */
+  gifLoop?: AnimatedLoopMode
 }
 
 export interface TimelineExportPayload {
