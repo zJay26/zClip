@@ -1,5 +1,9 @@
 # zClip
 
+<p align="center">
+  <img src="./docs/icon/zClip.png" alt="zClip icon" width="96" />
+</p>
+
 [English README](./README.md)
 
 zClip 是一个面向 Windows 的本地视频剪辑工具，强调「上手快、流程短、离线处理」。

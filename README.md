@@ -1,5 +1,9 @@
 # zClip
 
+<p align="center">
+  <img src="./docs/icon/zClip.png" alt="zClip icon" width="96" />
+</p>
+
 [简体中文](./README.zh.md)
 
 zClip is a local video editor for Windows, focused on a fast learning curve, short workflows, and fully offline processing.
