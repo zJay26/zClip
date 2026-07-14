@@ -84,8 +84,8 @@ If you want to add "Open with zClip" to the first-level right-click menu on Wind
 
 ## Requirements
 
-- Node.js 18+ (LTS recommended)
-- npm 9+
+- Node.js 22.12+
+- npm 10+
 - Windows 10/11 (primary target platform)
 
 ## Quick Start

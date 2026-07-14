@@ -11,48 +11,14 @@ import type {
   VolumeParams,
   PitchParams,
   ExportFormat,
-  GifLoopMode
+  GifLoopMode,
+  ExportOptions,
+  H264Preset
 } from '../../shared/types'
 import { probe } from './ffmpeg'
-
-/**
- * Parse ffprobe output into our MediaInfo structure
- */
-export function parseMediaInfo(probeData: Record<string, unknown>, filePath: string): MediaInfo {
-  const format = probeData.format as Record<string, unknown>
-  const streams = probeData.streams as Record<string, unknown>[]
-
-  const videoStream = streams?.find((s) => s.codec_type === 'video')
-  const audioStream = streams?.find((s) => s.codec_type === 'audio')
-
-  // Parse FPS from "30/1" or "30000/1001" format
-  let fps = 30
-  if (videoStream?.r_frame_rate) {
-    const parts = (videoStream.r_frame_rate as string).split('/')
-    if (parts.length === 2) {
-      fps = Math.round((parseFloat(parts[0]) / parseFloat(parts[1])) * 100) / 100
-    }
-  }
-
-  const hasVideo = !!videoStream && (videoStream.width as number) > 0
-  const hasAudio = !!audioStream
-
-  return {
-    duration: parseFloat(format?.duration as string) || 0,
-    containerFormat: (format?.format_name as string) || '',
-    width: (videoStream?.width as number) || 0,
-    height: (videoStream?.height as number) || 0,
-    fps: hasVideo ? fps : 0,
-    videoCodec: (videoStream?.codec_name as string) || '',
-    pixelFormat: (videoStream?.pix_fmt as string) || '',
-    audioCodec: (audioStream?.codec_name as string) || '',
-    sampleRate: parseInt(audioStream?.sample_rate as string) || 44100,
-    fileSize: parseInt(format?.size as string) || 0,
-    filePath,
-    hasVideo,
-    hasAudio
-  }
-}
+import { buildAudioAdjustmentFilters } from './audio-filters'
+import { parseMediaInfo } from '../../shared/media-info-utils'
+export { parseMediaInfo }
 
 /**
  * Probe a media file and return structured info
@@ -60,6 +26,62 @@ export function parseMediaInfo(probeData: Record<string, unknown>, filePath: str
 export async function getMediaInfo(filePath: string): Promise<MediaInfo> {
   const data = await probe(filePath)
   return parseMediaInfo(data, filePath)
+}
+
+export interface ResolvedExportEncodingOptions {
+  crf: number
+  h264Preset: H264Preset
+  videoBitrateKbps?: number
+  audioBitrateKbps?: number
+  animatedFps?: number
+}
+
+/** Quality preset -> CRF value (lower = better quality, larger file) */
+const CRF_MAP: Record<string, number> = {
+  high: 18,
+  medium: 23,
+  low: 28
+}
+
+const H264_PRESETS = new Set<H264Preset>([
+  'ultrafast',
+  'superfast',
+  'veryfast',
+  'faster',
+  'fast',
+  'medium',
+  'slow',
+  'slower',
+  'veryslow'
+])
+
+function clampInt(value: unknown, min: number, max: number): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
+  return Math.max(min, Math.min(max, Math.round(value)))
+}
+
+function resolveH264Preset(value: unknown): H264Preset {
+  return typeof value === 'string' && H264_PRESETS.has(value as H264Preset)
+    ? (value as H264Preset)
+    : 'medium'
+}
+
+export function resolveExportEncodingOptions(options: ExportOptions): ResolvedExportEncodingOptions {
+  if (options.quality !== 'custom') {
+    return {
+      crf: CRF_MAP[options.quality] ?? 23,
+      h264Preset: 'medium'
+    }
+  }
+
+  const custom = options.customOptions ?? {}
+  return {
+    crf: clampInt(custom.crf, 0, 51) ?? 23,
+    h264Preset: resolveH264Preset(custom.h264Preset),
+    videoBitrateKbps: clampInt(custom.videoBitrateKbps, 64, 200000),
+    audioBitrateKbps: clampInt(custom.audioBitrateKbps, 32, 512),
+    animatedFps: clampInt(custom.animatedFps, 1, 60)
+  }
 }
 
 /**
@@ -74,6 +96,10 @@ export function buildFFmpegArgs(
   mediaInfo: MediaInfo,
   options: {
     crf?: number
+    h264Preset?: H264Preset
+    videoBitrateKbps?: number
+    audioBitrateKbps?: number
+    animatedFps?: number
     resolution?: { w: number; h: number } | null
     format: ExportFormat
     gifLoop?: GifLoopMode
@@ -84,6 +110,7 @@ export function buildFFmpegArgs(
   const gifFormat = options.format === 'gif'
   const webpFormat = options.format === 'webp'
   const animatedImageFormat = gifFormat || webpFormat
+  const crf = options.crf ?? 23
 
   // Extract each operation type
   const trim = enabledOps.find((op) => op.type === 'trim')
@@ -121,37 +148,12 @@ export function buildFFmpegArgs(
   // --- Build audio filter chain ---
   const aFilters: string[] = []
 
-  if (speed) {
-    const { rate } = speed.params as SpeedParams
-    aFilters.push(...buildTempoChain(rate))
-  }
-
-  if (volume) {
-    const { percent } = volume.params as VolumeParams
-    const gain = Math.max(0, percent / 100)
-    aFilters.push(`volume=${gain.toFixed(4)}`)
-  }
-
-  if (pitch) {
-    const { percent } = pitch.params as PitchParams
-    if (percent !== 100) {
-      // Pitch shift via asetrate + aresample
-      const ratio = Math.max(0.01, percent / 100)
-      const originalRate = mediaInfo.sampleRate || 44100
-      const newRate = Math.round(originalRate * ratio)
-      aFilters.push(`asetrate=${newRate}`)
-      aFilters.push(`aresample=${originalRate}`)
-
-      // If also changing speed, we need to compensate for pitch's tempo change
-      // asetrate changes both pitch and tempo, so we undo the tempo part
-      if (!speed) {
-        // Compensate tempo change: play at 1/ratio speed to restore original tempo
-        const compensate = 1 / ratio
-        // atempo only supports 0.5-2.0, chain if needed
-        aFilters.push(...buildTempoChain(compensate))
-      }
-    }
-  }
+  aFilters.push(...buildAudioAdjustmentFilters({
+    speedRate: speed ? (speed.params as SpeedParams).rate : 1,
+    volumePercent: volume ? (volume.params as VolumeParams).percent : undefined,
+    pitchPercent: pitch ? (pitch.params as PitchParams).percent : undefined,
+    sampleRate: mediaInfo.sampleRate
+  }))
 
   // Apply filter chains
   if (vFilters.length > 0 && mediaInfo.hasVideo && !audioOnlyFormat && !animatedImageFormat) {
@@ -164,7 +166,7 @@ export function buildFFmpegArgs(
   // --- Output options ---
   if (!audioOnlyFormat && mediaInfo.hasVideo) {
     if (gifFormat) {
-      const gifFilters = [...vFilters, `fps=${getGifFps(mediaInfo.fps)}`]
+      const gifFilters = [...vFilters, `fps=${getGifFps(mediaInfo.fps, options.animatedFps)}`]
       args.push(
         '-filter_complex',
         `[0:v]${gifFilters.join(',')},split[g0][g1];[g0]palettegen=stats_mode=diff[pal];[g1][pal]paletteuse=dither=sierra2_4a[vout]`
@@ -172,22 +174,30 @@ export function buildFFmpegArgs(
       args.push('-map', '[vout]')
       args.push('-loop', options.gifLoop === 'once' ? '1' : '0')
     } else if (webpFormat) {
-      const webpFilters = [...vFilters, `fps=${getGifFps(mediaInfo.fps)}`]
+      const webpFilters = [...vFilters, `fps=${getGifFps(mediaInfo.fps, options.animatedFps)}`]
       args.push('-vf', webpFilters.join(','))
       args.push('-loop', options.gifLoop === 'once' ? '1' : '0')
       // Use libwebp for broader FFmpeg compatibility across bundled builds.
       args.push('-c:v', 'libwebp')
       args.push('-lossless', '0')
-      args.push('-quality', String(mapWebpQuality(options.crf ?? 23)))
+      args.push('-quality', String(mapWebpQuality(crf)))
       args.push('-compression_level', '6')
     } else if (options.format === 'webm') {
       args.push('-c:v', 'libvpx-vp9')
-      args.push('-b:v', '0')
-      args.push('-crf', String(mapVp9Crf(options.crf ?? 23)))
+      if (options.videoBitrateKbps) {
+        args.push('-b:v', `${options.videoBitrateKbps}k`)
+      } else {
+        args.push('-b:v', '0')
+        args.push('-crf', String(mapVp9Crf(crf)))
+      }
     } else {
       args.push('-c:v', 'libx264')
-      args.push('-preset', 'medium')
-      args.push('-crf', String(options.crf ?? 23))
+      args.push('-preset', options.h264Preset ?? 'medium')
+      if (options.videoBitrateKbps) {
+        args.push('-b:v', `${options.videoBitrateKbps}k`)
+      } else {
+        args.push('-crf', String(crf))
+      }
     }
   } else {
     args.push('-vn')
@@ -196,7 +206,7 @@ export function buildFFmpegArgs(
   if (animatedImageFormat) {
     args.push('-an')
   } else if (mediaInfo.hasAudio) {
-    const audioArgs = getAudioCodecArgs(options.format)
+    const audioArgs = getAudioCodecArgs(options.format, options.audioBitrateKbps)
     args.push(...audioArgs)
   } else {
     args.push('-an')
@@ -210,50 +220,29 @@ export function buildFFmpegArgs(
   return args
 }
 
-/**
- * Build a chain of atempo filters to achieve arbitrary tempo change.
- * atempo only supports 0.5–2.0, so we chain multiple for larger ranges.
- */
-function buildTempoChain(targetTempo: number): string[] {
-  const filters: string[] = []
-  let remaining = targetTempo
-
-  while (remaining < 0.5 || remaining > 2.0) {
-    if (remaining < 0.5) {
-      filters.push('atempo=0.5')
-      remaining /= 0.5
-    } else {
-      filters.push('atempo=2.0')
-      remaining /= 2.0
-    }
-  }
-
-  filters.push(`atempo=${remaining.toFixed(4)}`)
-  return filters
-}
-
 function isAudioFormat(format: ExportFormat): boolean {
   return ['mp3', 'wav', 'flac', 'aac', 'opus'].includes(format)
 }
 
-function getAudioCodecArgs(format: ExportFormat): string[] {
+function getAudioCodecArgs(format: ExportFormat, audioBitrateKbps?: number): string[] {
+  const bitrate = audioBitrateKbps ? `${audioBitrateKbps}k` : undefined
   switch (format) {
     case 'mp3':
-      return ['-c:a', 'libmp3lame', '-b:a', '192k']
+      return ['-c:a', 'libmp3lame', '-b:a', bitrate ?? '192k']
     case 'wav':
       return ['-c:a', 'pcm_s16le']
     case 'flac':
       return ['-c:a', 'flac']
     case 'opus':
-      return ['-c:a', 'libopus', '-b:a', '160k']
+      return ['-c:a', 'libopus', '-b:a', bitrate ?? '160k']
     case 'webm':
-      return ['-c:a', 'libopus', '-b:a', '160k']
+      return ['-c:a', 'libopus', '-b:a', bitrate ?? '160k']
     case 'aac':
     case 'mp4':
     case 'mov':
     case 'mkv':
     default:
-      return ['-c:a', 'aac', '-b:a', '192k']
+      return ['-c:a', 'aac', '-b:a', bitrate ?? '192k']
   }
 }
 
@@ -268,7 +257,8 @@ function mapWebpQuality(x264Crf: number): number {
   return Math.max(35, Math.min(95, q))
 }
 
-function getGifFps(inputFps: number): number {
+function getGifFps(inputFps: number, customFps?: number): number {
+  if (customFps) return Math.max(1, Math.min(60, Math.round(customFps)))
   if (!Number.isFinite(inputFps) || inputFps <= 0) return 15
   return Math.max(5, Math.min(20, Math.round(inputFps)))
 }

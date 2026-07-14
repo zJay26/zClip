@@ -1,17 +1,20 @@
 import React, { useEffect, useState } from 'react'
+import { Clapperboard, Layers3, SlidersHorizontal } from 'lucide-react'
 import TrimControl from '../Controls/TrimControl'
 import SpeedControl from '../Controls/SpeedControl'
 import VolumeControl from '../Controls/VolumeControl'
 import PitchControl from '../Controls/PitchControl'
+import CanvasControl from '../Controls/CanvasControl'
+import TransformControl from '../Controls/TransformControl'
+import FadeControl from '../Controls/FadeControl'
+import TransitionControl from '../Controls/TransitionControl'
+import { InspectorSection, SegmentedControl } from '../ui'
 import { useProjectStore } from '../../stores/project-store'
-import { clamp } from '../../lib/utils'
+import { clamp, formatTime } from '../../lib/utils'
 import type { SpeedParams, VolumeParams, PitchParams } from '../../../../shared/types'
 
-interface CollapsibleItemProps {
-  title: string
-  meta?: React.ReactNode
-  children: React.ReactNode
-}
+type InspectorTab = 'clip' | 'canvas' | 'transitions'
+const INSPECTOR_TAB_KEY = 'zclip.ui.inspector-tab.v1'
 
 interface InlineValueInputProps {
   value: number
@@ -24,28 +27,16 @@ interface InlineValueInputProps {
   onCommit: (value: number) => void
 }
 
-const InlineValueInput: React.FC<InlineValueInputProps> = ({
-  value,
-  unit = '',
-  min,
-  max,
-  step = 1,
-  format,
-  parse,
-  onCommit
-}) => {
+const InlineValueInput: React.FC<InlineValueInputProps> = ({ value, unit = '', min, max, step = 1, format, parse, onCommit }) => {
   const [editing, setEditing] = useState(false)
   const [text, setText] = useState('')
-
   useEffect(() => {
-    if (!editing) {
-      setText(format ? format(value) : String(value))
-    }
+    if (!editing) setText(format ? format(value) : String(value))
   }, [value, editing, format])
 
   const commit = (): void => {
     const raw = parse ? parse(text) : parseFloat(text)
-    if (!isNaN(raw)) {
+    if (!Number.isNaN(raw)) {
       const snapped = step > 0 ? Math.round(raw / step) * step : raw
       onCommit(clamp(snapped, min, max))
     }
@@ -53,60 +44,40 @@ const InlineValueInput: React.FC<InlineValueInputProps> = ({
   }
 
   return (
-    <div
-      className="flex items-center gap-1"
-      onClick={(e) => e.stopPropagation()}
-      onMouseDown={(e) => e.stopPropagation()}
-    >
+    <div className="flex items-center gap-1" onClick={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
       <input
         type="text"
-        className="ui-input w-16 text-right font-mono text-xs py-0.5"
+        className="ui-input h-7 min-h-7 w-16 py-0.5 text-right font-mono text-[11px]"
         value={editing ? text : format ? format(value) : String(value)}
-        onChange={(e) => setText(e.target.value)}
-        onFocus={() => {
-          setEditing(true)
-          setText(format ? format(value) : String(value))
-        }}
+        onChange={(event) => setText(event.target.value)}
+        onFocus={() => { setEditing(true); setText(format ? format(value) : String(value)) }}
         onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') {
-            ;(e.target as HTMLInputElement).blur()
-          }
-          if (e.key === 'Escape') {
-            setEditing(false)
-            setText(format ? format(value) : String(value))
-          }
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') (event.target as HTMLInputElement).blur()
+          if (event.key === 'Escape') { setEditing(false); setText(format ? format(value) : String(value)) }
         }}
       />
-      {unit && <span className="text-xs text-text-muted">{unit}</span>}
+      {unit && <span className="text-[11px] text-text-muted">{unit}</span>}
     </div>
   )
 }
 
-const CollapsibleItem: React.FC<CollapsibleItemProps> = ({ title, meta, children }) => {
-  return (
-    <details className="ui-panel overflow-hidden group">
-      <summary className="list-none cursor-pointer px-3 py-2 text-xs font-semibold text-text-secondary uppercase tracking-wider flex items-center justify-between gap-2">
-        <span>{title}</span>
-        <div className="flex items-center gap-2">
-          {meta}
-          <svg
-            className="w-5 h-5 text-text-muted transition-transform duration-fast collapse-chevron group-open:rotate-180"
-            viewBox="0 0 24 24"
-            fill="currentColor"
-            aria-hidden
-          >
-            <path d="M7 10l5 6 5-6H7z" />
-          </svg>
-        </div>
-      </summary>
-      <div className="p-3 border-t border-border-subtle">{children}</div>
-    </details>
-  )
+function readInitialTab(): InspectorTab {
+  try {
+    const value = window.localStorage.getItem(INSPECTOR_TAB_KEY)
+    return value === 'canvas' || value === 'transitions' ? value : 'clip'
+  } catch {
+    return 'clip'
+  }
 }
 
 const InspectorPanel: React.FC = () => {
-  const { operations, getAudioOperationsForSelection, setSpeed, setVolume, setPitch } = useProjectStore()
+  const {
+    operations, getAudioOperationsForSelection, setSpeed, setVolume, setPitch,
+    selectedClipId, selectedClipIds, clips
+  } = useProjectStore()
+  const [tab, setTab] = useState<InspectorTab>(readInitialTab)
+  const selectedClip = selectedClipId ? clips.find((clip) => clip.id === selectedClipId) ?? null : null
   const speedOp = operations.find((op) => op.type === 'speed')
   const speedRate = speedOp ? (speedOp.params as SpeedParams).rate : 1
   const audioOps = getAudioOperationsForSelection()
@@ -114,63 +85,97 @@ const InspectorPanel: React.FC = () => {
   const pitchOp = audioOps.find((op) => op.type === 'pitch')
   const volumePercent = volumeOp ? (volumeOp.params as VolumeParams).percent : 100
   const pitchPercent = pitchOp ? (pitchOp.params as PitchParams).percent : 100
+  const hasAudio = Boolean(selectedClip?.mediaInfo.hasAudio)
+  const fileName = selectedClip?.filePath.split(/[\\/]/).pop()
+
+  const selectTab = (next: InspectorTab): void => {
+    setTab(next)
+    try { window.localStorage.setItem(INSPECTOR_TAB_KEY, next) } catch { /* best effort */ }
+  }
 
   return (
-    <aside className="w-[310px] shrink-0 border-r border-border bg-panel overflow-y-auto">
-      <div className="p-3 space-y-3">
-        <CollapsibleItem title="片段范围">
-          <TrimControl hideHeader />
-        </CollapsibleItem>
-        <CollapsibleItem
-          title="倍速"
-          meta={
-            <InlineValueInput
-              value={speedRate}
-              unit="x"
-              min={0.1}
-              max={16}
-              step={0.05}
-              format={(v) => v.toFixed(2)}
-              onCommit={setSpeed}
-            />
-          }
-        >
-          <SpeedControl hideHeader />
-        </CollapsibleItem>
-        <CollapsibleItem
-          title="音量"
-          meta={
-            <InlineValueInput
-              value={volumePercent}
-              unit="%"
-              min={0}
-              max={1000}
-              step={1}
-              format={(v) => `${Math.round(v)}`}
-              parse={(text) => parseFloat(text.replace('%', '').trim())}
-              onCommit={setVolume}
-            />
-          }
-        >
-          <VolumeControl hideHeader />
-        </CollapsibleItem>
-        <CollapsibleItem
-          title="音调"
-          meta={
-            <InlineValueInput
-              value={pitchPercent}
-              unit="%"
-              min={25}
-              max={400}
-              step={1}
-              format={(v) => `${Math.round(v)}`}
-              parse={(text) => parseFloat(text.replace('%', '').trim())}
-              onCommit={setPitch}
-            />
-          }
-        >
-          <PitchControl hideHeader />
-        </CollapsibleItem>
+    <aside className="flex h-full w-full shrink-0 flex-col border-l border-border-subtle bg-panel">
+      <div className="border-b border-border-subtle px-3 pb-3 pt-3">
+        <SegmentedControl
+          label="检查器内容"
+          value={tab}
+          onChange={selectTab}
+          options={[
+            { value: 'clip', label: '片段', icon: <SlidersHorizontal aria-hidden size={14} /> },
+            { value: 'canvas', label: '画布', icon: <Layers3 aria-hidden size={14} /> },
+            { value: 'transitions', label: '转场', icon: <Clapperboard aria-hidden size={14} /> }
+          ]}
+        />
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {tab === 'clip' && !selectedClip && (
+          <div className="flex h-full min-h-52 flex-col items-center justify-center px-6 text-center">
+            <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-panel-muted text-text-muted">
+              <SlidersHorizontal aria-hidden size={19} strokeWidth={1.5} />
+            </div>
+            <p className="text-sm font-medium text-text-secondary">选择一个片段</p>
+            <p className="mt-1 text-xs leading-relaxed text-text-muted">片段的画面、时间与声音参数会显示在这里。</p>
+          </div>
+        )}
+
+        {tab === 'clip' && selectedClip && (
+          <>
+            <div className="border-b border-border-subtle px-4 py-3">
+              <p className="truncate text-sm font-semibold tracking-[-0.01em] text-text-primary" title={fileName}>{fileName}</p>
+              <div className="mt-1 flex items-center gap-2 text-[11px] text-text-muted">
+                <span>{selectedClip.track === 'video' ? '视频片段' : '音频片段'}</span>
+                <span aria-hidden>·</span>
+                <span className="font-mono">{formatTime(selectedClip.duration)}</span>
+                {selectedClipIds.length > 1 && <><span aria-hidden>·</span><span>已选 {selectedClipIds.length} 项</span></>}
+              </div>
+            </div>
+            {selectedClip.track === 'video' && (
+              <InspectorSection title="画面">
+                <TransformControl />
+              </InspectorSection>
+            )}
+            <InspectorSection title="时间" meta={<InlineValueInput value={speedRate} unit="x" min={0.1} max={16} step={0.05} format={(value) => value.toFixed(2)} onCommit={setSpeed} />}>
+              <div className="space-y-4">
+                <TrimControl hideHeader />
+                <SpeedControl hideHeader />
+              </div>
+            </InspectorSection>
+            {hasAudio && (
+              <InspectorSection title="声音" meta={<InlineValueInput value={volumePercent} unit="%" min={0} max={1000} format={(value) => `${Math.round(value)}`} parse={(text) => parseFloat(text.replace('%', '').trim())} onCommit={setVolume} />}>
+                <div className="space-y-4">
+                  <VolumeControl hideHeader />
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs font-medium text-text-secondary">音调</span>
+                    <InlineValueInput value={pitchPercent} unit="%" min={25} max={400} format={(value) => `${Math.round(value)}`} onCommit={setPitch} />
+                  </div>
+                  <PitchControl hideHeader />
+                  <FadeControl />
+                </div>
+              </InspectorSection>
+            )}
+          </>
+        )}
+
+        {tab === 'canvas' && (
+          <div className="p-4">
+            <div className="mb-4">
+              <h2 className="text-sm font-semibold text-text-primary">项目画布</h2>
+              <p className="mt-1 text-xs leading-relaxed text-text-muted">设置最终画面的比例、分辨率与背景。</p>
+            </div>
+            <CanvasControl />
+          </div>
+        )}
+
+        {tab === 'transitions' && (
+          <div className="p-4">
+            <div className="mb-4">
+              <h2 className="text-sm font-semibold text-text-primary">转场</h2>
+              <p className="mt-1 text-xs leading-relaxed text-text-muted">拖动一个转场到相邻视频片段的交界处。</p>
+            </div>
+            <TransitionControl />
+          </div>
+        )}
       </div>
     </aside>
   )

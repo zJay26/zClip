@@ -5,10 +5,17 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useProjectStore } from '../../stores/project-store'
-import { formatTime, clamp } from '../../lib/utils'
+import { formatTime, clamp, toMediaUrl } from '../../lib/utils'
 import { TRACK_HEIGHT, TRACK_GAP, HANDLE_WIDTH } from './timeline-constants'
 import type { SnapEngine } from './useSnap'
-import type { TrimParams, TimelineClip, SpeedParams, VolumeParams, PitchParams } from '../../../../shared/types'
+import type {
+  TrimParams,
+  TimelineClip,
+  SpeedParams,
+  VolumeParams,
+  PitchParams,
+  TransformParams
+} from '../../../../shared/types'
 import { getClipTimelineRange } from '../../../../shared/timeline-utils'
 
 interface TimelineClipBlockProps {
@@ -25,10 +32,12 @@ interface TimelineClipBlockProps {
   trackCount: number
   baseTrackTop: number
   onDragStateChange?: (dragging: boolean) => void
+  onClipContextMenu?: (clipId: string, x: number, y: number) => void
 }
 
 type DragMode = 'move' | 'trim-start' | 'trim-end' | null
 const DRAG_EPSILON_SECONDS = 0.0001
+const DRAG_THRESHOLD_PX = 8
 
 const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
   clip,
@@ -43,7 +52,8 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
   trackType,
   trackCount,
   baseTrackTop,
-  onDragStateChange
+  onDragStateChange,
+  onClipContextMenu
 }) => {
   const {
     selectedClipId,
@@ -58,7 +68,8 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
   } = useProjectStore()
 
   const [dragMode, setDragMode] = useState<DragMode>(null)
-  const dragStartRef = useRef({ clientX: 0, startTime: 0, visibleDuration: 0 })
+  const dragStartRef = useRef({ clientX: 0, startTime: 0, visibleDuration: 0, pointerId: -1 })
+  const dragThresholdPassedRef = useRef(false)
   const historyCapturedRef = useRef(false)
   const [dragOriginTime, setDragOriginTime] = useState<number | null>(null)
   const [previewUrls, setPreviewUrls] = useState<{ video?: string; audio?: string }>({})
@@ -82,19 +93,19 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
   // Colors
   const isVideo = trackType === 'video'
   const bgNormal = isVideo
-    ? 'bg-gradient-to-r from-indigo-600/30 to-blue-500/20'
-    : 'bg-gradient-to-r from-emerald-600/30 to-green-500/20'
+    ? 'bg-timeline-video/15'
+    : 'bg-timeline-audio/15'
   const bgSelected = isVideo
-    ? 'bg-gradient-to-r from-indigo-500/50 to-blue-400/35'
-    : 'bg-gradient-to-r from-emerald-500/50 to-green-400/35'
+    ? 'bg-timeline-video/30'
+    : 'bg-timeline-audio/28'
   const borderNormal = isVideo
-    ? 'border-indigo-500/30'
-    : 'border-emerald-500/30'
+    ? 'border-timeline-video/30'
+    : 'border-timeline-audio/30'
   const borderSelected = isVideo
-    ? 'border-indigo-400 shadow-[0_0_8px_rgba(99,102,241,0.3)]'
-    : 'border-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.3)]'
+    ? 'border-timeline-video shadow-[0_0_0_1px_rgb(var(--timeline-video)/0.24),0_8px_18px_rgb(0_0_0/0.24)]'
+    : 'border-timeline-audio shadow-[0_0_0_1px_rgb(var(--timeline-audio)/0.22),0_8px_18px_rgb(0_0_0/0.24)]'
   const textColor = isSelected
-    ? (isVideo ? 'text-indigo-200' : 'text-emerald-200')
+    ? (isVideo ? 'text-blue-100' : 'text-emerald-100')
     : 'text-text-secondary'
 
   const groupClipCount = clips.filter((c) => c.groupId === clip.groupId).length
@@ -110,6 +121,7 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
     const speedOp = opsForClip.find((op) => op.type === 'speed' && op.enabled)
     const volumeOp = opsForClip.find((op) => op.type === 'volume' && op.enabled)
     const pitchOp = opsForClip.find((op) => op.type === 'pitch' && op.enabled)
+    const transformOp = opsForClip.find((op) => op.type === 'transform' && op.enabled)
     const badges: string[] = []
     if (speedOp) {
       badges.push(`速 ${formatRate((speedOp.params as SpeedParams).rate)}`)
@@ -121,6 +133,21 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
     if (pitchOp) {
       const percent = (pitchOp.params as PitchParams).percent
       badges.push(`音调 ${Math.round(percent)}%`)
+    }
+    if (transformOp && isVideo) {
+      const transform = transformOp.params as TransformParams
+      if (
+        transform.fit !== 'contain' ||
+        transform.scale !== 1 ||
+        transform.x !== 0 ||
+        transform.y !== 0 ||
+        transform.rotation !== 0 ||
+        transform.opacity !== 100 ||
+        transform.flipX ||
+        transform.flipY
+      ) {
+        badges.push('构图')
+      }
     }
     return badges
   }
@@ -138,11 +165,6 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
     }
   }, [clip.duration, trimStart, trimEnd, clipWidth])
 
-  const toFileUrl = (filePath: string): string => {
-    const normalized = filePath.replace(/\\/g, '/')
-    return `file:///${encodeURI(normalized)}`
-  }
-
   useEffect(() => {
     let cancelled = false
     const load = async (): Promise<void> => {
@@ -153,8 +175,8 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
       const res = await window.api.getTimelinePreview(clip.filePath, options)
       if (cancelled || !res?.success || !res.data) return
       const next = {
-        video: res.data.videoStripPath ? toFileUrl(res.data.videoStripPath) : undefined,
-        audio: res.data.audioWaveformPath ? toFileUrl(res.data.audioWaveformPath) : undefined
+        video: res.data.videoStripPath ? toMediaUrl(res.data.videoStripPath) : undefined,
+        audio: res.data.audioWaveformPath ? toMediaUrl(res.data.audioWaveformPath) : undefined
       }
       setPreviewUrls(next)
     }
@@ -174,9 +196,22 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
     [selectClip, clip.id]
   )
 
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (!selectedClipIds.includes(clip.id)) {
+        selectClip(clip.id, 'single')
+      }
+      onClipContextMenu?.(clip.id, e.clientX, e.clientY)
+    },
+    [clip.id, onClipContextMenu, selectClip, selectedClipIds]
+  )
+
   // Drag start for move
   const handleMoveStart = useCallback(
-    (e: React.MouseEvent) => {
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.button !== 0) return
       if (e.shiftKey || e.ctrlKey || e.metaKey) return
       // Ignore if near edges (trim handles take priority)
       const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
@@ -185,15 +220,18 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
 
       e.preventDefault()
       e.stopPropagation()
+      e.currentTarget.setPointerCapture(e.pointerId)
       if (!selectedClipIds.includes(clip.id)) {
         selectClip(clip.id, 'single')
       }
       setDragMode('move')
+      dragThresholdPassedRef.current = false
       historyCapturedRef.current = false
       dragStartRef.current = {
         clientX: e.clientX,
         startTime: clip.startTime,
-        visibleDuration
+        visibleDuration,
+        pointerId: e.pointerId
       }
       setDragOriginTime(clip.startTime)
     },
@@ -202,31 +240,36 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
 
   // Drag start for trim
   const handleTrimStart = useCallback(
-    (e: React.MouseEvent, edge: 'trim-start' | 'trim-end') => {
+    (e: React.PointerEvent<HTMLDivElement>, edge: 'trim-start' | 'trim-end') => {
+      if (e.button !== 0) return
       if (e.shiftKey || e.ctrlKey || e.metaKey) return
       e.preventDefault()
       e.stopPropagation()
+      e.currentTarget.setPointerCapture(e.pointerId)
       if (!selectedClipIds.includes(clip.id)) {
         selectClip(clip.id, 'single')
       }
       setDragMode(edge)
+      dragThresholdPassedRef.current = false
       historyCapturedRef.current = false
       dragStartRef.current = {
         clientX: e.clientX,
         startTime: clip.startTime,
-        visibleDuration
+        visibleDuration,
+        pointerId: e.pointerId
       }
       setDragOriginTime(clip.startTime)
     },
     [clip.id, clip.startTime, selectClip, trimStart, trimEnd, selectedClipIds]
   )
 
-  // Global drag handling
-  useEffect(() => {
-    if (!dragMode) return
-
-    const handleMove = (e: MouseEvent): void => {
+  const handlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>): void => {
+      if (!dragMode || e.pointerId !== dragStartRef.current.pointerId) return
       const deltaPx = e.clientX - dragStartRef.current.clientX
+      if (!dragThresholdPassedRef.current) {
+        if (Math.abs(deltaPx) < DRAG_THRESHOLD_PX) return
+        dragThresholdPassedRef.current = true
+      }
       const deltaSec = deltaPx / pixelsPerSecond
 
       if (dragMode === 'move') {
@@ -276,36 +319,20 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
         trimClipEdge(clip.id, 'end', deltaTimeline, { recordHistory })
         historyCapturedRef.current = true
       }
-    }
+    }, [
+      dragMode, pixelsPerSecond, clip.id, clip.startTime, clip.trackIndex, visibleDuration,
+      snap, moveClip, trimClipEdge, containerRect, baseTrackTop, trackCount
+    ])
 
-    const handleUp = (): void => {
+    const finishPointerDrag = useCallback((e: React.PointerEvent<HTMLDivElement>): void => {
+      if (!dragMode || e.pointerId !== dragStartRef.current.pointerId) return
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
       setDragMode(null)
       setDragOriginTime(null)
       historyCapturedRef.current = false
+      dragThresholdPassedRef.current = false
       snap.clearSnapLine()
-    }
-
-    window.addEventListener('mousemove', handleMove)
-    window.addEventListener('mouseup', handleUp)
-    return () => {
-      window.removeEventListener('mousemove', handleMove)
-      window.removeEventListener('mouseup', handleUp)
-    }
-  }, [
-    dragMode,
-    pixelsPerSecond,
-    clip.id,
-    clip.startTime,
-    clip.trackIndex,
-    snap,
-    moveClip,
-    trimClipEdge,
-    containerRect,
-    baseTrackTop,
-    trackCount,
-    trimStart,
-    trimEnd
-  ])
+    }, [dragMode, snap])
 
   useEffect(() => {
     if (!onDragStateChange) return
@@ -318,11 +345,15 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
 
   return (
     <div
-      className={`absolute rounded-sm border overflow-hidden select-none
+      role="button"
+      tabIndex={0}
+      aria-pressed={isSelected}
+      aria-label={`${isVideo ? '视频' : '音频'}片段 ${fileName}，时长 ${formatTime(visibleDuration)}`}
+      className={`absolute overflow-hidden rounded-sm border select-none outline-none focus-visible:ring-2 focus-visible:ring-accent
         ${isSelected ? bgSelected : bgNormal}
         ${isSelected ? borderSelected : borderNormal}
-        ${dragMode === 'move' ? 'opacity-80' : ''}
-        transition-shadow duration-150
+        ${dragMode === 'move' && dragThresholdPassedRef.current ? '-translate-y-0.5 scale-[1.01] opacity-90 shadow-floating' : ''}
+        will-change-transform transition-[transform,box-shadow,opacity] duration-fast
       `}
       style={{
         top: trackTopY,
@@ -332,7 +363,17 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
         zIndex: isPrimary ? 11 : isSelected ? 10 : 5
       }}
       onClick={handleClick}
-      onMouseDown={handleMoveStart}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          selectClip(clip.id, event.shiftKey ? 'range' : 'single')
+        }
+      }}
+      onPointerDown={handleMoveStart}
+      onPointerMove={handlePointerMove}
+      onPointerUp={finishPointerDrag}
+      onPointerCancel={finishPointerDrag}
+      onContextMenu={handleContextMenu}
     >
       {/* Preview layer */}
       {isVideo && previewUrls.video && (
@@ -383,7 +424,7 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
       <div
         className="absolute left-0 top-0 bottom-0 z-10 cursor-ew-resize group"
         style={{ width: HANDLE_WIDTH }}
-        onMouseDown={(e) => handleTrimStart(e, 'trim-start')}
+        onPointerDown={(e) => handleTrimStart(e, 'trim-start')}
       >
         <div className="absolute inset-y-0 left-0 w-[3px] rounded-l-sm
           bg-white/10 group-hover:bg-white/40 transition-colors" />
@@ -398,7 +439,7 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
       <div
         className="absolute right-0 top-0 bottom-0 z-10 cursor-ew-resize group"
         style={{ width: HANDLE_WIDTH }}
-        onMouseDown={(e) => handleTrimStart(e, 'trim-end')}
+        onPointerDown={(e) => handleTrimStart(e, 'trim-end')}
       >
         <div className="absolute inset-y-0 right-0 w-[3px] rounded-r-sm
           bg-white/10 group-hover:bg-white/40 transition-colors" />

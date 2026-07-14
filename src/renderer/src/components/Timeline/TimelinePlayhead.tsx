@@ -2,7 +2,7 @@
 // TimelinePlayhead — 播放头渲染 + 拖拽 + 自动跟随
 // ============================================================
 
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { RULER_HEIGHT } from './timeline-constants'
 
 interface TimelinePlayheadProps {
@@ -30,34 +30,6 @@ const TimelinePlayhead: React.FC<TimelinePlayheadProps> = ({
 }) => {
   const [dragging, setDragging] = useState(false)
   const x = Math.round(timeToX(currentTime))
-
-  // Drag playhead
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-      setDragging(true)
-    },
-    []
-  )
-
-  useEffect(() => {
-    if (!dragging) return
-
-    const handleMove = (e: MouseEvent): void => {
-      if (!containerRect) return
-      const px = e.clientX - containerRect.left + scrollLeft
-      seekTo(xToTime(px))
-    }
-    const handleUp = (): void => setDragging(false)
-
-    window.addEventListener('mousemove', handleMove)
-    window.addEventListener('mouseup', handleUp)
-    return () => {
-      window.removeEventListener('mousemove', handleMove)
-      window.removeEventListener('mouseup', handleUp)
-    }
-  }, [dragging, containerRect, scrollLeft, xToTime, seekTo])
 
   // Auto-follow during playback
   useEffect(() => {
@@ -88,7 +60,13 @@ const TimelinePlayhead: React.FC<TimelinePlayheadProps> = ({
     >
       {/* Drag target (wider than visual) */}
       <div
-        className="absolute pointer-events-auto"
+        className="absolute pointer-events-auto outline-none focus-visible:ring-2 focus-visible:ring-danger"
+        role="slider"
+        tabIndex={0}
+        aria-label="播放头"
+        aria-valuemin={0}
+        aria-valuenow={currentTime}
+        aria-valuetext={`${currentTime.toFixed(2)} 秒`}
         style={{
           left: -8,
           width: 16,
@@ -96,7 +74,29 @@ const TimelinePlayhead: React.FC<TimelinePlayheadProps> = ({
           height: totalHeight,
           cursor: 'col-resize'
         }}
-        onMouseDown={handleMouseDown}
+        onPointerDown={(event) => {
+          if (event.button !== 0) return
+          event.preventDefault()
+          event.stopPropagation()
+          event.currentTarget.setPointerCapture(event.pointerId)
+          setDragging(true)
+        }}
+        onPointerMove={(event) => {
+          if (!dragging || !containerRect) return
+          const px = event.clientX - containerRect.left + scrollLeft
+          seekTo(xToTime(px))
+        }}
+        onPointerUp={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+          setDragging(false)
+        }}
+        onPointerCancel={() => setDragging(false)}
+        onKeyDown={(event) => {
+          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+          event.preventDefault()
+          const secondsPerPixel = Math.abs(xToTime(x + 1) - xToTime(x))
+          seekTo(Math.max(0, currentTime + (event.key === 'ArrowRight' ? 1 : -1) * Math.max(secondsPerPixel, 1 / 30)))
+        }}
       />
 
       {/* Triangle head */}
@@ -109,7 +109,7 @@ const TimelinePlayhead: React.FC<TimelinePlayheadProps> = ({
       >
         <polygon
           points="0,0 12,0 6,10"
-          fill="#ef4444"
+          fill="rgb(var(--danger))"
           filter="drop-shadow(0 1px 2px rgba(0,0,0,0.5))"
         />
       </svg>
@@ -121,8 +121,8 @@ const TimelinePlayhead: React.FC<TimelinePlayheadProps> = ({
           left: 0,
           top: 10,
           height: totalHeight - 10,
-          background: '#ef4444',
-          boxShadow: '0 0 4px rgba(239,68,68,0.4)'
+          background: 'rgb(var(--danger))',
+          boxShadow: '0 0 4px rgb(var(--danger) / 0.42)'
         }}
       />
     </div>

@@ -96,3 +96,35 @@ export function getTimelineDuration(
     return Math.max(max, clip.startTime + duration)
   }, 0)
 }
+
+type VideoOverlayCandidate = Pick<TimelineClip, 'id' | 'trackIndex' | 'startTime'>
+
+/**
+ * Export overlays video clips in this order. Later items render above earlier ones.
+ */
+export function compareVideoOverlayOrder(
+  a: VideoOverlayCandidate,
+  b: VideoOverlayCandidate
+): number {
+  if (a.trackIndex !== b.trackIndex) return a.trackIndex - b.trackIndex
+  if (a.startTime !== b.startTime) return a.startTime - b.startTime
+  return a.id.localeCompare(b.id)
+}
+
+/**
+ * The preview should pick the same clip that export would render last/topmost.
+ */
+export function getTopmostVideoClipAtTime<T extends TimelineClip>(
+  clips: T[],
+  operationsByClip: Record<string, MediaOperation[]>,
+  timelineTime: number
+): T | null {
+  const candidates = clips.filter((clip) => {
+    if (clip.track !== 'video' || !clip.mediaInfo.hasVideo) return false
+    const range = getClipTimelineRange(clip, operationsByClip)
+    if (range.visibleDuration <= 0) return false
+    return timelineTime >= range.start && timelineTime < range.end
+  })
+  if (candidates.length === 0) return null
+  return candidates.sort((a, b) => compareVideoOverlayOrder(b, a))[0]
+}

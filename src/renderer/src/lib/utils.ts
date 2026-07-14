@@ -41,6 +41,52 @@ export function formatFileSize(bytes: number): string {
 }
 
 /**
+ * Convert a local filesystem path into a file URL Chromium can load.
+ * Path segments are encoded individually so #, ?, %, spaces, and non-ASCII
+ * text stay part of the filename instead of being interpreted as URL syntax.
+ */
+export function toMediaUrl(filePath: string): string {
+  const normalizedPath = filePath.replace(/\\/g, '/')
+
+  if (normalizedPath.startsWith('//')) {
+    const [host = '', ...segments] = normalizedPath.slice(2).split('/')
+    return `file://${encodeURIComponent(host)}/${segments.map(encodeURIComponent).join('/')}`
+  }
+
+  const encodedPath = normalizedPath
+    .split('/')
+    .map((segment, index) => (index === 0 && /^[A-Za-z]:$/.test(segment) ? segment : encodeURIComponent(segment)))
+    .join('/')
+
+  return normalizedPath.startsWith('/') ? `file://${encodedPath}` : `file:///${encodedPath}`
+}
+
+/**
+ * Normalize a media URL back to a comparable path-like string.
+ */
+export function mediaUrlToPath(mediaUrl: string): string {
+  try {
+    if (mediaUrl.startsWith('local-media://')) {
+      const rawPath = mediaUrl.replace(/^local-media:\/\//, '')
+      return decodeURIComponent(rawPath.startsWith('/') ? rawPath.slice(1) : rawPath)
+    }
+    if (mediaUrl.startsWith('file://')) {
+      const url = new URL(mediaUrl)
+      const decodedPath = decodeURIComponent(url.pathname)
+      return /^\/[A-Za-z]:/.test(decodedPath) ? decodedPath.slice(1) : decodedPath
+    }
+  } catch {
+    // Fall through to a best-effort string normalization below.
+  }
+
+  try {
+    return decodeURIComponent(mediaUrl)
+  } catch {
+    return mediaUrl
+  }
+}
+
+/**
  * Generate a simple UUID v4
  */
 export function uid(): string {

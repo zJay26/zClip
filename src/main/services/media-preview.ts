@@ -6,9 +6,9 @@ import { app } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
-import { spawn } from 'child_process'
 import { getMediaInfo } from './media-engine'
 import { ffmpegPath } from './ffmpeg'
+import { runMediaJob } from './media-job-manager'
 
 export interface PreviewOptions {
   video?: { height: number; frames: number }
@@ -26,19 +26,6 @@ function hashKey(input: string): string {
 
 async function ensureDir(dir: string): Promise<void> {
   await fs.promises.mkdir(dir, { recursive: true })
-}
-
-async function runFFmpeg(args: string[]): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const proc = spawn(ffmpegPath, args)
-    let stderr = ''
-    proc.stderr.on('data', (data) => { stderr += data.toString() })
-    proc.on('close', (code) => {
-      if (code === 0) resolve()
-      else reject(new Error(`ffmpeg exit ${code}: ${stderr.slice(-400)}`))
-    })
-    proc.on('error', reject)
-  })
 }
 
 export async function getTimelinePreviews(
@@ -74,7 +61,7 @@ export async function getTimelinePreviews(
         `tile=${frames}x1`
       ].join(',')
       const args = ['-y', '-i', filePath, '-vf', filter, '-frames:v', '1', videoPath]
-      await runFFmpeg(args)
+      await runMediaJob(`preview:${videoPath}`, args)
     }
     result.videoStripPath = videoPath
   }
@@ -84,7 +71,7 @@ export async function getTimelinePreviews(
     if (!fs.existsSync(audioPath)) {
       const filter = `[0:a]showwavespic=s=${options.audio.width}x${options.audio.height}:colors=#ffffff@0.6,format=rgba`
       const args = ['-y', '-i', filePath, '-vn', '-filter_complex', filter, '-frames:v', '1', audioPath]
-      await runFFmpeg(args)
+      await runMediaJob(`preview:${audioPath}`, args)
     }
     result.audioWaveformPath = audioPath
   }

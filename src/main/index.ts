@@ -5,6 +5,9 @@ import { pathToFileURL, fileURLToPath } from 'url'
 import { is } from '@electron-toolkit/utils'
 import { registerAllHandlers } from './ipc'
 import { IPC_CHANNELS } from '../shared/types'
+import { authorizeMediaPaths, isMediaPathAuthorized } from './security/media-access'
+import { enforceCachePolicies } from './services/cache-manager'
+import { cancelAllMediaJobs } from './services/media-job-manager'
 
 let mainWindow: BrowserWindow | null = null
 const pendingOpenFiles: string[] = []
@@ -110,8 +113,8 @@ protocol.registerSchemesAsPrivileged([
       secure: true,
       supportFetchAPI: true,
       stream: true,
-      corsEnabled: true,
-      bypassCSP: true
+      corsEnabled: false,
+      bypassCSP: false
     }
   }
 ])
@@ -123,14 +126,14 @@ function createWindow(): void {
     minWidth: 960,
     minHeight: 640,
     show: false,
-    backgroundColor: '#1a1a2e',
+    backgroundColor: '#0a0c10',
     titleBarStyle: 'default',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false,
+      sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
-      webSecurity: false
+      webSecurity: true
     }
   })
 
@@ -145,9 +148,25 @@ function createWindow(): void {
     sendOpenFiles(uniqueFiles)
   })
 
-  // Open external links in browser
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const rendererUrl = process.env['ELECTRON_RENDERER_URL']
+    const productionRendererUrl = pathToFileURL(join(__dirname, '../renderer/index.html')).href
+    const isAllowed = is.dev && rendererUrl ? url.startsWith(rendererUrl) : url === productionRendererUrl
+    if (!isAllowed) event.preventDefault()
+  })
+
+  mainWindow.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => {
+    callback(false)
+  })
+
+  // Open safe external links in browser
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    try {
+      const url = new URL(details.url)
+      if (url.protocol === 'https:') void shell.openExternal(url.href)
+    } catch {
+      // Ignore malformed or unsafe external URLs.
+    }
     return { action: 'deny' }
   })
 
@@ -160,13 +179,20 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  void enforceCachePolicies()
   // Register custom protocol to serve local media files safely.
   protocol.handle('local-media', async (request) => {
     try {
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        return new Response('Method not allowed', { status: 405 })
+      }
       // Decode URL manually to handle all edge cases (spaces, special chars)
       // Remove 'local-media:///' prefix
       const rawPath = request.url.replace(/^local-media:\/\//, '')
       const decodedPath = decodeURIComponent(rawPath.startsWith('/') ? rawPath.slice(1) : rawPath)
+      if (!isMediaPathAuthorized(decodedPath)) {
+        return new Response('Media access denied', { status: 403 })
+      }
       const fileUrl = pathToFileURL(decodedPath).href
 
       return await net.fetch(fileUrl, {
@@ -183,6 +209,7 @@ app.whenReady().then(() => {
   registerAllHandlers()
   const initialFiles = extractFilePaths(process.argv)
   if (initialFiles.length > 0) {
+    authorizeMediaPaths(initialFiles)
     pendingOpenFiles.push(...initialFiles)
   }
   createWindow()
@@ -204,6 +231,10 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
   }
+})
+
+app.on('before-quit', () => {
+  cancelAllMediaJobs()
 })
 
 export { mainWindow }

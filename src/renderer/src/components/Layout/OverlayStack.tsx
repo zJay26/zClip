@@ -1,5 +1,7 @@
 import React from 'react'
-import { Badge, Button, Panel } from '../ui'
+import { AnimatePresence, motion } from 'motion/react'
+import { LoaderCircle, Upload } from 'lucide-react'
+import { Toast } from '../ui'
 
 interface ToastState {
   message: string
@@ -15,64 +17,56 @@ interface OverlayStackProps {
   clearToast: () => void
 }
 
-const OverlayStack: React.FC<OverlayStackProps> = ({
-  dragActive,
-  loading,
-  merging,
-  error,
-  toast,
-  clearToast
-}) => {
-  return (
-    <>
+const BlockingStatus: React.FC<{ label: string; strong?: boolean }> = ({ label, strong }) => (
+  <motion.div
+    initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+    className={`fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm ${strong ? 'bg-black/65' : 'bg-black/45'}`}
+  >
+    <motion.div
+      initial={{ opacity: 0, scale: 0.97, y: 6 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.98 }}
+      transition={{ type: 'spring', bounce: 0, duration: 0.32 }}
+      className="ui-material flex min-w-52 items-center gap-3 rounded-lg px-5 py-4"
+      role="status"
+      aria-live="polite"
+    >
+      <LoaderCircle aria-hidden size={19} strokeWidth={1.75} className="animate-spin text-accent-soft" />
+      <span className="text-sm font-medium text-text-primary">{label}</span>
+    </motion.div>
+  </motion.div>
+)
+
+const OverlayStack: React.FC<OverlayStackProps> = ({ dragActive, loading, merging, error, toast, clearToast }) => (
+  <>
+    <AnimatePresence>
       {dragActive && (
-        <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/45 backdrop-blur-sm pointer-events-none">
-          <Panel className="px-5 py-3 border-accent/40">
-            <div className="text-sm text-text-secondary">松开鼠标以导入多个视频/音频</div>
-          </Panel>
-        </div>
+        <motion.div
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          className="pointer-events-none fixed inset-3 z-30 flex items-center justify-center rounded-xl border-2 border-dashed border-accent/65 bg-accent/10 backdrop-blur-sm"
+        >
+          <motion.div initial={{ scale: 0.96, y: 6 }} animate={{ scale: 1, y: 0 }} className="ui-material flex flex-col items-center rounded-lg px-8 py-6 text-center">
+            <Upload aria-hidden size={25} strokeWidth={1.6} className="mb-3 text-accent-soft" />
+            <span className="text-sm font-semibold text-text-primary">松开以导入媒体</span>
+            <span className="mt-1 text-xs text-text-secondary">支持同时导入多个视频或音频文件</span>
+          </motion.div>
+        </motion.div>
       )}
+      {loading && !merging && <BlockingStatus label="正在准备媒体…" />}
+      {merging && <BlockingStatus label="正在合并片段…" strong />}
+    </AnimatePresence>
 
-      {loading && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <Panel className="flex items-center gap-3 px-6 py-4">
-            <span className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-            <span className="text-sm text-text-secondary">加载中...</span>
-          </Panel>
-        </div>
-      )}
-
-      {merging && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 backdrop-blur-sm">
-          <Panel className="flex items-center gap-3 px-6 py-4">
-            <span className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-            <span className="text-sm text-text-secondary">正在合并片段，请稍候...</span>
-          </Panel>
-        </div>
-      )}
-
-      {error && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60]">
-          <Badge tone="danger" className="text-sm px-3 py-1.5">
-            {error}
-          </Badge>
-        </div>
-      )}
-
-      {toast && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60]">
-          <Button
-            variant={toast.type === 'error' ? 'danger' : toast.type === 'success' ? 'primary' : 'secondary'}
-            size="sm"
-            onClick={clearToast}
-            className="!text-sm !px-3 !py-1.5"
-          >
-            {toast.message}
-          </Button>
-        </div>
-      )}
-    </>
-  )
-}
+    <div className="pointer-events-none fixed bottom-4 left-1/2 z-[70] flex -translate-x-1/2 flex-col items-center gap-2">
+      <AnimatePresence mode="popLayout">
+        {error && <div className="pointer-events-auto" key="error"><Toast tone="danger">{error}</Toast></div>}
+        {toast && (
+          <div className="pointer-events-auto" key={`${toast.type}-${toast.message}`}>
+            <Toast tone={toast.type === 'error' ? 'danger' : toast.type === 'success' ? 'success' : 'default'} onClose={clearToast}>
+              {toast.message}
+            </Toast>
+          </div>
+        )}
+      </AnimatePresence>
+    </div>
+  </>
+)
 
 export default OverlayStack

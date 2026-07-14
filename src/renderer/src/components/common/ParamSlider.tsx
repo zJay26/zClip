@@ -3,8 +3,10 @@
 // 所有参数控制面板的基础组件
 // ============================================================
 
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useRef } from 'react'
 import { clamp } from '../../lib/utils'
+import { useProjectStore } from '../../stores/project-store'
+import type { HistoryEditOptions } from '../../stores/project-store-types'
 
 interface ParamSliderProps {
   label: string
@@ -15,7 +17,7 @@ interface ParamSliderProps {
   unit?: string
   showInput?: boolean
   disabled?: boolean
-  onChange: (value: number) => void
+  onChange: (value: number, options?: HistoryEditOptions) => void
   /** Format value for display in the number input */
   formatValue?: (value: number) => string
   /** Parse display string back to number */
@@ -37,15 +39,68 @@ const ParamSlider: React.FC<ParamSliderProps> = ({
 }) => {
   const [inputValue, setInputValue] = useState('')
   const [editing, setEditing] = useState(false)
+  const draggingRef = useRef(false)
+  const beginHistoryTransaction = useProjectStore((state) => state.beginHistoryTransaction)
+  const commitHistoryTransaction = useProjectStore((state) => state.commitHistoryTransaction)
 
   const displayValue = formatValue ? formatValue(value) : value.toFixed(step < 1 ? (step < 0.1 ? 2 : 1) : 0)
 
   const handleSliderChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const val = parseFloat(e.target.value)
-      onChange(clamp(val, min, max))
+      onChange(clamp(val, min, max), {
+        recordHistory: !draggingRef.current
+      })
     },
     [onChange, min, max]
+  )
+
+  const beginContinuousChange = useCallback(() => {
+    if (disabled || draggingRef.current) return
+    draggingRef.current = true
+    beginHistoryTransaction()
+  }, [beginHistoryTransaction, disabled])
+
+  const endContinuousChange = useCallback(() => {
+    if (!draggingRef.current) return
+    draggingRef.current = false
+    commitHistoryTransaction()
+  }, [commitHistoryTransaction])
+
+  const handleSliderPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLInputElement>) => {
+      beginContinuousChange()
+      e.currentTarget.setPointerCapture?.(e.pointerId)
+    },
+    [beginContinuousChange]
+  )
+
+  const handleSliderPointerUp = useCallback(
+    (e: React.PointerEvent<HTMLInputElement>) => {
+      endContinuousChange()
+      if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId)
+      }
+    },
+    [endContinuousChange]
+  )
+
+  const handleSliderKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) {
+        beginContinuousChange()
+      }
+    },
+    [beginContinuousChange]
+  )
+
+  const handleSliderKeyUp = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) {
+        endContinuousChange()
+      }
+    },
+    [endContinuousChange]
   )
 
   const handleInputFocus = useCallback(() => {
@@ -106,6 +161,12 @@ const ParamSlider: React.FC<ParamSliderProps> = ({
           step={step}
           value={value}
           onChange={handleSliderChange}
+          onPointerDown={handleSliderPointerDown}
+          onPointerUp={handleSliderPointerUp}
+          onPointerCancel={endContinuousChange}
+          onBlur={endContinuousChange}
+          onKeyDown={handleSliderKeyDown}
+          onKeyUp={handleSliderKeyUp}
           disabled={disabled}
           className="w-full"
           style={{

@@ -24,6 +24,17 @@ export default defineConfig({
     plugins: [react()],
     css: {
       postcss: resolve('.')
+    },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            react: ['react', 'react-dom'],
+            state: ['zustand'],
+            audio: ['soundtouchjs']
+          }
+        }
+      }
     }
   }
 })

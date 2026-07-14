@@ -23,26 +23,45 @@ exports[`UI primitives visual baseline > badge tones render stable classes 1`] =
 exports[`UI primitives visual baseline > button variants render stable classes 1`] = `
 <div>
   <button
-    class="ui-btn-primary px-3 py-1.5 text-xs"
+    class="ui-btn-primary min-h-8 px-3 py-1.5 text-xs"
+    type="button"
   >
-    Primary
+    <span
+      class="min-w-0 truncate"
+    >
+      Primary
+    </span>
   </button>
   <button
-    class="ui-btn px-3 py-1.5 text-xs"
+    class="ui-btn min-h-8 px-3 py-1.5 text-xs"
+    type="button"
   >
-    Secondary
+    <span
+      class="min-w-0 truncate"
+    >
+      Secondary
+    </span>
   </button>
   <button
-    class="ui-btn ui-btn-danger px-3 py-1.5 text-xs"
+    class="ui-btn ui-btn-danger min-h-8 px-3 py-1.5 text-xs"
+    type="button"
   >
-    Danger
+    <span
+      class="min-w-0 truncate"
+    >
+      Danger
+    </span>
   </button>
 </div>
 `;
 
 exports[`UI primitives visual baseline > progress bar width reflects percent 1`] = `
 <div
+  aria-valuemax="100"
+  aria-valuemin="0"
+  aria-valuenow="63"
   class="w-full h-2 bg-panel-muted rounded-full overflow-hidden border border-border-subtle"
+  role="progressbar"
 >
   <div
     class="h-full bg-accent rounded-full transition-all duration-300 ease-out"

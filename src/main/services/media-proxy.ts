@@ -6,9 +6,9 @@ import { app } from 'electron'
 import fs from 'fs'
 import path from 'path'
 import crypto from 'crypto'
-import { spawn } from 'child_process'
 import type { MediaInfo } from '../../shared/types'
 import { ffmpegPath } from './ffmpeg'
+import { runMediaJob } from './media-job-manager'
 
 const SUPPORTED_VIDEO_CODECS = new Set([
   'h264',
@@ -41,19 +41,6 @@ function hashKey(input: string): string {
 
 async function ensureDir(dir: string): Promise<void> {
   await fs.promises.mkdir(dir, { recursive: true })
-}
-
-async function runFFmpeg(args: string[]): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const proc = spawn(ffmpegPath, args)
-    let stderr = ''
-    proc.stderr.on('data', (data) => { stderr += data.toString() })
-    proc.on('close', (code) => {
-      if (code === 0) resolve()
-      else reject(new Error(`ffmpeg exit ${code}: ${stderr.slice(-400)}`))
-    })
-    proc.on('error', reject)
-  })
 }
 
 function needsProxy(filePath: string, info: MediaInfo): boolean {
@@ -111,7 +98,15 @@ export async function ensurePlaybackPath(
       '-movflags', '+faststart',
       proxyPath
     ]
-    await runFFmpeg(args)
+    const tempPath = `${proxyPath}.${process.pid}.tmp.mp4`
+    args[args.length - 1] = tempPath
+    try {
+      await runMediaJob(`proxy:${proxyPath}`, args)
+      await fs.promises.rename(tempPath, proxyPath)
+    } catch (error) {
+      await fs.promises.unlink(tempPath).catch(() => {})
+      throw error
+    }
   }
 
   return { playbackPath: proxyPath, isProxy: true }

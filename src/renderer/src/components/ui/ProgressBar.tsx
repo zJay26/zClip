@@ -9,7 +9,13 @@ interface ProgressBarProps {
 const ProgressBar: React.FC<ProgressBarProps> = ({ value, className }) => {
   const percent = clamp(value, 0, 100)
   return (
-    <div className={cx('w-full h-2 bg-panel-muted rounded-full overflow-hidden border border-border-subtle', className)}>
+    <div
+      className={cx('w-full h-2 bg-panel-muted rounded-full overflow-hidden border border-border-subtle', className)}
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(percent)}
+    >
       <div
         className="h-full bg-accent rounded-full transition-all duration-300 ease-out"
         style={{ width: `${percent}%` }}

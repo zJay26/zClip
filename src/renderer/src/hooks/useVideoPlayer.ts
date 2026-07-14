@@ -4,57 +4,22 @@
 
 import { useRef, useEffect, useCallback } from 'react'
 import { useProjectStore } from '../stores/project-store'
-import type { SpeedParams, VolumeParams, PitchParams, TimelineClip } from '../../../shared/types'
-import { PitchShifter } from 'soundtouchjs'
+import type { TimelineClip } from '../../../shared/types'
 import {
   getClipTimelineRange,
+  getTopmostVideoClipAtTime,
   getSpeedRate,
   mediaTimeToTimelineTime,
   timelineTimeToMediaTime
 } from '../../../shared/timeline-utils'
+import { mediaUrlToPath, toMediaUrl } from '../lib/utils'
+import { useAudioPlaybackEngine } from './useAudioPlaybackEngine'
 
 export function useVideoPlayer() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const animFrameRef = useRef<number>(0)
   const pendingSeekRef = useRef<number | null>(null)
   const pendingAutoPlayRef = useRef(false)
-  const audioContextRef = useRef<AudioContext | null>(null)
-  const audioPipelinesRef = useRef<
-    Map<
-      string,
-      {
-        buffer: AudioBuffer
-        shifter: PitchShifter
-        gain: GainNode
-        connected: boolean
-      }
-    >
-  >(new Map())
-  const audioElementRef = useRef<Map<string, HTMLAudioElement>>(new Map())
-  const audioElementPipelinesRef = useRef<
-    Map<
-      string,
-      {
-        audio: HTMLAudioElement
-        source: MediaElementAudioSourceNode
-        gain: GainNode
-        connected: boolean
-      }
-    >
-  >(new Map())
-  const audioLoadingRef = useRef<Map<string, Promise<void>>>(new Map())
-  const lastTimelineTimeRef = useRef<Map<string, number>>(new Map())
-  const lastAudioParamsRef = useRef<
-    Map<
-      string,
-      {
-        speedRate: number
-        pitchPercent: number
-        volumePercent: number
-        useProcessed: boolean
-      }
-    >
-  >(new Map())
   const syncAudioRef = useRef<((time: number, shouldPlay: boolean) => void) | null>(null)
   const seekVideoRef = useRef<
     ((clip: NonNullable<typeof selectedClip>, timelineTime: number, autoPlay: boolean) => void) | null
@@ -70,8 +35,8 @@ export function useVideoPlayer() {
     selectedClipId,
     timelineDuration,
     playing,
-    operations,
     operationsByClip,
+    audioFades,
     currentTime,
     setCurrentTime,
     setPlaying,
@@ -80,9 +45,6 @@ export function useVideoPlayer() {
   } = useProjectStore()
 
   const selectedClip = clips.find((clip) => clip.id === selectedClipId) || null
-  // Get current trim & speed params (selected clip)
-  const speedOp = operations.find((op) => op.type === 'speed' && op.enabled)
-  const speedRate = speedOp ? (speedOp.params as SpeedParams).rate : 1.0
 
   const getClipRange = useCallback(
     (clip: TimelineClip | null) => {
@@ -100,28 +62,6 @@ export function useVideoPlayer() {
     [operationsByClip]
   )
 
-  const getVolumeForClip = useCallback(
-    (clipId: string): number => {
-      const ops = operationsByClip[clipId] || []
-      const volume = ops.find((op) => op.type === 'volume' && op.enabled)
-      if (!volume) return 100
-      const percent = (volume.params as VolumeParams).percent
-      return Math.max(0, percent)
-    },
-    [operationsByClip]
-  )
-
-  const getPitchForClip = useCallback(
-    (clipId: string): number => {
-      const ops = operationsByClip[clipId] || []
-      const pitch = ops.find((op) => op.type === 'pitch' && op.enabled)
-      if (!pitch) return 100
-      const percent = (pitch.params as PitchParams).percent
-      return Math.max(0.01, percent)
-    },
-    [operationsByClip]
-  )
-
   const clampTimelineTimeSafe = useCallback(
     (time: number): number => {
       const safeEnd = timelineDuration > 0 ? Math.max(0, timelineDuration - 0.0001) : 0
@@ -134,44 +74,17 @@ export function useVideoPlayer() {
   const findClipAtTime = useCallback(
     (time: number) => {
       if (clips.length === 0) return null
+      const topVideo = getTopmostVideoClipAtTime(clips, operationsByClip, time)
+      if (topVideo) return topVideo
       const candidates = clips.filter((clip) => {
         const range = getClipRange(clip)
         if (!range || range.visibleDuration <= 0) return false
         return time >= range.start && time < range.end
       })
       if (candidates.length === 0) return null
-      const videoCandidates = candidates.filter((c) => c.track === 'video')
-      if (videoCandidates.length > 0) {
-        return [...videoCandidates].sort((a, b) => a.trackIndex - b.trackIndex)[0]
-      }
       return candidates[0]
     },
-    [clips, getClipRange]
-  )
-
-  const findClipStartingAt = useCallback(
-    (time: number) => {
-      if (clips.length === 0) return null
-      const EPS = 0.0005
-      let best: TimelineClip | null = null
-      clips.forEach((clip) => {
-        const range = getClipRange(clip)
-        if (!range || range.visibleDuration <= 0) return
-        if (Math.abs(range.start - time) > EPS) return
-        if (
-          !best ||
-          (best.track !== 'video' && clip.track === 'video') ||
-          (clip.track === best.track && clip.trackIndex < best.trackIndex) ||
-          (clip.track === best.track &&
-            clip.trackIndex === best.trackIndex &&
-            clip.id.localeCompare(best.id) < 0)
-        ) {
-          best = clip
-        }
-      })
-      return best
-    },
-    [clips, getClipRange]
+    [clips, operationsByClip, getClipRange]
   )
 
   const findNextClipAfter = useCallback(
@@ -199,128 +112,27 @@ export function useVideoPlayer() {
           bestStart = range.start
         }
       })
+      if (Number.isFinite(bestStart)) {
+        const topVideo = getTopmostVideoClipAtTime(clips, operationsByClip, bestStart)
+        if (topVideo) return topVideo
+      }
       return best
     },
-    [clips, getClipRange]
+    [clips, operationsByClip, getClipRange]
   )
 
   const getPlaybackPath = useCallback((clip: TimelineClip): string => {
     return clip.mediaInfo.playbackPath || clip.filePath
   }, [])
 
-  const toMediaURL = useCallback((filePath: string): string => {
-    const normalizedPath = filePath.replace(/\\/g, '/')
-    return normalizedPath.startsWith('/') ? `file://${normalizedPath}` : `file:///${normalizedPath}`
-  }, [])
-
-  const getAudioContext = useCallback((): AudioContext => {
-    if (!audioContextRef.current) {
-      const AudioContextCtor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
-      audioContextRef.current = new AudioContextCtor()
-    }
-    return audioContextRef.current
-  }, [])
-
-  const resumeAudioContext = useCallback(() => {
-    try {
-      const ctx = getAudioContext()
-      if (ctx.state === 'suspended') {
-        ctx.resume().catch(() => {})
-      }
-    } catch {
-      // Ignore resume failures; audio will stay muted
-    }
-  }, [getAudioContext])
-
-  const ensureAudioPipeline = useCallback(
-    (clip: TimelineClip): void => {
-      if (audioPipelinesRef.current.has(clip.id)) return
-      if (audioLoadingRef.current.has(clip.id)) return
-      const ctx = getAudioContext()
-
-      const loadPromise = (async () => {
-        try {
-          const response = await fetch(toMediaURL(getPlaybackPath(clip)))
-          const data = await response.arrayBuffer()
-          const buffer = await ctx.decodeAudioData(data.slice(0))
-          const shifter = new PitchShifter(ctx, buffer, 1024)
-          const gain = ctx.createGain()
-          audioPipelinesRef.current.set(clip.id, {
-            buffer,
-            shifter,
-            gain,
-            connected: false
-          })
-        } catch (error) {
-          console.error('Failed to load audio buffer:', error)
-        } finally {
-          audioLoadingRef.current.delete(clip.id)
-        }
-      })()
-
-      audioLoadingRef.current.set(clip.id, loadPromise)
-    },
-    [toMediaURL, getAudioContext, getPlaybackPath]
-  )
-
-  const ensureAudioElementPipeline = useCallback(
-    (clip: TimelineClip): { audio: HTMLAudioElement; source: MediaElementAudioSourceNode; gain: GainNode; connected: boolean } => {
-      const existing = audioElementPipelinesRef.current.get(clip.id)
-      if (existing) return existing
-      const ctx = getAudioContext()
-      let audio = audioElementRef.current.get(clip.id)
-      if (!audio) {
-        audio = new Audio(toMediaURL(getPlaybackPath(clip)))
-        audio.preload = 'auto'
-        audioElementRef.current.set(clip.id, audio)
-      }
-      const source = ctx.createMediaElementSource(audio)
-      const gain = ctx.createGain()
-      const pipeline = { audio, source, gain, connected: false }
-      audioElementPipelinesRef.current.set(clip.id, pipeline)
-      return pipeline
-    },
-    [getAudioContext, toMediaURL, getPlaybackPath]
-  )
-
-  const sliceAudioBuffer = useCallback(
-    (buffer: AudioBuffer, startTime: number, ctx: AudioContext): AudioBuffer => {
-      const startSample = Math.max(0, Math.floor(startTime * buffer.sampleRate))
-      const length = Math.max(1, buffer.length - startSample)
-      const sliced = ctx.createBuffer(buffer.numberOfChannels, length, buffer.sampleRate)
-      for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
-        const src = buffer.getChannelData(ch)
-        const dst = sliced.getChannelData(ch)
-        dst.set(src.subarray(startSample))
-      }
-      return sliced
-    },
-    []
-  )
-
-  const rebuildPitchPipeline = useCallback(
-    (
-      buffer: AudioBuffer,
-      ctx: AudioContext,
-      gain: GainNode,
-      speedRate: number,
-      pitchPercent: number,
-      connectNow: boolean,
-      startTime?: number
-    ): PitchShifter => {
-      const sourceBuffer =
-        startTime !== undefined ? sliceAudioBuffer(buffer, startTime, ctx) : buffer
-      const shifter = new PitchShifter(ctx, sourceBuffer, 1024)
-      shifter.tempo = speedRate
-      shifter.pitch = Math.max(0.01, pitchPercent / 100)
-      if (connectNow) {
-        shifter.connect(gain)
-        gain.connect(ctx.destination)
-      }
-      return shifter
-    },
-    [sliceAudioBuffer]
-  )
+  const { resumeAudioContext, syncAudioForTime, stopAllAudio } = useAudioPlaybackEngine({
+    clips,
+    operationsByClip,
+    audioFades,
+    getClipRange,
+    getPlaybackPath,
+    videoRef
+  })
 
   const seekVideoForTime = useCallback(
     (clip: NonNullable<typeof selectedClip>, timelineTime: number, autoPlay: boolean) => {
@@ -331,13 +143,9 @@ export function useVideoPlayer() {
       const video = videoRef.current
       if (video) {
         syncVideoPlaybackRate(clip.id)
-        const expectedSrc = toMediaURL(getPlaybackPath(clip))
+        const expectedSrc = toMediaUrl(getPlaybackPath(clip))
         const currentSrc = video.currentSrc || ''
-        const normalizeUrl = (url: string): string =>
-          decodeURIComponent(url)
-            .replace(/^file:\/\/\//, '')
-            .replace(/^file:\/\//, '')
-            .replace(/\\/g, '/')
+        const normalizeUrl = (url: string): string => mediaUrlToPath(url).replace(/\\/g, '/')
         const normalizedExpected = normalizeUrl(expectedSrc)
         const normalizedCurrent = normalizeUrl(currentSrc)
         const isSameSource =
@@ -372,186 +180,13 @@ export function useVideoPlayer() {
       pendingAutoPlayRef.current = autoPlay
       lastVideoClockRef.current = { clipId: clip.id, mediaTime: localTime }
     },
-    [getClipRange, selectedClipId, operationsByClip, toMediaURL, syncVideoPlaybackRate, getPlaybackPath]
-  )
-
-  const syncAudioForTime = useCallback(
-    (timelineTime: number, shouldPlay: boolean) => {
-      const ctx = audioContextRef.current
-      if (!ctx) return
-      const activeIds = new Set<string>()
-      let shouldMuteVideo = false
-      clips.forEach((clip) => {
-        if (clip.track !== 'audio') return
-        const range = getClipRange(clip)
-        if (!range || range.visibleDuration <= 0) return
-        if (timelineTime < range.start || timelineTime >= range.end) return
-        activeIds.add(clip.id)
-        shouldMuteVideo = true
-        const localTime = timelineTimeToMediaTime(clip, operationsByClip, timelineTime)
-
-        const speedRate = getSpeedRateForClip(clip.id)
-        const volumePercent = getVolumeForClip(clip.id)
-        const pitchPercent = getPitchForClip(clip.id)
-        const useProcessed = pitchPercent !== 100
-        const lastParams = lastAudioParamsRef.current.get(clip.id)
-        const paramsChanged =
-          !lastParams ||
-          lastParams.speedRate !== speedRate ||
-          lastParams.pitchPercent !== pitchPercent ||
-          lastParams.volumePercent !== volumePercent ||
-          lastParams.useProcessed !== useProcessed
-        lastAudioParamsRef.current.set(clip.id, {
-          speedRate,
-          pitchPercent,
-          volumePercent,
-          useProcessed
-        })
-
-        if (useProcessed) {
-          shouldMuteVideo = true
-          ensureAudioPipeline(clip)
-          const pipeline = audioPipelinesRef.current.get(clip.id)
-          if (!pipeline) return
-          const elementPipeline = audioElementPipelinesRef.current.get(clip.id)
-          if (elementPipeline?.connected) {
-            elementPipeline.source.disconnect()
-            elementPipeline.gain.disconnect()
-            elementPipeline.connected = false
-          }
-
-          pipeline.gain.gain.value = Math.max(0, volumePercent / 100)
-
-          const duration = pipeline.buffer.duration || 0
-          if (duration > 0) {
-            const lastTimeline = lastTimelineTimeRef.current.get(clip.id)
-            const timelineJumped =
-              lastTimeline === undefined || Math.abs(timelineTime - lastTimeline) > 0.1
-            if (shouldPlay && (!pipeline.connected || timelineJumped || paramsChanged)) {
-              if (pipeline.connected) {
-                pipeline.shifter.disconnect()
-                pipeline.gain.disconnect()
-                pipeline.connected = false
-              }
-              pipeline.shifter = rebuildPitchPipeline(
-                pipeline.buffer,
-                ctx,
-                pipeline.gain,
-                speedRate,
-                pitchPercent,
-                true,
-                localTime
-              )
-              pipeline.connected = true
-            } else if (!shouldPlay && pipeline.connected) {
-              pipeline.shifter.disconnect()
-              pipeline.gain.disconnect()
-              pipeline.connected = false
-            }
-            lastTimelineTimeRef.current.set(clip.id, timelineTime)
-          }
-
-          const nativeAudio = audioElementRef.current.get(clip.id)
-          if (nativeAudio) {
-            nativeAudio.pause()
-          }
-        } else {
-          const pipeline = audioPipelinesRef.current.get(clip.id)
-          if (pipeline?.connected) {
-            pipeline.shifter.disconnect()
-            pipeline.gain.disconnect()
-            pipeline.connected = false
-          }
-
-          const elementPipeline = ensureAudioElementPipeline(clip)
-          elementPipeline.gain.gain.value = Math.max(0, volumePercent / 100)
-          if (Math.abs(elementPipeline.audio.currentTime - localTime) > 0.08) {
-            elementPipeline.audio.currentTime = localTime
-          }
-          if (elementPipeline.audio.playbackRate !== speedRate) {
-            elementPipeline.audio.playbackRate = speedRate
-          }
-          elementPipeline.audio.volume = 1
-          if (shouldPlay && !elementPipeline.connected) {
-            elementPipeline.source.connect(elementPipeline.gain)
-            elementPipeline.gain.connect(ctx.destination)
-            elementPipeline.connected = true
-          } else if (!shouldPlay && elementPipeline.connected) {
-            elementPipeline.source.disconnect()
-            elementPipeline.gain.disconnect()
-            elementPipeline.connected = false
-          }
-          if (shouldPlay) {
-            elementPipeline.audio.play().catch(() => {})
-          } else {
-            elementPipeline.audio.pause()
-          }
-
-        }
-      })
-
-      audioPipelinesRef.current.forEach((pipeline, id) => {
-        if (!activeIds.has(id) && pipeline.connected) {
-          pipeline.shifter.disconnect()
-          pipeline.gain.disconnect()
-          pipeline.connected = false
-        }
-      })
-
-      audioElementRef.current.forEach((audio, id) => {
-        if (!activeIds.has(id)) {
-          audio.pause()
-        }
-      })
-
-      audioElementPipelinesRef.current.forEach((pipeline, id) => {
-        if (!activeIds.has(id) && pipeline.connected) {
-          pipeline.source.disconnect()
-          pipeline.gain.disconnect()
-          pipeline.connected = false
-        }
-      })
-
-      const video = videoRef.current
-      if (video) {
-        video.muted = shouldMuteVideo
-      }
-    },
-    [
-      clips,
-      getClipRange,
-      getSpeedRateForClip,
-      getVolumeForClip,
-      getPitchForClip,
-      operationsByClip,
-      ensureAudioPipeline,
-      ensureAudioElementPipeline,
-      toMediaURL
-    ]
+    [getClipRange, selectedClipId, operationsByClip, syncVideoPlaybackRate, getPlaybackPath]
   )
 
   useEffect(() => {
     if (!clips.length) return
     syncAudioForTime(currentTimeRef.current, playingRef.current)
   }, [clips, operationsByClip, syncAudioForTime])
-
-  const stopAllAudio = useCallback(() => {
-    audioPipelinesRef.current.forEach((pipeline) => {
-      if (pipeline.connected) {
-        pipeline.shifter.disconnect()
-        pipeline.gain.disconnect()
-        pipeline.connected = false
-      }
-    })
-    audioElementRef.current.forEach((audio) => audio.pause())
-    audioElementPipelinesRef.current.forEach((pipeline) => {
-      if (pipeline.connected) {
-        pipeline.source.disconnect()
-        pipeline.gain.disconnect()
-        pipeline.connected = false
-      }
-    })
-  }, [])
 
   const stopTimeLoop = useCallback(() => {
     if (animFrameRef.current) {
@@ -592,69 +227,7 @@ export function useVideoPlayer() {
   }, [syncVideoPlaybackRate])
 
   useEffect(() => {
-    clips.forEach((clip) => {
-      if (clip.track !== 'audio') return
-      const pitchPercent = getPitchForClip(clip.id)
-      if (pitchPercent !== 100) {
-        ensureAudioPipeline(clip)
-      }
-    })
-  }, [clips, getPitchForClip, ensureAudioPipeline])
-
-  useEffect(() => {
-    const clipIds = new Set(clips.map((clip) => clip.id))
-    const normalizeUrl = (url: string): string =>
-      decodeURIComponent(url)
-        .replace(/^file:\/\/\//, '')
-        .replace(/^file:\/\//, '')
-        .replace(/\\/g, '/')
-
-    audioPipelinesRef.current.forEach((pipeline, id) => {
-      if (clipIds.has(id)) return
-      if (pipeline.connected) {
-        pipeline.shifter.disconnect()
-        pipeline.gain.disconnect()
-      }
-      audioPipelinesRef.current.delete(id)
-    })
-
-    audioElementPipelinesRef.current.forEach((pipeline, id) => {
-      if (clipIds.has(id)) return
-      if (pipeline.connected) {
-        pipeline.source.disconnect()
-        pipeline.gain.disconnect()
-      }
-      pipeline.audio.pause()
-      pipeline.audio.removeAttribute('src')
-      pipeline.audio.load()
-      audioElementPipelinesRef.current.delete(id)
-    })
-
-    audioElementRef.current.forEach((audio, id) => {
-      if (clipIds.has(id)) return
-      audio.pause()
-      audio.removeAttribute('src')
-      audio.load()
-      audioElementRef.current.delete(id)
-    })
-
-    audioLoadingRef.current.forEach((_promise, id) => {
-      if (!clipIds.has(id)) {
-        audioLoadingRef.current.delete(id)
-      }
-    })
-
-    lastTimelineTimeRef.current.forEach((_time, id) => {
-      if (!clipIds.has(id)) {
-        lastTimelineTimeRef.current.delete(id)
-      }
-    })
-
-    lastAudioParamsRef.current.forEach((_params, id) => {
-      if (!clipIds.has(id)) {
-        lastAudioParamsRef.current.delete(id)
-      }
-    })
+    const normalizeUrl = (url: string): string => mediaUrlToPath(url).replace(/\\/g, '/')
 
     const video = videoRef.current
     if (video) {
@@ -784,7 +357,6 @@ export function useVideoPlayer() {
         lastVideoClockRef.current = null
         const range = getClipRange(active)
         if (!range) return
-        const pitchPercent = getPitchForClip(active.id)
         const nextTime = timelineTime + delta
         if (nextTime >= range.end - 0.0001) {
           // Keep timeline moving linearly; do not jump over gaps.
@@ -980,16 +552,6 @@ export function useVideoPlayer() {
     return () => {
       stopTimeLoop()
       stopAllAudio()
-      audioLoadingRef.current.clear()
-      audioPipelinesRef.current.clear()
-      audioElementRef.current.clear()
-      audioElementPipelinesRef.current.clear()
-      lastTimelineTimeRef.current.clear()
-      lastAudioParamsRef.current.clear()
-      if (audioContextRef.current) {
-        audioContextRef.current.close().catch(() => {})
-        audioContextRef.current = null
-      }
     }
   }, [stopTimeLoop, stopAllAudio])
 

@@ -84,8 +84,8 @@ zClip 目前未进行商业代码签名，首次下载运行时 Windows 可能�
 
 ## 环境要求
 
-- Node.js 18+（推荐 LTS）
-- npm 9+
+- Node.js 22.12+
+- npm 10+
 - Windows 10/11（当前主要目标平台）
 
 ## 快速开始

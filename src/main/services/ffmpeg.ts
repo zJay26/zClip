@@ -87,7 +87,7 @@ export function runFFmpeg(
 
     proc.stderr?.on('data', (data: Buffer) => {
       const chunk = data.toString()
-      stderr += chunk
+      stderr = `${stderr}${chunk}`.slice(-16_384)
 
       if (!onProgress || durationSeconds <= 0) return
 

@@ -5,489 +5,330 @@
 
 import { create } from 'zustand'
 import type {
+  AudioFadeKind,
+  AudioFadeSegment,
   MediaInfo,
   MediaOperation,
-  ExportProgress,
   TrimParams,
   SpeedParams,
   VolumeParams,
   PitchParams,
+  TransformParams,
+  FadeParams,
+  ProjectData,
+  ProjectSettings,
   TimelineClip,
-  OperationType
+  TimelineTransition,
+  TransitionEffectType
 } from '../../../shared/types'
 import {
   getClipTimelineRange,
-  getClipVisibleDuration,
   getSpeedRate,
-  getTimelineDuration as getTimelineDurationShared,
   timelineTimeToMediaTime
 } from '../../../shared/timeline-utils'
+import type { HistoryEditOptions, ProjectSnapshot, ProjectStore } from './project-store-types'
+import { appendHistory, HISTORY_LIMIT, snapshotsEqual } from './project-history'
+import {
+  applySnapshot,
+  buildProjectData,
+  clampTimelineTime,
+  createDefaultOperations,
+  createDefaultProjectSettings,
+  getClipTrimBounds,
+  getClipTrimValues,
+  getLinkedAudioClipId,
+  getOrderedClips,
+  getSelectedClip,
+  getTimelineDuration,
+  setDocumentTitle,
+  takeSnapshot
+} from './project-store-helpers'
+import { getMergeSelectionMeta } from './merge-selection'
+import { resolveClipOverlaps } from './timeline-overlap'
 import { uid } from '../lib/utils'
 
-interface ProjectStore {
-  // --- Timeline ---
-  clips: TimelineClip[]
-  selectedClipId: string | null
-  selectedClipIds: string[]
-  lastSelectedClipId: string | null
-  linkedGroups: Record<string, boolean>
-  clipboard: {
-    clips: TimelineClip[]
-    operationsByClip: Record<string, MediaOperation[]>
-    linkedGroups: Record<string, boolean>
-    minStartTime: number
-  } | null
-  historyPast: ProjectSnapshot[]
-  historyFuture: ProjectSnapshot[]
-  timelineDuration: number
-  videoTrackCount: number
-  audioTrackCount: number
+let mergeOutputSequence = 1
+let pendingHistoryTransaction: ProjectSnapshot | null = null
 
-  // --- Source (selected clip) ---
-  sourceFile: string | null
-  mediaInfo: MediaInfo | null
-  loading: boolean
-  error: string | null
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let cursor = 0
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++
+      results[index] = await mapper(items[index])
+    }
+  })
+  await Promise.all(workers)
+  return results
+}
 
-  // --- Operations (selected clip) ---
-  operations: MediaOperation[]
+function historyPastForEdit(
+  state: ProjectStore,
+  options?: HistoryEditOptions
+): ProjectSnapshot[] {
+  return options?.recordHistory === false
+    ? state.historyPast
+    : appendHistory(state.historyPast, takeSnapshot(state))
+}
+
+const MIN_EFFECT_DURATION = 0.08
+const DEFAULT_TRANSITION_DURATION = 1
+const DEFAULT_AUDIO_FADE_DURATION = 1
+const MAX_TRANSITION_DROP_DISTANCE = 2
+const MAX_TRANSITION_GAP = 1.5
+
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min
+  return Math.max(min, Math.min(value, max))
+}
+
+function getClipRangeById(
+  clips: TimelineClip[],
+  operationsByClip: Record<string, MediaOperation[]>,
+  clipId: string
+) {
+  const clip = clips.find((item) => item.id === clipId)
+  if (!clip) return null
+  return { clip, range: getClipTimelineRange(clip, operationsByClip) }
+}
+
+function getTransitionBounds(
+  transition: TimelineTransition,
+  clips: TimelineClip[],
   operationsByClip: Record<string, MediaOperation[]>
+): { boundary: number; minStartOffset: number; maxEndOffset: number } | null {
+  const left = getClipRangeById(clips, operationsByClip, transition.leftClipId)
+  const right = getClipRangeById(clips, operationsByClip, transition.rightClipId)
+  if (!left || !right) return null
+  if (left.clip.track !== 'video' || right.clip.track !== 'video') return null
+  const boundary = (left.range.end + right.range.start) / 2
+  return {
+    boundary,
+    minStartOffset: left.range.start - boundary,
+    maxEndOffset: right.range.end - boundary
+  }
+}
 
-  // --- Playback ---
-  currentTime: number
-  playing: boolean
-  duration: number
+function clampTransition(
+  transition: TimelineTransition,
+  clips: TimelineClip[],
+  operationsByClip: Record<string, MediaOperation[]>
+): TimelineTransition | null {
+  const bounds = getTransitionBounds(transition, clips, operationsByClip)
+  if (!bounds) return null
+  const startLimit = Math.min(-MIN_EFFECT_DURATION, bounds.minStartOffset)
+  const endLimit = Math.max(MIN_EFFECT_DURATION, bounds.maxEndOffset)
+  let startOffset = clampNumber(transition.startOffset, bounds.minStartOffset, -MIN_EFFECT_DURATION)
+  let endOffset = clampNumber(transition.endOffset, MIN_EFFECT_DURATION, bounds.maxEndOffset)
+  if (startOffset >= endOffset - MIN_EFFECT_DURATION) {
+    startOffset = Math.max(bounds.minStartOffset, startLimit)
+    endOffset = Math.min(bounds.maxEndOffset, endLimit)
+  }
+  if (endOffset - startOffset < MIN_EFFECT_DURATION) return null
+  return { ...transition, startOffset, endOffset }
+}
 
-  // --- Export ---
-  exporting: boolean
-  exportProgress: ExportProgress | null
-  merging: boolean
+function normalizeTransitions(
+  transitions: TimelineTransition[] | undefined,
+  clips: TimelineClip[],
+  operationsByClip: Record<string, MediaOperation[]>
+): TimelineTransition[] {
+  const seen = new Set<string>()
+  const next: TimelineTransition[] = []
+  ;(transitions || []).forEach((transition) => {
+    const clamped = clampTransition(transition, clips, operationsByClip)
+    if (!clamped) return
+    const key = `${clamped.leftClipId}:${clamped.rightClipId}`
+    if (seen.has(key)) return
+    seen.add(key)
+    next.push(clamped)
+  })
+  return next
+}
 
-  // --- Toast / notifications ---
-  toast: { message: string; type: 'info' | 'success' | 'error' } | null
+function getAudioFadeBounds(
+  fade: AudioFadeSegment,
+  clips: TimelineClip[],
+  operationsByClip: Record<string, MediaOperation[]>
+): { duration: number } | null {
+  const target = getClipRangeById(clips, operationsByClip, fade.clipId)
+  if (!target || target.clip.track !== 'audio') return null
+  return { duration: Math.max(0, target.range.visibleDuration) }
+}
 
-  // --- Actions ---
-  openFiles: () => Promise<void>
-  loadFiles: (filePaths: string[]) => Promise<void>
-  openFile: () => Promise<void>
-  loadFile: (filePath: string) => Promise<void>
-  selectClip: (clipId: string, mode?: 'single' | 'toggle' | 'range') => void
-  addVideoTrack: () => void
-  removeVideoTrack: () => void
-  addAudioTrack: () => void
-  removeAudioTrack: () => void
-  moveClip: (
-    clipId: string,
-    patch: Partial<Pick<TimelineClip, 'startTime' | 'trackIndex'>>,
-    options?: { recordHistory?: boolean }
-  ) => void
-  trimClipEdge: (
-    clipId: string,
-    edge: 'start' | 'end',
-    deltaSeconds: number,
-    options?: { recordHistory?: boolean }
-  ) => void
-  splitClipAtPlayhead: () => void
-  copySelectedClips: () => void
-  cutSelectedClips: () => void
-  pasteCopiedClips: () => void
-  mergeSelectedClips: () => Promise<void>
-  deleteClip: (clipId: string) => void
-  deleteSelectedClips: () => void
-  undo: () => void
-  redo: () => void
-  setCurrentTime: (time: number) => void
-  setPlaying: (playing: boolean) => void
-  setClipDuration: (clipId: string, duration: number) => void
-  activateClip: (clipId: string) => void
-  toggleGroupLink: (groupId: string) => void
+function clampAudioFade(
+  fade: AudioFadeSegment,
+  clips: TimelineClip[],
+  operationsByClip: Record<string, MediaOperation[]>
+): AudioFadeSegment | null {
+  const bounds = getAudioFadeBounds(fade, clips, operationsByClip)
+  if (!bounds || bounds.duration <= MIN_EFFECT_DURATION) return null
+  let startOffset = clampNumber(fade.startOffset, 0, Math.max(0, bounds.duration - MIN_EFFECT_DURATION))
+  let endOffset = clampNumber(fade.endOffset, startOffset + MIN_EFFECT_DURATION, bounds.duration)
+  if (fade.kind === 'in') {
+    endOffset = Math.min(endOffset, bounds.duration)
+  } else {
+    startOffset = Math.max(0, startOffset)
+  }
+  if (endOffset - startOffset < MIN_EFFECT_DURATION) return null
+  return { ...fade, startOffset, endOffset }
+}
 
-  // Operation CRUD
-  updateOperation: (id: string, patch: Partial<MediaOperation>) => void
-  setTrim: (params: Partial<TrimParams>) => void
-  setSpeed: (rate: number) => void
-  setVolume: (percent: number) => void
-  setPitch: (percent: number) => void
-  toggleOperation: (type: string, enabled: boolean) => void
+function normalizeAudioFades(
+  audioFades: AudioFadeSegment[] | undefined,
+  clips: TimelineClip[],
+  operationsByClip: Record<string, MediaOperation[]>
+): AudioFadeSegment[] {
+  const next: AudioFadeSegment[] = []
+  const seen = new Set<string>()
+  ;(audioFades || []).forEach((fade) => {
+    const clamped = clampAudioFade(fade, clips, operationsByClip)
+    if (!clamped) return
+    const key = `${clamped.clipId}:${clamped.kind}`
+    if (seen.has(key)) return
+    seen.add(key)
+    next.push(clamped)
+  })
+  return next
+}
 
-  // Export
-  setExporting: (exporting: boolean) => void
-  setExportProgress: (progress: ExportProgress | null) => void
+function findTransitionPair(
+  clips: TimelineClip[],
+  operationsByClip: Record<string, MediaOperation[]>,
+  time: number,
+  trackIndex: number
+): { left: TimelineClip; right: TimelineClip; boundary: number } | null {
+  const findBest = (preferredTrackIndex: number | null): { left: TimelineClip; right: TimelineClip; boundary: number; distance: number } | null => {
+    const videoClips = clips
+      .filter((clip) => {
+        if (clip.track !== 'video' || !clip.mediaInfo.hasVideo) return false
+        return preferredTrackIndex === null || clip.trackIndex === preferredTrackIndex
+      })
+      .map((clip) => ({ clip, range: getClipTimelineRange(clip, operationsByClip) }))
+      .filter((item) => item.range.visibleDuration > MIN_EFFECT_DURATION)
+      .sort((a, b) => a.range.start - b.range.start)
 
-  // Toast
-  showToast: (message: string, type?: 'info' | 'success' | 'error') => void
-  clearToast: () => void
-
-  // Helper: get clip trim info
-  getClipTrim: (clipId: string) => { trimStart: number; trimEnd: number }
-  getAudioOperationsForSelection: () => MediaOperation[]
-  getMergeSelectionState: () => {
-    canMerge: boolean
-    disabledReason: string | null
-    logicalSelectionCount: number
-    hasVideoSelection: boolean
-    hasAudioSelection: boolean
+    let best: { left: TimelineClip; right: TimelineClip; boundary: number; distance: number } | null = null
+    for (let i = 0; i < videoClips.length - 1; i += 1) {
+      const left = videoClips[i]
+      const right = videoClips[i + 1]
+      const gap = right.range.start - left.range.end
+      if (gap < -0.05 || gap > MAX_TRANSITION_GAP) continue
+      const boundary = (left.range.end + right.range.start) / 2
+      const distance = Math.abs(time - boundary)
+      if (distance > MAX_TRANSITION_DROP_DISTANCE) continue
+      if (!best || distance < best.distance) {
+        best = { left: left.clip, right: right.clip, boundary, distance }
+      }
+    }
+    return best
   }
 
-  // Reset
-  reset: () => void
+  const sameTrack = findBest(trackIndex)
+  const fallback = sameTrack || findBest(null)
+  return fallback ? { left: fallback.left, right: fallback.right, boundary: fallback.boundary } : null
 }
 
-interface ProjectSnapshot {
-  clips: TimelineClip[]
+function makeDefaultTransition(
+  type: TransitionEffectType,
+  left: TimelineClip,
+  right: TimelineClip,
   operationsByClip: Record<string, MediaOperation[]>
-  selectedClipId: string | null
-  selectedClipIds: string[]
-  lastSelectedClipId: string | null
-  linkedGroups: Record<string, boolean>
-  timelineDuration: number
-  videoTrackCount: number
-  audioTrackCount: number
-  currentTime: number
+): TimelineTransition {
+  const leftRange = getClipTimelineRange(left, operationsByClip)
+  const rightRange = getClipTimelineRange(right, operationsByClip)
+  const boundary = (leftRange.end + rightRange.start) / 2
+  const halfDuration = Math.max(
+    MIN_EFFECT_DURATION,
+    Math.min(DEFAULT_TRANSITION_DURATION / 2, boundary - leftRange.start, rightRange.end - boundary)
+  )
+  return {
+    id: uid(),
+    type,
+    leftClipId: left.id,
+    rightClipId: right.id,
+    startOffset: -halfDuration,
+    endOffset: halfDuration
+  }
 }
 
-/** Create default operations for a new clip */
-function createDefaultOperations(duration: number): MediaOperation[] {
-  return [
-    {
-      id: uid(),
-      type: 'trim',
-      enabled: true,
-      params: { startTime: 0, endTime: duration } as TrimParams
-    },
-    {
-      id: uid(),
-      type: 'speed',
-      enabled: false,
-      params: { rate: 1.0 } as SpeedParams
-    },
-    {
-      id: uid(),
-      type: 'volume',
-      enabled: false,
-      params: { percent: 100 } as VolumeParams
-    },
-    {
-      id: uid(),
-      type: 'pitch',
-      enabled: false,
-      params: { percent: 100 } as PitchParams
-    }
-  ]
-}
-
-function getTimelineDuration(clips: TimelineClip[], operationsByClip?: Record<string, MediaOperation[]>): number {
-  return getTimelineDurationShared(clips, operationsByClip || {})
-}
-
-function clampTimelineTime(time: number, timelineDuration: number): number {
-  if (timelineDuration <= 0) return 0
-  return Math.max(0, Math.min(time, timelineDuration - 0.0001))
-}
-
-function getClipTrimBounds(clip: TimelineClip): { min: number; max: number } {
-  const min = Math.max(0, Math.min(clip.trimBoundStart ?? 0, clip.duration))
-  const max = Math.max(min, Math.min(clip.trimBoundEnd ?? clip.duration, clip.duration))
-  return { min, max }
-}
-
-/** Get trim in/out points for a clip from its operations */
-function getClipTrimValues(
-  clip: TimelineClip,
-  operationsByClip?: Record<string, MediaOperation[]>
-): { trimStart: number; trimEnd: number } {
-  const range = getClipTimelineRange(clip, operationsByClip)
-  return { trimStart: range.trimStart, trimEnd: range.trimEnd }
-}
-
-function getSelectedClip(clips: TimelineClip[], selectedClipId: string | null): TimelineClip | null {
-  if (!selectedClipId) return null
-  return clips.find((clip) => clip.id === selectedClipId) || null
-}
-
-function getLinkedAudioClipId(
-  clips: TimelineClip[],
-  linkedGroups: Record<string, boolean>,
-  selectedClipId: string | null
-): string | null {
-  if (!selectedClipId) return null
-  const selected = clips.find((clip) => clip.id === selectedClipId)
+function getAudioFadeTargetId(state: ProjectStore): string | null {
+  if (!state.selectedClipId) return null
+  const selected = state.clips.find((clip) => clip.id === state.selectedClipId)
   if (!selected) return null
   if (selected.track === 'audio') return selected.id
-  const isLinked = linkedGroups[selected.groupId] !== false
-  if (!isLinked) return null
-  const audioClip = clips.find((clip) => clip.groupId === selected.groupId && clip.track === 'audio')
-  return audioClip?.id || null
+  return getLinkedAudioClipId(state.clips, state.linkedGroups, state.selectedClipId)
 }
 
-function takeSnapshot(state: ProjectStore): ProjectSnapshot {
+function makeDefaultAudioFade(
+  kind: AudioFadeKind,
+  clip: TimelineClip,
+  operationsByClip: Record<string, MediaOperation[]>
+): AudioFadeSegment {
+  const range = getClipTimelineRange(clip, operationsByClip)
+  const duration = Math.max(MIN_EFFECT_DURATION, range.visibleDuration)
+  const fadeDuration = Math.max(MIN_EFFECT_DURATION, Math.min(DEFAULT_AUDIO_FADE_DURATION, duration / 2))
   return {
-    clips: structuredClone(state.clips),
-    operationsByClip: structuredClone(state.operationsByClip),
-    selectedClipId: state.selectedClipId,
-    selectedClipIds: [...state.selectedClipIds],
-    lastSelectedClipId: state.lastSelectedClipId,
-    linkedGroups: { ...state.linkedGroups },
-    timelineDuration: state.timelineDuration,
-    videoTrackCount: state.videoTrackCount,
-    audioTrackCount: state.audioTrackCount,
-    currentTime: state.currentTime
+    id: uid(),
+    clipId: clip.id,
+    kind,
+    startOffset: kind === 'in' ? 0 : Math.max(0, duration - fadeDuration),
+    endOffset: kind === 'in' ? fadeDuration : duration
   }
 }
 
-function applySnapshot(state: ProjectStore, snapshot: ProjectSnapshot): Partial<ProjectStore> {
-  const selectedClip = getSelectedClip(snapshot.clips, snapshot.selectedClipId)
+function normalizeProjectSettings(settings?: ProjectSettings): ProjectSettings {
+  const defaults = createDefaultProjectSettings()
   return {
-    clips: snapshot.clips,
-    operationsByClip: snapshot.operationsByClip,
-    selectedClipId: snapshot.selectedClipId,
-    selectedClipIds: snapshot.selectedClipIds,
-    lastSelectedClipId: snapshot.lastSelectedClipId,
-    linkedGroups: snapshot.linkedGroups,
-    timelineDuration: snapshot.timelineDuration,
-    videoTrackCount: snapshot.videoTrackCount,
-    audioTrackCount: snapshot.audioTrackCount,
-    currentTime: snapshot.currentTime,
-    sourceFile: selectedClip?.filePath ?? null,
-    mediaInfo: selectedClip?.mediaInfo ?? null,
-    duration: selectedClip?.duration ?? 0,
-    operations: selectedClip ? (snapshot.operationsByClip[selectedClip.id] || []) : [],
-    playing: false
-  }
-}
-
-function getOrderedClips(clips: TimelineClip[]): TimelineClip[] {
-  return [...clips].sort((a, b) => {
-    if (a.startTime !== b.startTime) return a.startTime - b.startTime
-    if (a.track !== b.track) return a.track === 'video' ? -1 : 1
-    if (a.trackIndex !== b.trackIndex) return a.trackIndex - b.trackIndex
-    return a.id.localeCompare(b.id)
-  })
-}
-
-type OverlapEntry = {
-  id: string
-  track: TimelineClip['track']
-  trackIndex: number
-  groupId: string
-  linked: boolean
-  originalStart: number
-  start: number
-  duration: number
-  end: number
-  active: boolean
-}
-
-const OVERLAP_EPS = 0.0001
-const OVERLAP_MIN_DURATION = 0.01
-let mergeOutputSequence = 1
-
-type MergeSelectionMeta = {
-  selectedClips: TimelineClip[]
-  logicalSelectionCount: number
-  hasVideoSelection: boolean
-  hasAudioSelection: boolean
-  canMerge: boolean
-  disabledReason: string | null
-}
-
-function getMergeSelectionMeta(clips: TimelineClip[], selectedClipIds: string[]): MergeSelectionMeta {
-  const selectedIdSet = new Set(selectedClipIds)
-  const selectedClips = clips.filter((clip) => selectedIdSet.has(clip.id))
-  const logicalSelectionCount = new Set(selectedClips.map((clip) => clip.groupId)).size
-  const groupTrackMap = new Map<string, { hasVideo: boolean; hasAudio: boolean }>()
-  selectedClips.forEach((clip) => {
-    const entry = groupTrackMap.get(clip.groupId) || { hasVideo: false, hasAudio: false }
-    if (clip.track === 'video') entry.hasVideo = true
-    if (clip.track === 'audio') entry.hasAudio = true
-    groupTrackMap.set(clip.groupId, entry)
-  })
-
-  const groupSelections = Array.from(groupTrackMap.values())
-  const hasVideoSelection = groupSelections.some((group) => group.hasVideo)
-  const hasAudioSelection = groupSelections.some((group) => group.hasAudio)
-  const allGroupsHaveVideo = groupSelections.length > 0 && groupSelections.every((group) => group.hasVideo)
-  const allGroupsHaveAudio = groupSelections.length > 0 && groupSelections.every((group) => group.hasAudio)
-  const isUniformTrackSelection =
-    (allGroupsHaveVideo && !hasAudioSelection) || // pure video groups
-    (allGroupsHaveAudio && !hasVideoSelection) || // pure audio groups
-    (allGroupsHaveVideo && allGroupsHaveAudio) // full AV groups
-
-  let disabledReason: string | null = null
-  if (selectedClips.length === 0) {
-    disabledReason = '请先选择片段'
-  } else if (!isUniformTrackSelection) {
-    disabledReason = '请仅选择同类型逻辑片段（纯视频、纯音频或完整音画段）'
-  } else if (logicalSelectionCount < 2) {
-    disabledReason = '请至少选择两个逻辑片段以合并'
-  }
-
-  return {
-    selectedClips,
-    logicalSelectionCount,
-    hasVideoSelection,
-    hasAudioSelection,
-    canMerge: disabledReason === null,
-    disabledReason
-  }
-}
-
-function buildOverlapEntries(
-  clips: TimelineClip[],
-  operationsByClip: Record<string, MediaOperation[]>,
-  activeClipIds: Set<string>,
-  linkedGroups: Record<string, boolean>
-): OverlapEntry[] {
-  return clips.map((clip) => {
-    const duration = Math.max(OVERLAP_MIN_DURATION, getClipVisibleDuration(clip, operationsByClip))
-    const start = Math.max(0, clip.startTime)
-    return {
-      id: clip.id,
-      track: clip.track,
-      trackIndex: clip.trackIndex,
-      groupId: clip.groupId,
-      linked: linkedGroups[clip.groupId] !== false,
-      originalStart: start,
-      start,
-      duration,
-      end: start + duration,
-      active: activeClipIds.has(clip.id)
-    }
-  })
-}
-
-function moveEntryRight(entry: OverlapEntry, targetStart: number): void {
-  entry.start = Math.max(0, targetStart)
-  entry.end = entry.start + entry.duration
-}
-
-function moveEntryLeft(entry: OverlapEntry, targetStart: number): boolean {
-  let nextStart = targetStart - entry.duration
-  if (nextStart < 0) {
-    nextStart = 0
-    if (nextStart + entry.duration > targetStart + OVERLAP_EPS) {
-      return false
-    }
-  }
-  entry.start = nextStart
-  entry.end = entry.start + entry.duration
-  return true
-}
-
-function resolveTrackOverlaps(entries: OverlapEntry[]): void {
-  if (entries.length <= 1) return
-  let changed = true
-  let guard = entries.length * entries.length + 8
-  while (changed && guard > 0) {
-    guard -= 1
-    changed = false
-    entries.sort((a, b) => {
-      if (a.start !== b.start) return a.start - b.start
-      return a.id.localeCompare(b.id)
-    })
-    for (let i = 0; i < entries.length - 1; i++) {
-      const current = entries[i]
-      const next = entries[i + 1]
-      if (current.end <= next.start + OVERLAP_EPS) continue
-
-      if (current.active && !next.active) {
-        moveEntryRight(next, current.end)
-      } else if (!current.active && next.active) {
-        const moved = moveEntryLeft(current, next.start)
-        if (!moved) {
-          moveEntryRight(next, current.end)
-        }
-      } else {
-        moveEntryRight(next, current.end)
-      }
-      changed = true
+    ...defaults,
+    ...(settings || {}),
+    canvas: {
+      ...defaults.canvas,
+      ...(settings?.canvas || {}),
+      width: Math.max(16, Math.round(settings?.canvas?.width || defaults.canvas.width)),
+      height: Math.max(16, Math.round(settings?.canvas?.height || defaults.canvas.height)),
+      backgroundColor: settings?.canvas?.backgroundColor || defaults.canvas.backgroundColor
     }
   }
 }
 
-function resolveClipOverlaps(
-  clips: TimelineClip[],
-  operationsByClip: Record<string, MediaOperation[]>,
-  activeClipIds: Set<string>,
-  linkedGroups: Record<string, boolean>
-): TimelineClip[] {
-  const entries = buildOverlapEntries(clips, operationsByClip, activeClipIds, linkedGroups)
-  const entriesByTrack = new Map<string, OverlapEntry[]>()
-  entries.forEach((entry) => {
-    const key = `${entry.track}-${entry.trackIndex}`
-    const list = entriesByTrack.get(key)
-    if (list) {
-      list.push(entry)
-    } else {
-      entriesByTrack.set(key, [entry])
-    }
+function normalizeOperationsForClip(
+  clip: TimelineClip,
+  operations?: MediaOperation[]
+): MediaOperation[] {
+  const defaults = createDefaultOperations(clip.duration)
+  if (!operations || operations.length === 0) return defaults
+  return defaults.map((defaultOp) => {
+    const existing = operations.find((op) => op.type === defaultOp.type)
+    return existing || defaultOp
   })
+}
 
-  entriesByTrack.forEach((group) => resolveTrackOverlaps(group))
-
-  const linkedMovedIds = new Set<string>()
-  const groupEntriesMap = new Map<string, OverlapEntry[]>()
-  entries.forEach((entry) => {
-    if (!entry.linked) return
-    const list = groupEntriesMap.get(entry.groupId)
-    if (list) {
-      list.push(entry)
-    } else {
-      groupEntriesMap.set(entry.groupId, [entry])
-    }
-  })
-  groupEntriesMap.forEach((groupEntries) => {
-    const movedRef = groupEntries.find(
-      (entry) => Math.abs(entry.start - entry.originalStart) > OVERLAP_EPS
+function normalizeProjectData(data: ProjectData): ProjectData {
+  const operationsByClip: Record<string, MediaOperation[]> = {}
+  data.clips.forEach((clip) => {
+    operationsByClip[clip.id] = normalizeOperationsForClip(
+      clip,
+      data.operationsByClip?.[clip.id]
     )
-    if (!movedRef) return
-    const delta = movedRef.start - movedRef.originalStart
-    groupEntries.forEach((entry) => {
-      entry.start = Math.max(0, entry.originalStart + delta)
-      entry.end = entry.start + entry.duration
-      linkedMovedIds.add(entry.id)
-    })
   })
-
-  if (linkedMovedIds.size > 0) {
-    const reinforcedActiveIds = new Set(activeClipIds)
-    linkedMovedIds.forEach((id) => reinforcedActiveIds.add(id))
-    entries.forEach((entry) => {
-      entry.active = reinforcedActiveIds.has(entry.id)
-    })
-    entriesByTrack.forEach((group) => resolveTrackOverlaps(group))
+  return {
+    ...data,
+    operationsByClip,
+    transitions: normalizeTransitions(data.transitions, data.clips, operationsByClip),
+    audioFades: normalizeAudioFades(data.audioFades, data.clips, operationsByClip),
+    linkedGroups: data.linkedGroups || {},
+    videoTrackCount: Math.max(1, Math.min(data.videoTrackCount || 2, 8)),
+    audioTrackCount: Math.max(1, Math.min(data.audioTrackCount || 2, 8)),
+    projectSettings: normalizeProjectSettings(data.projectSettings)
   }
-
-  const startMap = new Map(entries.map((entry) => [entry.id, entry.start]))
-  return clips.map((clip) => {
-    const nextStart = startMap.get(clip.id)
-    if (nextStart === undefined || nextStart === clip.startTime) return clip
-    return { ...clip, startTime: nextStart }
-  })
 }
 
-function areOpsCompatibleForMerge(
-  baseOps: MediaOperation[],
-  candidateOps: MediaOperation[]
-): boolean {
-  const typesToCompare: OperationType[] = ['speed', 'volume', 'pitch']
-  return typesToCompare.every((type) => {
-    const a = baseOps.find((op) => op.type === type)
-    const b = candidateOps.find((op) => op.type === type)
-    if (!a || !b) return false
-    if (a.enabled !== b.enabled) return false
-    return JSON.stringify(a.params) === JSON.stringify(b.params)
-  })
-}
-
-function setDocumentTitle(filePath: string | null, totalClips: number): void {
-  if (!filePath) {
-    document.title = 'zClip'
-    return
-  }
-  const fileName = filePath.split(/[\\/]/).pop() || 'zClip'
-  const suffix = totalClips > 1 ? ` · ${totalClips} 段` : ''
-  document.title = `${fileName}${suffix} — zClip`
+function projectNameFromPath(filePath: string | null): string {
+  if (!filePath) return '未命名项目'
+  const fileName = filePath.split(/[\\/]/).pop() || '未命名项目'
+  return fileName.replace(/\.zclip$/i, '').replace(/\.[^.]+$/, '') || '未命名项目'
 }
 
 export const useProjectStore = create<ProjectStore>((set, get) => ({
@@ -498,11 +339,18 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   lastSelectedClipId: null,
   linkedGroups: {},
   clipboard: null,
+  transitions: [],
+  audioFades: [],
   historyPast: [],
   historyFuture: [],
   timelineDuration: 0,
   videoTrackCount: 2,
   audioTrackCount: 2,
+  projectSettings: createDefaultProjectSettings(),
+  projectFilePath: null,
+  projectDirty: false,
+  recentProjects: [],
+  autosaveReady: false,
   sourceFile: null,
   mediaInfo: null,
   loading: false,
@@ -543,11 +391,14 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       const newOperationsByClip: Record<string, MediaOperation[]> = {}
       const newLinkedGroups: Record<string, boolean> = {}
 
-      for (const filePath of filePaths) {
-        const result = await window.api.getMediaInfo(filePath)
-        if (!result.success || !result.data) {
-          throw new Error(result.error || 'Failed to get media info')
-        }
+      const probed = await mapWithConcurrency(filePaths, 3, async (filePath) => ({
+        filePath,
+        result: await window.api.getMediaInfo(filePath)
+      }))
+      const failures = probed.filter(({ result }) => !result.success || !result.data)
+
+      for (const { filePath, result } of probed) {
+        if (!result.success || !result.data) continue
         const info = result.data
         const groupId = uid()
         newLinkedGroups[groupId] = true
@@ -613,7 +464,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         newClips[0]?.id ||
         null
       const selectedClip = getSelectedClip(resolvedClips, nextSelectedClipId)
-      const historyPast = [...stateBeforeImport.historyPast, takeSnapshot(stateBeforeImport)]
+      const historyPast = appendHistory(stateBeforeImport.historyPast, takeSnapshot(stateBeforeImport))
 
       set({
         clips: resolvedClips,
@@ -636,6 +487,26 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       })
 
       setDocumentTitle(selectedClip?.filePath ?? null, mergedClips.length)
+      if (failures.length > 0) {
+        get().showToast(`已导入素材，但有 ${failures.length} 个文件失败`, 'error')
+      }
+
+      const importedPaths = Array.from(new Set(newClips.map((clip) => clip.filePath)))
+      void Promise.all(importedPaths.map(async (filePath) => {
+        const playback = await window.api.preparePlayback(filePath)
+        set((state) => {
+          const patchInfo = (info: MediaInfo): MediaInfo => ({
+            ...info,
+            playbackPath: playback.success && playback.playbackPath ? playback.playbackPath : filePath,
+            playbackIsProxy: Boolean(playback.success && playback.playbackIsProxy),
+            playbackProxyFailed: !playback.success
+          })
+          return {
+            clips: state.clips.map((clip) => clip.filePath === filePath ? { ...clip, mediaInfo: patchInfo(clip.mediaInfo) } : clip),
+            mediaInfo: state.mediaInfo?.filePath === filePath ? patchInfo(state.mediaInfo) : state.mediaInfo
+          }
+        })
+      }))
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : 'Failed to load files',
@@ -810,6 +681,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
       return {
         clips: resolvedClips,
+        transitions: normalizeTransitions(state.transitions, resolvedClips, state.operationsByClip),
+        audioFades: normalizeAudioFades(state.audioFades, resolvedClips, state.operationsByClip),
         timelineDuration: nextTimelineDuration,
         currentTime: clampTimelineTime(state.currentTime, nextTimelineDuration),
         historyPast,
@@ -882,6 +755,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       return {
         clips: resolvedClips,
         operationsByClip: newOperationsByClip,
+        transitions: normalizeTransitions(state.transitions, resolvedClips, newOperationsByClip),
+        audioFades: normalizeAudioFades(state.audioFades, resolvedClips, newOperationsByClip),
         operations: state.selectedClipId ? (newOperationsByClip[state.selectedClipId] || state.operations) : state.operations,
         timelineDuration: nextTimelineDuration,
         currentTime: clampTimelineTime(state.currentTime, nextTimelineDuration),
@@ -892,7 +767,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
   splitClipAtPlayhead: () =>
     set((state) => {
-      const historyPast = [...state.historyPast, takeSnapshot(state)]
+      const historyPast = appendHistory(state.historyPast, takeSnapshot(state))
       const { currentTime, clips, operationsByClip } = state
 
       // Find clips that span the playhead position
@@ -984,8 +859,13 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         activeClipIds,
         newLinkedGroups
       )
+      const splitSourceIds = new Set(clipsToSplit.map((clip) => clip.id))
       return {
         clips: resolvedClips,
+        transitions: state.transitions.filter(
+          (item) => !splitSourceIds.has(item.leftClipId) && !splitSourceIds.has(item.rightClipId)
+        ),
+        audioFades: state.audioFades.filter((item) => !splitSourceIds.has(item.clipId)),
         operationsByClip: newOpsByClip,
         operations: state.selectedClipId ? (newOpsByClip[state.selectedClipId] || state.operations) : state.operations,
         timelineDuration: getTimelineDuration(resolvedClips, newOpsByClip),
@@ -1041,7 +921,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         return state
       }
 
-      const historyPast = [...state.historyPast, takeSnapshot(state)]
+      const historyPast = appendHistory(state.historyPast, takeSnapshot(state))
       const groupMap = new Map<string, string>()
       const oldClipIdByNewClipId = new Map<string, string>()
       clipboard.clips.forEach((clip) => {
@@ -1186,7 +1066,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         return
       }
 
-      const historyPast = [...latest.historyPast, takeSnapshot(latest)]
+      const historyPast = appendHistory(latest.historyPast, takeSnapshot(latest))
       const firstVideo = selectedClips.find((clip) => clip.track === 'video')
       const firstAudio = selectedClips.find((clip) => clip.track === 'audio')
       const mergedGroupId = uid()
@@ -1255,6 +1135,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
       set({
         clips: resolvedClips,
+        transitions: latest.transitions.filter(
+          (item) => !selectedIdSet.has(item.leftClipId) && !selectedIdSet.has(item.rightClipId)
+        ),
+        audioFades: latest.audioFades.filter((item) => !selectedIdSet.has(item.clipId)),
         operationsByClip: newOpsByClip,
         selectedClipId: nextSelectedClipId,
         selectedClipIds: nextSelectedClipId ? [nextSelectedClipId] : [],
@@ -1281,7 +1165,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
   deleteClip: (clipId) =>
     set((state) => {
-      const historyPast = [...state.historyPast, takeSnapshot(state)]
+      const historyPast = appendHistory(state.historyPast, takeSnapshot(state))
       const updatedClips = state.clips.filter((c) => c.id !== clipId)
       const newOpsByClip = { ...state.operationsByClip }
       delete newOpsByClip[clipId]
@@ -1296,6 +1180,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
       return {
         clips: resolvedClips,
+        transitions: state.transitions.filter(
+          (item) => item.leftClipId !== clipId && item.rightClipId !== clipId
+        ),
+        audioFades: state.audioFades.filter((item) => item.clipId !== clipId),
         operationsByClip: newOpsByClip,
         selectedClipId: nextSelectedId,
         selectedClipIds: nextSelectedIds.length > 0 ? nextSelectedIds : nextSelectedId ? [nextSelectedId] : [],
@@ -1312,7 +1200,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
   deleteSelectedClips: () =>
     set((state) => {
-      const historyPast = [...state.historyPast, takeSnapshot(state)]
+      const historyPast = appendHistory(state.historyPast, takeSnapshot(state))
       if (state.selectedClipIds.length === 0) return state
       const removeSet = new Set(state.selectedClipIds)
       state.selectedClipIds.forEach((id) => {
@@ -1334,6 +1222,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
       return {
         clips: resolvedClips,
+        transitions: state.transitions.filter(
+          (item) => !removeSet.has(item.leftClipId) && !removeSet.has(item.rightClipId)
+        ),
+        audioFades: state.audioFades.filter((item) => !removeSet.has(item.clipId)),
         operationsByClip: newOpsByClip,
         selectedClipId: nextSelectedId,
         selectedClipIds: nextSelectedId ? [nextSelectedId] : [],
@@ -1381,6 +1273,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     const nextTimelineDuration = getTimelineDuration(resolvedClips, nextOpsByClip)
     set({
       clips: resolvedClips,
+      transitions: normalizeTransitions(get().transitions, resolvedClips, nextOpsByClip),
+      audioFades: normalizeAudioFades(get().audioFades, resolvedClips, nextOpsByClip),
       duration: clipId === selectedClipId ? duration : get().duration,
       operations: nextOperations,
       operationsByClip: nextOpsByClip,
@@ -1416,7 +1310,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
   toggleGroupLink: (groupId) =>
     set((state) => {
-      const historyPast = [...state.historyPast, takeSnapshot(state)]
+      const historyPast = appendHistory(state.historyPast, takeSnapshot(state))
       return {
         linkedGroups: {
           ...state.linkedGroups,
@@ -1458,7 +1352,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
   setTrim: (params) =>
     set((state) => {
-      const historyPast = [...state.historyPast, takeSnapshot(state)]
+      const historyPast = appendHistory(state.historyPast, takeSnapshot(state))
       if (!state.selectedClipId) return state
       const selectedClip = state.clips.find((clip) => clip.id === state.selectedClipId)
       if (!selectedClip) return state
@@ -1498,6 +1392,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         operations: updated,
         operationsByClip: newOpsByClip,
         clips: resolvedClips,
+        transitions: normalizeTransitions(state.transitions, resolvedClips, newOpsByClip),
+        audioFades: normalizeAudioFades(state.audioFades, resolvedClips, newOpsByClip),
         timelineDuration: nextTimelineDuration,
         currentTime: clampTimelineTime(state.currentTime, nextTimelineDuration),
         historyPast,
@@ -1505,9 +1401,9 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       }
     }),
 
-  setSpeed: (rate) =>
+  setSpeed: (rate, options) =>
     set((state) => {
-      const historyPast = [...state.historyPast, takeSnapshot(state)]
+      const historyPast = historyPastForEdit(state, options)
       if (!state.selectedClipId) return state
       const selectedClip = state.clips.find((clip) => clip.id === state.selectedClipId)
       if (!selectedClip) return state
@@ -1539,16 +1435,18 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         operations: updated,
         operationsByClip: newOpsByClip,
         clips: resolvedClips,
+        transitions: normalizeTransitions(state.transitions, resolvedClips, newOpsByClip),
+        audioFades: normalizeAudioFades(state.audioFades, resolvedClips, newOpsByClip),
         timelineDuration: nextTimelineDuration,
         currentTime: clampTimelineTime(state.currentTime, nextTimelineDuration),
         historyPast,
-        historyFuture: []
+        historyFuture: options?.recordHistory === false ? state.historyFuture : []
       }
     }),
 
-  setVolume: (percent) =>
+  setVolume: (percent, options) =>
     set((state) => {
-      const historyPast = [...state.historyPast, takeSnapshot(state)]
+      const historyPast = historyPastForEdit(state, options)
       const targetId = getLinkedAudioClipId(state.clips, state.linkedGroups, state.selectedClipId)
       if (!targetId) return state
       const targetClip = state.clips.find((clip) => clip.id === targetId)
@@ -1567,13 +1465,13 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         operations: targetId === state.selectedClipId ? updated : state.operations,
         operationsByClip: newOpsByClip,
         historyPast,
-        historyFuture: []
+        historyFuture: options?.recordHistory === false ? state.historyFuture : []
       }
     }),
 
-  setPitch: (percent) =>
+  setPitch: (percent, options) =>
     set((state) => {
-      const historyPast = [...state.historyPast, takeSnapshot(state)]
+      const historyPast = historyPastForEdit(state, options)
       const targetId = getLinkedAudioClipId(state.clips, state.linkedGroups, state.selectedClipId)
       if (!targetId) return state
       const targetClip = state.clips.find((clip) => clip.id === targetId)
@@ -1592,7 +1490,202 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         operations: targetId === state.selectedClipId ? updated : state.operations,
         operationsByClip: newOpsByClip,
         historyPast,
+        historyFuture: options?.recordHistory === false ? state.historyFuture : []
+      }
+    }),
+
+  setTransform: (params, options) =>
+    set((state) => {
+      if (!state.selectedClipId) return state
+      const selectedClip = state.clips.find((clip) => clip.id === state.selectedClipId)
+      if (!selectedClip || selectedClip.track !== 'video') return state
+      const historyPast = historyPastForEdit(state, options)
+      const ops = state.operationsByClip[selectedClip.id] || createDefaultOperations(selectedClip.duration)
+      const updated = ops.map((op) =>
+        op.type === 'transform'
+          ? {
+              ...op,
+              enabled: true,
+              params: { ...(op.params as TransformParams), ...params } as TransformParams
+            }
+          : op
+      )
+      return {
+        operations: updated,
+        operationsByClip: {
+          ...state.operationsByClip,
+          [selectedClip.id]: updated
+        },
+        historyPast,
+        historyFuture: options?.recordHistory === false ? state.historyFuture : []
+      }
+    }),
+
+  setFade: (params, options) =>
+    set((state) => {
+      if (!state.selectedClipId) return state
+      const selectedClip = state.clips.find((clip) => clip.id === state.selectedClipId)
+      if (!selectedClip) return state
+      const historyPast = historyPastForEdit(state, options)
+      const targetIds =
+        state.linkedGroups[selectedClip.groupId] !== false
+          ? state.clips.filter((clip) => clip.groupId === selectedClip.groupId).map((clip) => clip.id)
+          : [selectedClip.id]
+      const newOpsByClip = { ...state.operationsByClip }
+      targetIds.forEach((clipId) => {
+        const clip = state.clips.find((item) => item.id === clipId)
+        if (!clip) return
+        const ops = newOpsByClip[clipId] || createDefaultOperations(clip.duration)
+        const updated = ops.map((op) => {
+          if (op.type !== 'fade') return op
+          const nextParams = { ...(op.params as FadeParams), ...params } as FadeParams
+          return {
+            ...op,
+            enabled: nextParams.fadeIn > 0 || nextParams.fadeOut > 0,
+            params: nextParams
+          }
+        })
+        newOpsByClip[clipId] = updated
+      })
+      return {
+        operations: newOpsByClip[state.selectedClipId] || state.operations,
+        operationsByClip: newOpsByClip,
+        historyPast,
+        historyFuture: options?.recordHistory === false ? state.historyFuture : []
+      }
+    }),
+
+  addTransitionAtTime: (type, time, trackIndex) => {
+    const state = get()
+    const pair = findTransitionPair(state.clips, state.operationsByClip, time, trackIndex)
+    if (!pair) {
+      get().showToast('请将转场拖到同一视频轨上两个相邻画面段之间', 'info')
+      return false
+    }
+    const nextTransition = makeDefaultTransition(type, pair.left, pair.right, state.operationsByClip)
+    set((latest) => {
+      const historyPast = appendHistory(latest.historyPast, takeSnapshot(latest))
+      const existingIndex = latest.transitions.findIndex(
+        (item) => item.leftClipId === pair.left.id && item.rightClipId === pair.right.id
+      )
+      const transitions = [...latest.transitions]
+      if (existingIndex >= 0) {
+        transitions[existingIndex] = {
+          ...transitions[existingIndex],
+          type,
+          startOffset: nextTransition.startOffset,
+          endOffset: nextTransition.endOffset
+        }
+      } else {
+        transitions.push(nextTransition)
+      }
+      return {
+        transitions: normalizeTransitions(transitions, latest.clips, latest.operationsByClip),
+        historyPast,
         historyFuture: []
+      }
+    })
+    get().showToast('转场已添加', 'success')
+    return true
+  },
+
+  updateTransition: (id, patch, options) =>
+    set((state) => {
+      const target = state.transitions.find((item) => item.id === id)
+      if (!target) return state
+      const historyPast = historyPastForEdit(state, options)
+      const transitions = state.transitions
+        .map((item) => (item.id === id ? { ...item, ...patch } : item))
+        .map((item) => clampTransition(item, state.clips, state.operationsByClip))
+        .filter((item): item is TimelineTransition => !!item)
+      return {
+        transitions,
+        historyPast,
+        historyFuture: options?.recordHistory === false ? state.historyFuture : []
+      }
+    }),
+
+  deleteTransition: (id) =>
+    set((state) => {
+      if (!state.transitions.some((item) => item.id === id)) return state
+      const historyPast = appendHistory(state.historyPast, takeSnapshot(state))
+      return {
+        transitions: state.transitions.filter((item) => item.id !== id),
+        historyPast,
+        historyFuture: []
+      }
+    }),
+
+  addAudioFade: (kind) => {
+    const state = get()
+    const clipId = getAudioFadeTargetId(state)
+    const clip = clipId ? state.clips.find((item) => item.id === clipId) : null
+    if (!clip || clip.track !== 'audio') {
+      get().showToast('请选择一个音频片段添加淡入或淡出', 'info')
+      return false
+    }
+    const nextFade = makeDefaultAudioFade(kind, clip, state.operationsByClip)
+    set((latest) => {
+      const historyPast = appendHistory(latest.historyPast, takeSnapshot(latest))
+      const existingIndex = latest.audioFades.findIndex(
+        (item) => item.clipId === clip.id && item.kind === kind
+      )
+      const audioFades = [...latest.audioFades]
+      if (existingIndex >= 0) {
+        audioFades[existingIndex] = { ...audioFades[existingIndex], ...nextFade, id: audioFades[existingIndex].id }
+      } else {
+        audioFades.push(nextFade)
+      }
+      return {
+        audioFades: normalizeAudioFades(audioFades, latest.clips, latest.operationsByClip),
+        historyPast,
+        historyFuture: []
+      }
+    })
+    return true
+  },
+
+  updateAudioFade: (id, patch, options) =>
+    set((state) => {
+      const target = state.audioFades.find((item) => item.id === id)
+      if (!target) return state
+      const historyPast = historyPastForEdit(state, options)
+      const audioFades = state.audioFades
+        .map((item) => (item.id === id ? { ...item, ...patch } : item))
+        .map((item) => clampAudioFade(item, state.clips, state.operationsByClip))
+        .filter((item): item is AudioFadeSegment => !!item)
+      return {
+        audioFades,
+        historyPast,
+        historyFuture: options?.recordHistory === false ? state.historyFuture : []
+      }
+    }),
+
+  deleteAudioFade: (id) =>
+    set((state) => {
+      if (!state.audioFades.some((item) => item.id === id)) return state
+      const historyPast = appendHistory(state.historyPast, takeSnapshot(state))
+      return {
+        audioFades: state.audioFades.filter((item) => item.id !== id),
+        historyPast,
+        historyFuture: []
+      }
+    }),
+
+  setProjectSettings: (settings, options) =>
+    set((state) => {
+      const historyPast = historyPastForEdit(state, options)
+      return {
+        projectSettings: {
+          ...state.projectSettings,
+          ...settings,
+          canvas: {
+            ...state.projectSettings.canvas,
+            ...(settings.canvas || {})
+          }
+        },
+        historyPast,
+        historyFuture: options?.recordHistory === false ? state.historyFuture : []
       }
     }),
 
@@ -1637,7 +1730,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       if (state.historyPast.length === 0) return state
       const prev = state.historyPast[state.historyPast.length - 1]
       const rest = state.historyPast.slice(0, -1)
-      const future = [takeSnapshot(state), ...state.historyFuture]
+      const future = [takeSnapshot(state), ...state.historyFuture].slice(0, HISTORY_LIMIT)
       return {
         ...applySnapshot(state, prev),
         historyPast: rest,
@@ -1650,11 +1743,29 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       if (state.historyFuture.length === 0) return state
       const next = state.historyFuture[0]
       const rest = state.historyFuture.slice(1)
-      const past = [...state.historyPast, takeSnapshot(state)]
+      const past = appendHistory(state.historyPast, takeSnapshot(state))
       return {
         ...applySnapshot(state, next),
         historyPast: past,
         historyFuture: rest
+      }
+    }),
+
+  beginHistoryTransaction: () => {
+    if (!pendingHistoryTransaction) {
+      pendingHistoryTransaction = takeSnapshot(get())
+    }
+  },
+
+  commitHistoryTransaction: () =>
+    set((state) => {
+      if (!pendingHistoryTransaction) return state
+      const baseSnapshot = pendingHistoryTransaction
+      pendingHistoryTransaction = null
+      if (snapshotsEqual(baseSnapshot, takeSnapshot(state))) return state
+      return {
+        historyPast: appendHistory(state.historyPast, baseSnapshot),
+        historyFuture: []
       }
     }),
 
@@ -1669,6 +1780,162 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     }, 3500)
   },
   clearToast: () => set({ toast: null }),
+
+  saveProject: async () => {
+    const state = get()
+    const filePath =
+      state.projectFilePath ||
+      (await window.api.showProjectSaveDialog(`${projectNameFromPath(state.sourceFile)}.zclip`))
+    if (!filePath) return false
+    const result = await window.api.saveProjectFile(filePath, buildProjectData(state))
+    if (!result.success) {
+      get().showToast(`项目保存失败: ${result.error || '未知错误'}`, 'error')
+      return false
+    }
+    set({ projectFilePath: filePath, projectDirty: false })
+    await window.api.clearAutosave()
+    await get().refreshRecentProjects()
+    get().showToast('项目已保存', 'success')
+    return true
+  },
+
+  saveProjectAs: async () => {
+    const filePath = await window.api.showProjectSaveDialog(`${projectNameFromPath(get().projectFilePath)}.zclip`)
+    if (!filePath) return false
+    const result = await window.api.saveProjectFile(filePath, buildProjectData(get()))
+    if (!result.success) {
+      get().showToast(`项目另存失败: ${result.error || '未知错误'}`, 'error')
+      return false
+    }
+    set({ projectFilePath: filePath, projectDirty: false })
+    await window.api.clearAutosave()
+    await get().refreshRecentProjects()
+    get().showToast('项目已另存', 'success')
+    return true
+  },
+
+  openProject: async () => {
+    const filePath = await window.api.showProjectOpenDialog()
+    if (!filePath) return false
+    return get().openProjectFromPath(filePath)
+  },
+
+  openProjectFromPath: async (filePath) => {
+    if (get().projectDirty && !window.confirm('当前项目有未保存的更改，确定要放弃并打开其他项目吗？')) {
+      return false
+    }
+    const result = await window.api.openProjectFile(filePath)
+    if (!result.success || !result.data) {
+      get().showToast(`项目打开失败: ${result.error || '未知错误'}`, 'error')
+      await get().removeRecentProject(filePath)
+      return false
+    }
+    const uniquePaths = Array.from(new Set(result.data.clips.map((clip) => clip.filePath)))
+    const refreshed = new Map<string, MediaInfo>()
+    const missing: string[] = []
+    await Promise.all(uniquePaths.map(async (mediaPath) => {
+      const mediaResult = await window.api.getMediaInfo(mediaPath)
+      if (mediaResult.success && mediaResult.data) refreshed.set(mediaPath, mediaResult.data)
+      else missing.push(mediaPath)
+    }))
+    const hydratedData: ProjectData = {
+      ...result.data,
+      clips: result.data.clips.map((clip) => ({
+        ...clip,
+        mediaInfo: refreshed.get(clip.filePath) || clip.mediaInfo
+      }))
+    }
+    get().restoreProjectData(hydratedData, filePath)
+    void Promise.all(uniquePaths.map(async (mediaPath) => {
+      if (!refreshed.has(mediaPath)) return
+      const playback = await window.api.preparePlayback(mediaPath)
+      set((state) => ({
+        clips: state.clips.map((clip) => clip.filePath === mediaPath
+          ? {
+              ...clip,
+              mediaInfo: {
+                ...clip.mediaInfo,
+                playbackPath: playback.success && playback.playbackPath ? playback.playbackPath : mediaPath,
+                playbackIsProxy: Boolean(playback.success && playback.playbackIsProxy),
+                playbackProxyFailed: !playback.success
+              }
+            }
+          : clip)
+      }))
+    }))
+    await window.api.clearAutosave()
+    await get().refreshRecentProjects()
+    get().showToast('项目已打开', 'success')
+    if (missing.length > 0) {
+      get().showToast(`项目已打开，但有 ${missing.length} 个素材无法访问，请重新定位素材`, 'error')
+    }
+    return true
+  },
+
+  refreshRecentProjects: async () => {
+    const recentProjects = await window.api.getRecentProjects()
+    set({ recentProjects })
+  },
+
+  removeRecentProject: async (filePath) => {
+    const recentProjects = await window.api.removeRecentProject(filePath)
+    set({ recentProjects })
+  },
+
+  restoreProjectData: (data, filePath = null) => {
+    pendingHistoryTransaction = null
+    const normalized = normalizeProjectData(data)
+    const selectedClipId = normalized.clips[0]?.id ?? null
+    const selectedClip = getSelectedClip(normalized.clips, selectedClipId)
+    const timelineDuration = getTimelineDuration(normalized.clips, normalized.operationsByClip)
+    set({
+      clips: normalized.clips,
+      transitions: normalized.transitions || [],
+      audioFades: normalized.audioFades || [],
+      selectedClipId,
+      selectedClipIds: selectedClipId ? [selectedClipId] : [],
+      lastSelectedClipId: selectedClipId,
+      linkedGroups: normalized.linkedGroups,
+      clipboard: null,
+      historyPast: [],
+      historyFuture: [],
+      timelineDuration,
+      videoTrackCount: normalized.videoTrackCount,
+      audioTrackCount: normalized.audioTrackCount,
+      projectSettings: normalized.projectSettings,
+      projectFilePath: filePath,
+      projectDirty: false,
+      sourceFile: selectedClip?.filePath ?? null,
+      mediaInfo: selectedClip?.mediaInfo ?? null,
+      loading: false,
+      error: null,
+      operations: selectedClip ? (normalized.operationsByClip[selectedClip.id] || []) : [],
+      operationsByClip: normalized.operationsByClip,
+      currentTime: clampTimelineTime(normalized.currentTime, timelineDuration),
+      playing: false,
+      duration: selectedClip?.duration ?? 0,
+      exporting: false,
+      exportProgress: null,
+      merging: false
+    })
+    setDocumentTitle(selectedClip?.filePath ?? null, normalized.clips.length)
+  },
+
+  buildProjectData: () => buildProjectData(get()),
+
+  autosaveNow: async () => {
+    const state = get()
+    if (state.clips.length === 0) return
+    await window.api.saveAutosave(buildProjectData(state))
+    set({ autosaveReady: true })
+  },
+
+  clearAutosave: async () => {
+    await window.api.clearAutosave()
+    set({ autosaveReady: false })
+  },
+
+  markProjectDirty: () => set({ projectDirty: true }),
 
   getClipTrim: (clipId: string) => {
     const { clips, operationsByClip } = get()
@@ -1697,8 +1964,11 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   },
 
   reset: () => {
+    pendingHistoryTransaction = null
     set({
       clips: [],
+      transitions: [],
+      audioFades: [],
       selectedClipId: null,
       selectedClipIds: [],
       lastSelectedClipId: null,
@@ -1709,6 +1979,9 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       timelineDuration: 0,
       videoTrackCount: 2,
       audioTrackCount: 2,
+      projectSettings: createDefaultProjectSettings(),
+      projectFilePath: null,
+      projectDirty: false,
       sourceFile: null,
       mediaInfo: null,
       loading: false,

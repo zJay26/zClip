@@ -4,14 +4,23 @@
 // ============================================================
 
 import React, { useEffect, useRef, useState } from 'react'
-import { useExport } from '../../hooks/useExport'
+import { useExport, type ExportScope } from '../../hooks/useExport'
 import { useProjectStore } from '../../stores/project-store'
-import type { ResolutionPreset, QualityPreset, ExportFormat, GifLoopMode } from '../../../../shared/types'
+import type {
+  ExportCustomOptions,
+  ExportFormat,
+  GifLoopMode,
+  H264Preset,
+  QualityPreset,
+  ResolutionPreset
+} from '../../../../shared/types'
 import { Badge, Button, Dialog, ProgressBar } from '../ui'
+import { formatTime, parseTime } from '../../lib/utils'
 
 interface ExportDialogProps {
   open: boolean
   onClose: () => void
+  originRef?: React.RefObject<HTMLElement | null>
 }
 
 const RESOLUTIONS: { value: ResolutionPreset; label: string }[] = [
@@ -24,7 +33,8 @@ const RESOLUTIONS: { value: ResolutionPreset; label: string }[] = [
 const QUALITIES: { value: QualityPreset; label: string; desc: string }[] = [
   { value: 'high', label: '高质量', desc: '文件较大，质量最佳' },
   { value: 'medium', label: '中等', desc: '平衡质量与文件大小' },
-  { value: 'low', label: '低质量', desc: '文件最小，质量一般' }
+  { value: 'low', label: '低质量', desc: '文件最小，质量一般' },
+  { value: 'custom', label: '自定义', desc: '手动设置编码参数' }
 ]
 
 const VIDEO_FORMATS: { value: ExportFormat; label: string }[] = [
@@ -44,7 +54,27 @@ const AUDIO_FORMATS: { value: ExportFormat; label: string }[] = [
   { value: 'opus', label: 'Opus' }
 ]
 
+const H264_PRESETS: { value: H264Preset; label: string }[] = [
+  { value: 'ultrafast', label: 'ultrafast' },
+  { value: 'superfast', label: 'superfast' },
+  { value: 'veryfast', label: 'veryfast' },
+  { value: 'faster', label: 'faster' },
+  { value: 'fast', label: 'fast' },
+  { value: 'medium', label: 'medium' },
+  { value: 'slow', label: 'slow' },
+  { value: 'slower', label: 'slower' },
+  { value: 'veryslow', label: 'veryslow' }
+]
+
+const DEFAULT_CUSTOM_OPTIONS: ExportCustomOptions = {
+  crf: 23,
+  h264Preset: 'medium',
+  audioBitrateKbps: 192
+}
+
 type ExportStep = 'configure' | 'running'
+type ExportMode = 'timeline' | 'selection' | 'range'
+type NumericCustomOptionKey = 'crf' | 'videoBitrateKbps' | 'audioBitrateKbps' | 'animatedFps'
 
 function parseSpeedValue(speed: string | undefined): number | null {
   if (!speed) return null
@@ -76,39 +106,72 @@ function isAnimatedImageFormat(format: ExportFormat): boolean {
   return format === 'gif' || format === 'webp'
 }
 
-const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose }) => {
+function parseBoundedIntInput(value: string, min: number, max: number): number | undefined {
+  if (value.trim() === '') return undefined
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return undefined
+  return Math.max(min, Math.min(max, Math.round(parsed)))
+}
+
+const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef }) => {
   const [resolution, setResolution] = useState<ResolutionPreset>('original')
   const [quality, setQuality] = useState<QualityPreset>('medium')
+  const [customOptions, setCustomOptions] = useState<ExportCustomOptions>(DEFAULT_CUSTOM_OPTIONS)
   const [format, setFormat] = useState<ExportFormat>('mp4')
   const [gifLoop, setGifLoop] = useState<GifLoopMode>('infinite')
+  const [exportMode, setExportMode] = useState<ExportMode>('timeline')
+  const [rangeStartText, setRangeStartText] = useState('00:00.00')
+  const [rangeEndText, setRangeEndText] = useState('00:00.00')
   const [step, setStep] = useState<ExportStep>('configure')
   const [etaFallbackText, setEtaFallbackText] = useState('')
   const configureScrollRef = useRef<HTMLDivElement>(null)
   const prevFormatRef = useRef<ExportFormat>(format)
   const etaEstimatorRef = useRef<{ percent: number; ts: number; etaSec: number | null } | null>(null)
-  const { mediaInfo, clips } = useProjectStore()
+  const { mediaInfo, clips, selectedClipIds, timelineDuration } = useProjectStore()
   const hasAnyVideo = clips.some((clip) => clip.track === 'video' && clip.mediaInfo.hasVideo)
   const isAudioOnly = clips.length > 0 ? !hasAnyVideo : mediaInfo ? !mediaInfo.hasVideo : false
+  const selectedClips = clips.filter((clip) => selectedClipIds.includes(clip.id))
+  const selectedHasVideo = selectedClips.some((clip) => clip.track === 'video' && clip.mediaInfo.hasVideo)
+  const effectiveAudioOnly =
+    exportMode === 'selection' && selectedClipIds.length > 0
+      ? !selectedHasVideo
+      : isAudioOnly
 
-  const formatOptions = isAudioOnly ? AUDIO_FORMATS : VIDEO_FORMATS
+  const formatOptions = effectiveAudioOnly ? AUDIO_FORMATS : VIDEO_FORMATS
+  const animatedFormat = isAnimatedImageFormat(format)
+  const supportsAudioBitrate = ['mp3', 'aac', 'opus', 'mp4', 'mov', 'mkv', 'webm'].includes(format)
+  const showCustomCrf = quality === 'custom' && !effectiveAudioOnly && format !== 'gif'
+  const showCustomVideoBitrate = quality === 'custom' && !effectiveAudioOnly && !animatedFormat
+  const showCustomH264Preset = showCustomVideoBitrate && format !== 'webm'
+  const showCustomAudioBitrate = quality === 'custom' && !animatedFormat && supportsAudioBitrate
+  const showCustomAnimatedFps = quality === 'custom' && !effectiveAudioOnly && animatedFormat
+
+  const setCustomNumber = (key: NumericCustomOptionKey, value: string, min: number, max: number): void => {
+    const next = parseBoundedIntInput(value, min, max)
+    setCustomOptions((prev) => ({ ...prev, [key]: next }))
+  }
+
   // Pass onClose as onComplete — dialog auto-closes after export success
   const { startExport, cancelExport, exporting, exportProgress } = useExport({
     onComplete: onClose
   })
 
   useEffect(() => {
-    if (isAudioOnly && !AUDIO_FORMATS.find((f) => f.value === format)) {
+    if (effectiveAudioOnly && !AUDIO_FORMATS.find((f) => f.value === format)) {
       setFormat('mp3')
     }
-    if (!isAudioOnly && !VIDEO_FORMATS.find((f) => f.value === format)) {
+    if (!effectiveAudioOnly && !VIDEO_FORMATS.find((f) => f.value === format)) {
       setFormat('mp4')
     }
-  }, [format, isAudioOnly])
+  }, [format, effectiveAudioOnly])
 
   useEffect(() => {
     if (open) {
       setStep('configure')
-      if (!isAudioOnly) {
+      setExportMode('timeline')
+      setRangeStartText('00:00.00')
+      setRangeEndText(formatTime(timelineDuration))
+      if (!effectiveAudioOnly) {
         setFormat('mp4')
       }
       const host = configureScrollRef.current
@@ -118,7 +181,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose }) => {
         })
       }
     }
-  }, [open, isAudioOnly])
+  }, [open, effectiveAudioOnly, timelineDuration])
 
   useEffect(() => {
     if (!exporting) {
@@ -175,8 +238,29 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose }) => {
   if (!open) return null
 
   const handleExport = async (): Promise<void> => {
+    let scope: ExportScope = { mode: 'timeline' }
+    if (exportMode === 'selection') {
+      scope = { mode: 'selection' }
+    } else if (exportMode === 'range') {
+      const startTime = parseTime(rangeStartText)
+      const endTime = parseTime(rangeEndText)
+      if (startTime === null || endTime === null || endTime <= startTime) {
+        return
+      }
+      scope = { mode: 'range', startTime, endTime }
+    }
     setStep('running')
-    await startExport(isAudioOnly ? 'original' : resolution, quality, format, gifLoop)
+    const started = await startExport(
+      effectiveAudioOnly ? 'original' : resolution,
+      quality,
+      format,
+      gifLoop,
+      scope,
+      customOptions
+    )
+    if (!started) {
+      setStep('configure')
+    }
   }
 
   const handleClose = (): void => {
@@ -186,7 +270,18 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose }) => {
     onClose()
   }
 
-  const canStartExport = Boolean(format && quality)
+  const parsedRangeStart = parseTime(rangeStartText)
+  const parsedRangeEnd = parseTime(rangeEndText)
+  const rangeValid =
+    exportMode !== 'range' ||
+    (parsedRangeStart !== null &&
+      parsedRangeEnd !== null &&
+      parsedRangeEnd > parsedRangeStart &&
+      parsedRangeStart >= 0 &&
+      parsedRangeEnd <= Math.max(timelineDuration, 0.001))
+  const canStartExport = Boolean(format && quality) &&
+    rangeValid &&
+    (exportMode !== 'selection' || selectedClipIds.length > 0)
   const progressPercentText = exportProgress ? `${exportProgress.percent.toFixed(1)}%` : '准备中...'
   const speedValue = parseSpeedValue(exportProgress?.speed)
   const progressSpeedText = speedValue
@@ -207,7 +302,13 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose }) => {
     : '准备中...'
 
   return (
-    <Dialog open={open} onClose={handleClose} title={isAudioOnly ? '导出音频' : '导出视频'}>
+    <Dialog
+      open={open}
+      onClose={handleClose}
+      originRef={originRef}
+      closeOnBackdrop={!exporting}
+      title={effectiveAudioOnly ? '导出音频' : '导出视频'}
+    >
       <div className="flex items-center gap-2 mb-4">
         <Badge tone={step === 'configure' ? 'accent' : 'default'}>1 配置</Badge>
         <Badge tone={step === 'running' ? 'accent' : 'default'}>2 执行</Badge>
@@ -216,7 +317,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose }) => {
       {!exporting && step === 'configure' && (
         <div className="flex max-h-[62vh] flex-col">
           <div ref={configureScrollRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1 pb-3">
-            {!isAudioOnly && (
+            {!effectiveAudioOnly && (
               <div>
                 <label className="text-xs font-medium text-text-secondary uppercase tracking-wider block mb-2">分辨率</label>
                 <div className="space-y-1">
@@ -267,6 +368,80 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose }) => {
                   </label>
                 ))}
               </div>
+              {quality === 'custom' && (
+                <div className="mt-2 grid grid-cols-2 gap-2 rounded-md border border-border-subtle bg-panel-muted/50 p-3">
+                  {showCustomCrf && (
+                    <label>
+                      <span className="mb-1 block text-xs text-text-muted">CRF</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={51}
+                        className="ui-input w-full"
+                        value={customOptions.crf ?? ''}
+                        onChange={(e) => setCustomNumber('crf', e.target.value, 0, 51)}
+                      />
+                    </label>
+                  )}
+                  {showCustomVideoBitrate && (
+                    <label>
+                      <span className="mb-1 block text-xs text-text-muted">视频码率 kbps</span>
+                      <input
+                        type="number"
+                        min={64}
+                        max={200000}
+                        className="ui-input w-full"
+                        value={customOptions.videoBitrateKbps ?? ''}
+                        onChange={(e) => setCustomNumber('videoBitrateKbps', e.target.value, 64, 200000)}
+                      />
+                    </label>
+                  )}
+                  {showCustomH264Preset && (
+                    <label>
+                      <span className="mb-1 block text-xs text-text-muted">H.264 preset</span>
+                      <select
+                        className="ui-input w-full"
+                        value={customOptions.h264Preset ?? 'medium'}
+                        onChange={(e) =>
+                          setCustomOptions((prev) => ({ ...prev, h264Preset: e.target.value as H264Preset }))
+                        }
+                      >
+                        {H264_PRESETS.map((preset) => (
+                          <option key={preset.value} value={preset.value}>
+                            {preset.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  {showCustomAudioBitrate && (
+                    <label>
+                      <span className="mb-1 block text-xs text-text-muted">音频码率 kbps</span>
+                      <input
+                        type="number"
+                        min={32}
+                        max={512}
+                        className="ui-input w-full"
+                        value={customOptions.audioBitrateKbps ?? ''}
+                        onChange={(e) => setCustomNumber('audioBitrateKbps', e.target.value, 32, 512)}
+                      />
+                    </label>
+                  )}
+                  {showCustomAnimatedFps && (
+                    <label>
+                      <span className="mb-1 block text-xs text-text-muted">动图 FPS</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={60}
+                        className="ui-input w-full"
+                        value={customOptions.animatedFps ?? ''}
+                        onChange={(e) => setCustomNumber('animatedFps', e.target.value, 1, 60)}
+                      />
+                    </label>
+                  )}
+                </div>
+              )}
             </div>
 
             <div>
@@ -291,6 +466,62 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose }) => {
                   </label>
                 ))}
               </div>
+            </div>
+
+            <div>
+              <label className="text-xs font-medium text-text-secondary uppercase tracking-wider block mb-2">导出范围</label>
+              <div className="space-y-1">
+                {[
+                  { value: 'timeline' as const, label: '整条时间线', disabled: false },
+                  { value: 'selection' as const, label: `所选片段（${selectedClipIds.length}）`, disabled: selectedClipIds.length === 0 },
+                  { value: 'range' as const, label: '自定义片段范围', disabled: false }
+                ].map((item) => (
+                  <label
+                    key={item.value}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-md border transition-colors ${
+                      item.disabled
+                        ? 'cursor-not-allowed opacity-50 border-transparent'
+                        : exportMode === item.value
+                          ? 'cursor-pointer border-accent bg-accent/10'
+                          : 'cursor-pointer border-transparent hover:bg-panel-hover'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="export-mode"
+                      value={item.value}
+                      checked={exportMode === item.value}
+                      disabled={item.disabled}
+                      onChange={() => setExportMode(item.value)}
+                      className="accent-accent"
+                    />
+                    <span className="text-sm text-text-primary">{item.label}</span>
+                  </label>
+                ))}
+              </div>
+              {exportMode === 'range' && (
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <label>
+                    <span className="mb-1 block text-xs text-text-muted">开始</span>
+                    <input
+                      className={`ui-input w-full font-mono ${rangeValid ? '' : 'border-danger/60'}`}
+                      value={rangeStartText}
+                      onChange={(e) => setRangeStartText(e.target.value)}
+                    />
+                  </label>
+                  <label>
+                    <span className="mb-1 block text-xs text-text-muted">结束</span>
+                    <input
+                      className={`ui-input w-full font-mono ${rangeValid ? '' : 'border-danger/60'}`}
+                      value={rangeEndText}
+                      onChange={(e) => setRangeEndText(e.target.value)}
+                    />
+                  </label>
+                  <p className="col-span-2 text-[10px] text-text-muted">
+                    当前时间线总时长：{formatTime(timelineDuration)}
+                  </p>
+                </div>
+              )}
             </div>
 
             {isAnimatedImageFormat(format) && (
