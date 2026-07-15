@@ -1,5 +1,9 @@
 # zClip
 
+<p align="center">
+  <img src="./docs/icon/zClip.png" alt="zClip icon" width="96" />
+</p>
+
 [简体中文](./README.zh.md)
 
 zClip is a local video editor for Windows, focused on a fast learning curve, short workflows, and fully offline processing.
@@ -8,6 +12,12 @@ I often need simple edits where opening a professional NLE feels too heavy, whil
 This project is open-sourced under the MIT license. Feel free to use it and build on top of it.
 
 zClip is built with Electron + React and uses FFmpeg for media analysis and export. It is designed for quickly trimming, assembling, and exporting common video/audio assets.
+
+## Demo
+
+<p align="center">
+  <img src="./docs/demo/demo.webp" alt="zClip demo" />
+</p>
 
 ## Download
 
@@ -37,15 +47,18 @@ If you want to add "Open with zClip" to the first-level right-click menu on Wind
 
 - Fully local processing: no media is uploaded to cloud services
 - Multi-file import: file picker, drag-and-drop, system/CLI open-with support
-- Multi-track timeline: video + audio tracks with add/remove, snap, and zoom
+- Project workflow: create, open, save, autosave, and reopen recent `.zclip` projects
+- Multi-track timeline: video + audio tracks with add/remove, snap, zoom, selection merging, and history
 - Common editing tools: split, copy/cut/paste, delete, undo/redo
-- Parameter controls: trim, speed (0.1x~16x), volume (0%~1000%), pitch (25%~400%)
+- Visual editing: canvas size/background controls, clip position/scale/rotation, and fade or crossfade transitions
+- Audio controls: trim, speed (0.1x~16x), volume (0%~1000%), pitch (25%~400%), and audio fades
 - Export options:
-  - Video formats: `mp4` / `mov` / `mkv` / `webm`
+  - Video formats: `mp4` / `mov` / `mkv` / `webm` / `gif` / `webp`
   - Audio formats: `mp3` / `wav` / `flac` / `aac` / `opus`
   - Resolution presets: `original` / `1080p` / `720p` / `480p`
   - Quality presets: `high` / `medium` / `low`
-  - Progress display and cancel support
+  - Timeline, selected clips, or custom-range export; custom bitrate/CRF and animated-image FPS controls
+  - Progress, speed/ETA display, and cancel support
 
 ## Shortcuts
 

@@ -1,7 +1,17 @@
 {
   "name": "zClip",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "极简 Windows 视频剪辑工具",
+  "author": "zJay26",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zJay26/zClip.git"
+  },
+  "bugs": {
+    "url": "https://github.com/zJay26/zClip/issues"
+  },
+  "homepage": "https://github.com/zJay26/zClip#readme",
   "engines": {
     "node": ">=22.12.0",
     "npm": ">=10"
@@ -78,6 +88,7 @@
       "target": [
         "nsis"
       ],
+      "artifactName": "zClip.Setup.${version}.${ext}",
       "icon": "build/zClip.ico"
     },
     "nsis": {

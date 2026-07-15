@@ -21,10 +21,10 @@ zClip is built with Electron + React and uses FFmpeg for media analysis and expo
 
 ## Download
 
-> Current release in this repo: `2.1.0`
+> Current release in this repo: `2.2.0`
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.1.0/zClip.Setup.2.1.0.exe">
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.2.0/zClip.Setup.2.2.0.exe">
     <img src="https://img.shields.io/badge/Download_for_Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white" alt="Download for Windows"/>
   </a>
 </p>
@@ -47,15 +47,18 @@ If you want to add "Open with zClip" to the first-level right-click menu on Wind
 
 - Fully local processing: no media is uploaded to cloud services
 - Multi-file import: file picker, drag-and-drop, system/CLI open-with support
-- Multi-track timeline: video + audio tracks with add/remove, snap, and zoom
+- Project workflow: create, open, save, autosave, and reopen recent `.zclip` projects
+- Multi-track timeline: video + audio tracks with add/remove, snap, zoom, selection merging, and history
 - Common editing tools: split, copy/cut/paste, delete, undo/redo
-- Parameter controls: trim, speed (0.1x~16x), volume (0%~1000%), pitch (25%~400%)
+- Visual editing: canvas size/background controls, clip position/scale/rotation, and fade or crossfade transitions
+- Audio controls: trim, speed (0.1x~16x), volume (0%~1000%), pitch (25%~400%), and audio fades
 - Export options:
   - Video formats: `mp4` / `mov` / `mkv` / `webm` / `gif` / `webp`
   - Audio formats: `mp3` / `wav` / `flac` / `aac` / `opus`
   - Resolution presets: `original` / `1080p` / `720p` / `480p`
   - Quality presets: `high` / `medium` / `low`
-  - Progress display and cancel support
+  - Timeline, selected clips, or custom-range export; custom bitrate/CRF and animated-image FPS controls
+  - Progress, speed/ETA display, and cancel support
 
 ## Shortcuts
 
