@@ -2,6 +2,12 @@
 
 All notable changes to zClip are documented in this file.
 
+## [2.2.1] - 2026-07-16
+
+### Fixed
+
+- Ensure the Windows title-bar close button and taskbar "Close window" action fully exit zClip.
+
 ## [2.2.0] - 2026-07-16
 
 ### Added
@@ -19,3 +25,4 @@ All notable changes to zClip are documented in this file.
 - The Windows installer artifact is now consistently named `zClip.Setup.<version>.exe`.
 
 [2.2.0]: https://github.com/zJay26/zClip/compare/v2.1.0...v2.2.0
+[2.2.1]: https://github.com/zJay26/zClip/compare/v2.2.0...v2.2.1

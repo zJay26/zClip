@@ -10,6 +10,7 @@ import { enforceCachePolicies } from './services/cache-manager'
 import { cancelAllMediaJobs } from './services/media-job-manager'
 
 let mainWindow: BrowserWindow | null = null
+let isQuitting = false
 const pendingOpenFiles: string[] = []
 
 const MEDIA_EXTENSIONS = new Set([
@@ -141,6 +142,19 @@ function createWindow(): void {
     mainWindow?.show()
   })
 
+  // Route Windows native close requests through app.quit(). This makes the
+  // title-bar close button and taskbar "Close window" action behave reliably.
+  mainWindow.on('close', (event) => {
+    if (process.platform === 'darwin' || isQuitting) return
+    event.preventDefault()
+    isQuitting = true
+    app.quit()
+  })
+
+  mainWindow.on('closed', () => {
+    mainWindow = null
+  })
+
   mainWindow.webContents.on('did-finish-load', () => {
     if (pendingOpenFiles.length === 0) return
     const uniqueFiles = Array.from(new Set(pendingOpenFiles))
@@ -234,6 +248,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  isQuitting = true
   cancelAllMediaJobs()
 })
 
