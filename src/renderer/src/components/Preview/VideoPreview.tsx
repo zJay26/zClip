@@ -524,7 +524,17 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
             onError={(e) => {
               const error = e.currentTarget.error
               console.error('Video playback error:', error)
-              showToast('当前视频像素格式可能不被内置播放器支持', 'error')
+              // An unsupported source can fail once while its compatible proxy
+              // is still being generated. The media path update will retry with
+              // that proxy, so avoid presenting the expected transient failure
+              // as a terminal codec error.
+              if (isLikelyUnsupported && !playbackProxyFailed) return
+              showToast(
+                playbackProxyFailed
+                  ? '视频兼容代理生成失败，请检查素材文件'
+                  : `视频预览加载失败${error?.code ? `（错误码 ${error.code}）` : ''}`,
+                'error'
+              )
             }}
             playsInline
           />

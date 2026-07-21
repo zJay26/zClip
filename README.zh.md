@@ -21,10 +21,10 @@ zClip 是一个面向 Windows 的本地视频剪辑工具，强调「上手快�
 
 ## 下载
 
-> 当前仓库版本：`2.2.1`
+> 当前仓库版本：`2.3.0`
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.2.1/zClip.Setup.2.2.1.exe">
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.3.0/zClip.Setup.2.3.0.exe">
     <img src="https://img.shields.io/badge/Download_for_Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white" alt="Download for Windows"/>
   </a>
 </p>

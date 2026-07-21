@@ -21,10 +21,10 @@ zClip is built with Electron + React and uses FFmpeg for media analysis and expo
 
 ## Download
 
-> Current release in this repo: `2.2.1`
+> Current release in this repo: `2.3.0`
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.2.1/zClip.Setup.2.2.1.exe">
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.3.0/zClip.Setup.2.3.0.exe">
     <img src="https://img.shields.io/badge/Download_for_Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white" alt="Download for Windows"/>
   </a>
 </p>

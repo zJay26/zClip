@@ -8,6 +8,7 @@ interface TimelineAudioFadeBlockProps {
   clips: TimelineClip[]
   operationsByClip: Record<string, MediaOperation[]>
   trackTopY: number
+  trackHeight: number
   timeToX: (time: number) => number
   pixelsPerSecond: number
   onDragStateChange?: (dragging: boolean) => void
@@ -20,6 +21,7 @@ const TimelineAudioFadeBlock: React.FC<TimelineAudioFadeBlockProps> = ({
   clips,
   operationsByClip,
   trackTopY,
+  trackHeight,
   timeToX,
   pixelsPerSecond,
   onDragStateChange
@@ -70,6 +72,7 @@ const TimelineAudioFadeBlock: React.FC<TimelineAudioFadeBlockProps> = ({
 
   const left = timeToX(timing.start)
   const width = Math.max(14, (timing.end - timing.start) * pixelsPerSecond)
+  const verticalInset = Math.min(10, Math.max(1, trackHeight * 0.2))
   const label = fade.kind === 'in' ? '淡入' : '淡出'
 
   const startDrag = (event: React.MouseEvent, edge: Edge): void => {
@@ -88,10 +91,10 @@ const TimelineAudioFadeBlock: React.FC<TimelineAudioFadeBlockProps> = ({
     <div
       className="absolute z-30 overflow-hidden rounded-sm border border-cyan-200/80 bg-cyan-500/35 text-[10px] font-semibold text-white shadow-[0_0_8px_rgba(34,211,238,0.25)]"
       style={{
-        top: trackTopY + 10,
+        top: trackTopY + verticalInset,
         left,
         width,
-        height: 30
+        height: Math.max(2, trackHeight - verticalInset * 2)
       }}
       onDoubleClick={(event) => {
         event.stopPropagation()

@@ -9,12 +9,10 @@ import { useProjectStore } from '../../stores/project-store'
 import { formatTime } from '../../lib/utils'
 import {
   RULER_HEIGHT,
-  TRACK_HEIGHT,
-  TRACK_GAP,
-  GROUP_GAP,
   MAX_ZOOM,
   MIN_ZOOM,
-  HEADER_WIDTH
+  HEADER_WIDTH,
+  getAdaptiveTrackLayout
 } from './timeline-constants'
 import { useTimelineZoom } from './useTimelineZoom'
 import { useSnap } from './useSnap'
@@ -111,12 +109,14 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
   // Track container rect (update on scroll / resize)
   const [containerRect, setContainerRect] = useState<DOMRect | null>(null)
   const [scrollLeft, setScrollLeft] = useState(0)
+  const [containerHeight, setContainerHeight] = useState(0)
 
   const updateContainerRect = useCallback(() => {
     const el = containerRef.current
     if (el) {
       setContainerRect(el.getBoundingClientRect())
       setScrollLeft(el.scrollLeft)
+      setContainerHeight(el.clientHeight)
     }
   }, [])
 
@@ -140,11 +140,13 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
   }, [updateContainerRect])
 
   // Layout calculations
-  const videoAreaHeight = videoTrackCount * TRACK_HEIGHT + Math.max(0, videoTrackCount - 1) * TRACK_GAP
-  const audioAreaHeight = audioTrackCount * TRACK_HEIGHT + Math.max(0, audioTrackCount - 1) * TRACK_GAP
+  const trackLayout = useMemo(
+    () => getAdaptiveTrackLayout(containerHeight, videoTrackCount, audioTrackCount),
+    [audioTrackCount, containerHeight, videoTrackCount]
+  )
+  const { trackHeight, trackGap, groupGap, videoAreaHeight, trackAreaHeight } = trackLayout
   const trackAreaTop = RULER_HEIGHT
-  const audioTrackTop = trackAreaTop + videoAreaHeight + GROUP_GAP
-  const trackAreaHeight = videoAreaHeight + audioAreaHeight + GROUP_GAP
+  const audioTrackTop = trackAreaTop + videoAreaHeight + groupGap
 
   // Filter clips by track type
   const videoClips = useMemo(() => clips.filter((c) => c.track === 'video'), [clips])
@@ -170,9 +172,9 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
       const y = clientY - containerRect.top
       const relativeY = y - trackAreaTop
       if (relativeY < 0 || relativeY > videoAreaHeight) return null
-      return Math.max(0, Math.min(videoTrackCount - 1, Math.floor(relativeY / (TRACK_HEIGHT + TRACK_GAP))))
+      return Math.max(0, Math.min(videoTrackCount - 1, Math.floor(relativeY / (trackHeight + trackGap))))
     },
-    [containerRect, trackAreaTop, videoAreaHeight, videoTrackCount]
+    [containerRect, trackAreaTop, trackGap, trackHeight, videoAreaHeight, videoTrackCount]
   )
 
   const handleDragOver = useCallback((event: React.DragEvent) => {
@@ -319,13 +321,16 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
           removeVideoTrack={removeVideoTrack}
           addAudioTrack={addAudioTrack}
           removeAudioTrack={removeAudioTrack}
+          trackHeight={trackHeight}
+          trackGap={trackGap}
+          groupGap={groupGap}
         />
 
         {/* Right: Scrollable timeline area */}
         <div
           ref={containerRef}
-          className="relative flex-1 min-h-0 overflow-x-auto overflow-y-hidden select-none"
-          style={{ height: '100%', minHeight: RULER_HEIGHT + trackAreaHeight + 4 }}
+          className="relative min-h-0 flex-1 overflow-x-auto overflow-y-hidden select-none"
+          style={{ height: '100%' }}
           onWheel={handleWheelWithLock}
           onDragOver={handleDragOver}
           onDragLeave={(event) => {
@@ -338,7 +343,10 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
               <span className="ui-material rounded-full px-3 py-1.5 text-xs font-medium text-text-primary">放到相邻视频片段的交界处</span>
             </div>
           )}
-          <div className="relative" style={{ width: totalWidth, height: '100%' }}>
+          <div
+            className="relative"
+            style={{ width: totalWidth, height: '100%' }}
+          >
             {/* Ruler */}
             <TimelineRuler
               totalWidth={totalWidth}
@@ -367,8 +375,8 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
                   className={`absolute left-0 right-0 rounded-sm border border-surface-border/20
                     ${i % 2 === 0 ? 'bg-surface/30' : 'bg-surface/50'}`}
                   style={{
-                    top: i * (TRACK_HEIGHT + TRACK_GAP),
-                    height: TRACK_HEIGHT
+                    top: i * (trackHeight + trackGap),
+                    height: trackHeight
                   }}
                 />
               ))}
@@ -380,8 +388,8 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
                   className={`absolute left-0 right-0 rounded-sm border border-surface-border/20
                     ${i % 2 === 0 ? 'bg-surface/30' : 'bg-surface/50'}`}
                   style={{
-                    top: videoAreaHeight + GROUP_GAP + i * (TRACK_HEIGHT + TRACK_GAP),
-                    height: TRACK_HEIGHT
+                    top: videoAreaHeight + groupGap + i * (trackHeight + trackGap),
+                    height: trackHeight
                   }}
                 />
               ))}
@@ -389,7 +397,7 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
               {/* Group separator line */}
               <div
                 className="absolute left-0 right-0 h-px bg-surface-border/40"
-                style={{ top: videoAreaHeight + GROUP_GAP / 2 }}
+                style={{ top: videoAreaHeight + groupGap / 2 }}
               />
             </div>
 
@@ -398,7 +406,7 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
               <TimelineClipBlock
                 key={clip.id}
                 clip={clip}
-                trackTopY={trackAreaTop + clip.trackIndex * (TRACK_HEIGHT + TRACK_GAP)}
+                trackTopY={trackAreaTop + clip.trackIndex * (trackHeight + trackGap)}
                 timeToX={timeToX}
                 xToTime={xToTime}
                 pixelsPerSecond={pixelsPerSecond}
@@ -409,6 +417,8 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
                 trackType="video"
                 trackCount={videoTrackCount}
                 baseTrackTop={trackAreaTop}
+                trackHeight={trackHeight}
+                trackGap={trackGap}
                 onDragStateChange={setIsDragging}
                 onClipContextMenu={openContextMenu}
               />
@@ -419,7 +429,7 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
               <TimelineClipBlock
                 key={clip.id}
                 clip={clip}
-                trackTopY={audioTrackTop + clip.trackIndex * (TRACK_HEIGHT + TRACK_GAP)}
+                trackTopY={audioTrackTop + clip.trackIndex * (trackHeight + trackGap)}
                 timeToX={timeToX}
                 xToTime={xToTime}
                 pixelsPerSecond={pixelsPerSecond}
@@ -430,6 +440,8 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
                 trackType="audio"
                 trackCount={audioTrackCount}
                 baseTrackTop={audioTrackTop}
+                trackHeight={trackHeight}
+                trackGap={trackGap}
                 onDragStateChange={setIsDragging}
                 onClipContextMenu={openContextMenu}
               />
@@ -444,7 +456,8 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
                   transition={transition}
                   clips={clips}
                   operationsByClip={operationsByClip}
-                  trackTopY={trackAreaTop + leftClip.trackIndex * (TRACK_HEIGHT + TRACK_GAP)}
+                  trackTopY={trackAreaTop + leftClip.trackIndex * (trackHeight + trackGap)}
+                  trackHeight={trackHeight}
                   timeToX={timeToX}
                   pixelsPerSecond={pixelsPerSecond}
                   onDragStateChange={setIsDragging}
@@ -461,7 +474,8 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
                   fade={fade}
                   clips={clips}
                   operationsByClip={operationsByClip}
-                  trackTopY={audioTrackTop + audioClip.trackIndex * (TRACK_HEIGHT + TRACK_GAP)}
+                  trackTopY={audioTrackTop + audioClip.trackIndex * (trackHeight + trackGap)}
+                  trackHeight={trackHeight}
                   timeToX={timeToX}
                   pixelsPerSecond={pixelsPerSecond}
                   onDragStateChange={setIsDragging}

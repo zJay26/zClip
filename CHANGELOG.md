@@ -2,6 +2,19 @@
 
 All notable changes to zClip are documented in this file.
 
+## [2.3.0] - 2026-07-21
+
+### Fixed
+
+- Restore reliable MP3 and other local-media playback, including initial playback and seeking before metadata is ready.
+- Ensure Windows title-bar and taskbar close requests fully exit the application.
+
+### Changed
+
+- Serve authorized local media through the dedicated `local-media://media` protocol with range-response support.
+- Refine timeline track layout, zoom behavior, clip blocks, transitions, and audio-fade rendering.
+- Add regression coverage for local-media responses and timeline track layout.
+
 ## [2.2.1] - 2026-07-16
 
 ### Fixed
@@ -26,3 +39,4 @@ All notable changes to zClip are documented in this file.
 
 [2.2.0]: https://github.com/zJay26/zClip/compare/v2.1.0...v2.2.0
 [2.2.1]: https://github.com/zJay26/zClip/compare/v2.2.0...v2.2.1
+[2.3.0]: https://github.com/zJay26/zClip/compare/v2.2.1...v2.3.0

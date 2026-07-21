@@ -9,6 +9,7 @@ interface TimelineTransitionBlockProps {
   clips: TimelineClip[]
   operationsByClip: Record<string, MediaOperation[]>
   trackTopY: number
+  trackHeight: number
   timeToX: (time: number) => number
   pixelsPerSecond: number
   onDragStateChange?: (dragging: boolean) => void
@@ -25,6 +26,7 @@ const TimelineTransitionBlock: React.FC<TimelineTransitionBlockProps> = ({
   clips,
   operationsByClip,
   trackTopY,
+  trackHeight,
   timeToX,
   pixelsPerSecond,
   onDragStateChange
@@ -86,6 +88,7 @@ const TimelineTransitionBlock: React.FC<TimelineTransitionBlockProps> = ({
   const left = timeToX(timing.start)
   const width = Math.max(16, (timing.end - timing.start) * pixelsPerSecond)
   const boundaryX = timeToX(timing.boundary) - left
+  const verticalInset = Math.min(8, Math.max(1, trackHeight * 0.16))
 
   const startDrag = (event: React.MouseEvent, edge: Edge): void => {
     event.preventDefault()
@@ -103,10 +106,10 @@ const TimelineTransitionBlock: React.FC<TimelineTransitionBlockProps> = ({
     <div
       className="absolute z-30 overflow-hidden rounded-sm border border-violet-300/80 bg-violet-500/45 text-[10px] text-white shadow-[0_0_10px_rgba(139,92,246,0.35)]"
       style={{
-        top: trackTopY + 8,
+        top: trackTopY + verticalInset,
         left,
         width,
-        height: 34
+        height: Math.max(2, trackHeight - verticalInset * 2)
       }}
       onDoubleClick={(event) => {
         event.stopPropagation()

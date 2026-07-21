@@ -13,6 +13,53 @@ export const SNAP_THRESHOLD_PX = 10
 export const HEADER_WIDTH = 72
 export const TIMELINE_TAIL_PX = 220
 
+export interface AdaptiveTrackLayout {
+  trackHeight: number
+  trackGap: number
+  groupGap: number
+  videoAreaHeight: number
+  audioAreaHeight: number
+  trackAreaHeight: number
+}
+
+/** Size every track so the complete stack exactly fills the track viewport. */
+export function getAdaptiveTrackLayout(
+  viewportHeight: number,
+  videoTrackCount: number,
+  audioTrackCount: number
+): AdaptiveTrackLayout {
+  const totalTracks = Math.max(1, videoTrackCount + audioTrackCount)
+  const withinGroupGapCount = Math.max(0, videoTrackCount - 1) + Math.max(0, audioTrackCount - 1)
+  const hasBothGroups = videoTrackCount > 0 && audioTrackCount > 0
+  const nominalTrackAreaHeight =
+    totalTracks * TRACK_HEIGHT +
+    withinGroupGapCount * TRACK_GAP +
+    (hasBothGroups ? GROUP_GAP : 0)
+  const trackAreaHeight = viewportHeight > RULER_HEIGHT
+    ? viewportHeight - RULER_HEIGHT
+    : nominalTrackAreaHeight
+  const shrinkScale = Math.min(1, trackAreaHeight / nominalTrackAreaHeight)
+  const trackGap = TRACK_GAP * shrinkScale
+  const groupGap = hasBothGroups ? GROUP_GAP * shrinkScale : 0
+  const trackHeight = Math.max(
+    1,
+    (trackAreaHeight - withinGroupGapCount * trackGap - groupGap) / totalTracks
+  )
+  const videoAreaHeight =
+    videoTrackCount * trackHeight + Math.max(0, videoTrackCount - 1) * trackGap
+  const audioAreaHeight =
+    audioTrackCount * trackHeight + Math.max(0, audioTrackCount - 1) * trackGap
+
+  return {
+    trackHeight,
+    trackGap,
+    groupGap,
+    videoAreaHeight,
+    audioAreaHeight,
+    trackAreaHeight
+  }
+}
+
 /** Calculate sensible tick intervals based on zoom level */
 export function getTickInterval(
   _duration: number,

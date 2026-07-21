@@ -41,24 +41,29 @@ export function formatFileSize(bytes: number): string {
 }
 
 /**
- * Convert a local filesystem path into a file URL Chromium can load.
- * Path segments are encoded individually so #, ?, %, spaces, and non-ASCII
- * text stay part of the filename instead of being interpreted as URL syntax.
+ * Convert a local filesystem path into the authorized custom media URL served
+ * by the Electron main process. Keep drive separators and URL path separators
+ * visible so Chromium accepts the URL as a standard, streamable media URL.
  */
 export function toMediaUrl(filePath: string): string {
   const normalizedPath = filePath.replace(/\\/g, '/')
 
   if (normalizedPath.startsWith('//')) {
-    const [host = '', ...segments] = normalizedPath.slice(2).split('/')
-    return `file://${encodeURIComponent(host)}/${segments.map(encodeURIComponent).join('/')}`
+    const encodedUncPath = normalizedPath
+      .slice(2)
+      .split('/')
+      .map(encodeURIComponent)
+      .join('/')
+    return `local-media://media/__unc__/${encodedUncPath}`
   }
 
-  const encodedPath = normalizedPath
+  const absolutePath = normalizedPath.startsWith('/') ? normalizedPath : `/${normalizedPath}`
+  const encodedPath = absolutePath
     .split('/')
-    .map((segment, index) => (index === 0 && /^[A-Za-z]:$/.test(segment) ? segment : encodeURIComponent(segment)))
+    .map((segment) => (/^[A-Za-z]:$/.test(segment) ? segment : encodeURIComponent(segment)))
     .join('/')
 
-  return normalizedPath.startsWith('/') ? `file://${encodedPath}` : `file:///${encodedPath}`
+  return `local-media://media${encodedPath}`
 }
 
 /**
@@ -67,8 +72,12 @@ export function toMediaUrl(filePath: string): string {
 export function mediaUrlToPath(mediaUrl: string): string {
   try {
     if (mediaUrl.startsWith('local-media://')) {
-      const rawPath = mediaUrl.replace(/^local-media:\/\//, '')
-      return decodeURIComponent(rawPath.startsWith('/') ? rawPath.slice(1) : rawPath)
+      const url = new URL(mediaUrl)
+      const decodedPath = decodeURIComponent(url.pathname)
+      if (decodedPath.startsWith('/__unc__/')) {
+        return `//${decodedPath.slice('/__unc__/'.length)}`
+      }
+      return /^\/[A-Za-z]:\//.test(decodedPath) ? decodedPath.slice(1) : decodedPath
     }
     if (mediaUrl.startsWith('file://')) {
       const url = new URL(mediaUrl)

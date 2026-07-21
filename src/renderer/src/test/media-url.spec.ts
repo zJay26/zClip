@@ -6,7 +6,15 @@ describe('media URL helpers', () => {
     const path = 'D:\\media clips\\a#b?c%25 片段.mp4'
     const url = toMediaUrl(path)
 
-    expect(url).toBe('file:///D:/media%20clips/a%23b%3Fc%2525%20%E7%89%87%E6%AE%B5.mp4')
+    expect(url).toBe('local-media://media/D:/media%20clips/a%23b%3Fc%2525%20%E7%89%87%E6%AE%B5.mp4')
+    expect(mediaUrlToPath(url).replace(/\//g, '\\')).toBe(path)
+  })
+
+  test('round-trips UNC paths without treating the server as a URL host', () => {
+    const path = '\\\\media-server\\shared clips\\voice.mp3'
+    const url = toMediaUrl(path)
+
+    expect(url).toBe('local-media://media/__unc__/media-server/shared%20clips/voice.mp3')
     expect(mediaUrlToPath(url).replace(/\//g, '\\')).toBe(path)
   })
 

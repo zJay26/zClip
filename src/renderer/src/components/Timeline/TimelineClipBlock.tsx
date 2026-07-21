@@ -6,7 +6,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useProjectStore } from '../../stores/project-store'
 import { formatTime, clamp, toMediaUrl } from '../../lib/utils'
-import { TRACK_HEIGHT, TRACK_GAP, HANDLE_WIDTH } from './timeline-constants'
+import { HANDLE_WIDTH } from './timeline-constants'
 import type { SnapEngine } from './useSnap'
 import type {
   TrimParams,
@@ -31,6 +31,8 @@ interface TimelineClipBlockProps {
   trackType: 'video' | 'audio'
   trackCount: number
   baseTrackTop: number
+  trackHeight: number
+  trackGap: number
   onDragStateChange?: (dragging: boolean) => void
   onClipContextMenu?: (clipId: string, x: number, y: number) => void
 }
@@ -52,6 +54,8 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
   trackType,
   trackCount,
   baseTrackTop,
+  trackHeight,
+  trackGap,
   onDragStateChange,
   onClipContextMenu
 }) => {
@@ -170,8 +174,8 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
     const load = async (): Promise<void> => {
       if (!window.api?.getTimelinePreview) return
       const options = isVideo
-        ? { video: { height: TRACK_HEIGHT - 6, frames: 12 } }
-        : { audio: { width: 800, height: TRACK_HEIGHT - 8 } }
+        ? { video: { height: Math.max(8, Math.round(trackHeight - 6)), frames: 12 } }
+        : { audio: { width: 800, height: Math.max(8, Math.round(trackHeight - 8)) } }
       const res = await window.api.getTimelinePreview(clip.filePath, options)
       if (cancelled || !res?.success || !res.data) return
       const next = {
@@ -184,7 +188,7 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
     return () => {
       cancelled = true
     }
-  }, [clip.filePath, isVideo])
+  }, [clip.filePath, isVideo, trackHeight])
 
   // Click handler
   const handleClick = useCallback(
@@ -286,7 +290,7 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
         if (containerRect) {
           const y = e.clientY - containerRect.top
           const relativeY = y - baseTrackTop
-          let nextTrackIndex = Math.floor(relativeY / (TRACK_HEIGHT + TRACK_GAP))
+          let nextTrackIndex = Math.floor(relativeY / (trackHeight + trackGap))
           nextTrackIndex = clamp(nextTrackIndex, 0, Math.max(trackCount - 1, 0))
           const hasEffectiveChange =
             Math.abs(newStart - clip.startTime) > DRAG_EPSILON_SECONDS || nextTrackIndex !== clip.trackIndex
@@ -321,7 +325,8 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
       }
     }, [
       dragMode, pixelsPerSecond, clip.id, clip.startTime, clip.trackIndex, visibleDuration,
-      snap, moveClip, trimClipEdge, containerRect, baseTrackTop, trackCount
+      snap, moveClip, trimClipEdge, containerRect, baseTrackTop, trackCount,
+      trackHeight, trackGap
     ])
 
     const finishPointerDrag = useCallback((e: React.PointerEvent<HTMLDivElement>): void => {
@@ -359,7 +364,7 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
         top: trackTopY,
         left: clipX,
         width: clipWidth,
-        height: TRACK_HEIGHT,
+        height: trackHeight,
         zIndex: isPrimary ? 11 : isSelected ? 10 : 5
       }}
       onClick={handleClick}
@@ -407,7 +412,7 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
         />
       )}
       {/* Link toggle */}
-      {groupClipCount > 1 && (
+      {groupClipCount > 1 && trackHeight >= 24 && (
         <button
           className="absolute left-1 top-1 z-20 rounded bg-black/40 text-white/80 hover:text-white hover:bg-black/60
                      px-1 py-[1px] text-[9px] pointer-events-auto"
@@ -450,19 +455,27 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
       </div>
 
       {/* Clip content */}
-      <div className="flex items-center h-full px-2.5 pointer-events-none overflow-hidden">
+      <div
+        className="flex h-full items-center overflow-hidden pointer-events-none"
+        style={{ paddingInline: trackHeight < 18 ? 5 : 10 }}
+      >
         <div className="flex flex-col min-w-0">
-          <span className={`text-[11px] font-medium truncate leading-tight ${textColor}`}>
+          <span
+            className={`truncate font-medium leading-none ${textColor}`}
+            style={{ fontSize: Math.max(6, Math.min(11, trackHeight * 0.36)) }}
+          >
             {fileName}
           </span>
-          <span className="text-[9px] text-text-muted/70 font-mono truncate leading-tight">
-            {formatTime(visibleDuration)}
-          </span>
+          {trackHeight >= 28 && (
+            <span className="truncate font-mono text-[9px] leading-tight text-text-muted/70">
+              {formatTime(visibleDuration)}
+            </span>
+          )}
         </div>
       </div>
 
       {/* Drag delta badge */}
-      {dragMode === 'move' && (
+      {dragMode === 'move' && trackHeight >= 22 && (
         <div className="absolute left-1 bottom-1 z-20 px-1 py-[1px] rounded bg-black/40 text-white/80 text-[9px] pointer-events-none">
           {dragDelta >= 0 ? '+' : ''}
           {formatTime(Math.abs(dragDelta))}
@@ -470,7 +483,7 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
       )}
 
       {/* Operation badges */}
-      {badges.length > 0 && (
+      {badges.length > 0 && trackHeight >= 24 && (
         <div className="absolute right-1 top-1 z-20 flex gap-1 pointer-events-none">
           {badges.map((badge) => (
             <span

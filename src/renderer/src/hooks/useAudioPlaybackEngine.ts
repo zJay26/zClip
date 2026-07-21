@@ -23,6 +23,47 @@ function setGainValue(ctx: AudioContext, gain: GainNode, value: number): void {
   }
 }
 
+interface NativeAudioController {
+  audio: HTMLAudioElement
+  src: string
+  pendingTime: number | null
+  shouldPlay: boolean
+  playPromise: Promise<void> | null
+  onLoadedMetadata: () => void
+}
+
+function applyNativeAudioTime(controller: NativeAudioController, time: number): boolean {
+  controller.pendingTime = Math.max(0, Number.isFinite(time) ? time : 0)
+  const { audio } = controller
+  if (audio.readyState < HTMLMediaElement.HAVE_METADATA || !Number.isFinite(audio.duration)) {
+    return false
+  }
+
+  const target = Math.min(controller.pendingTime, Math.max(0, audio.duration - 0.0001))
+  try {
+    audio.currentTime = target
+    controller.pendingTime = null
+    return true
+  } catch {
+    return false
+  }
+}
+
+function startNativeAudio(controller: NativeAudioController): void {
+  if (!controller.shouldPlay || controller.playPromise || !controller.audio.paused) return
+  if (controller.pendingTime !== null && !applyNativeAudioTime(controller, controller.pendingTime)) {
+    return
+  }
+
+  controller.playPromise = controller.audio.play()
+    .catch((error) => {
+      console.error('Failed to play audio:', error)
+    })
+    .finally(() => {
+      controller.playPromise = null
+    })
+}
+
 export function useAudioPlaybackEngine({
   clips,
   operationsByClip,
@@ -47,18 +88,7 @@ export function useAudioPlaybackEngine({
       }
     >
   >(new Map())
-  const audioElementRef = useRef<Map<string, HTMLAudioElement>>(new Map())
-  const audioElementPipelinesRef = useRef<
-    Map<
-      string,
-      {
-        audio: HTMLAudioElement
-        source: MediaElementAudioSourceNode
-        gain: GainNode
-        connected: boolean
-      }
-    >
-  >(new Map())
+  const nativeAudioControllersRef = useRef<Map<string, NativeAudioController>>(new Map())
   const audioLoadingRef = useRef<Map<string, Promise<void>>>(new Map())
   const lastTimelineTimeRef = useRef<Map<string, number>>(new Map())
   const lastAudioParamsRef = useRef<
@@ -184,24 +214,41 @@ export function useAudioPlaybackEngine({
     [getAudioContext, getPlaybackPath]
   )
 
-  const ensureAudioElementPipeline = useCallback(
-    (clip: TimelineClip): { audio: HTMLAudioElement; source: MediaElementAudioSourceNode; gain: GainNode; connected: boolean } => {
-      const existing = audioElementPipelinesRef.current.get(clip.id)
-      if (existing) return existing
-      const ctx = getAudioContext()
-      let audio = audioElementRef.current.get(clip.id)
-      if (!audio) {
-        audio = new Audio(toMediaUrl(getPlaybackPath(clip)))
-        audio.preload = 'auto'
-        audioElementRef.current.set(clip.id, audio)
+  const ensureNativeAudioController = useCallback(
+    (clip: TimelineClip): NativeAudioController => {
+      const src = toMediaUrl(getPlaybackPath(clip))
+      const existing = nativeAudioControllersRef.current.get(clip.id)
+      if (existing?.src === src) return existing
+      if (existing) {
+        existing.shouldPlay = false
+        existing.audio.pause()
+        existing.audio.removeEventListener('loadedmetadata', existing.onLoadedMetadata)
+        existing.audio.removeAttribute('src')
+        existing.audio.load()
       }
-      const source = ctx.createMediaElementSource(audio)
-      const gain = ctx.createGain()
-      const pipeline = { audio, source, gain, connected: false }
-      audioElementPipelinesRef.current.set(clip.id, pipeline)
-      return pipeline
+
+      const audio = new Audio(src)
+      audio.preload = 'auto'
+      const controller: NativeAudioController = {
+        audio,
+        src,
+        pendingTime: null,
+        shouldPlay: false,
+        playPromise: null,
+        onLoadedMetadata: () => {}
+      }
+      controller.onLoadedMetadata = () => {
+        if (controller.pendingTime !== null) {
+          applyNativeAudioTime(controller, controller.pendingTime)
+        }
+        startNativeAudio(controller)
+      }
+      audio.addEventListener('loadedmetadata', controller.onLoadedMetadata)
+      audio.load()
+      nativeAudioControllersRef.current.set(clip.id, controller)
+      return controller
     },
-    [getAudioContext, getPlaybackPath]
+    [getPlaybackPath]
   )
 
   const rebuildPitchPipeline = useCallback(
@@ -231,8 +278,6 @@ export function useAudioPlaybackEngine({
 
   const syncAudioForTime = useCallback(
     (timelineTime: number, shouldPlay: boolean) => {
-      const ctx = audioContextRef.current
-      if (!ctx) return
       const activeIds = new Set<string>()
       let shouldMuteVideo = false
       clips.forEach((clip) => {
@@ -254,7 +299,7 @@ export function useAudioPlaybackEngine({
           range.visibleDuration
         )
         const gainValue = Math.max(0, volumePercent / 100) * fadeMultiplier
-        const useProcessed = pitchPercent !== 100
+        const useProcessed = pitchPercent !== 100 || gainValue > 1
         const lastParams = lastAudioParamsRef.current.get(clip.id)
         const paramsChanged =
           !lastParams ||
@@ -270,16 +315,11 @@ export function useAudioPlaybackEngine({
         })
 
         if (useProcessed) {
+          const ctx = getAudioContext()
           shouldMuteVideo = true
           ensureAudioPipeline(clip)
           const pipeline = audioPipelinesRef.current.get(clip.id)
           if (!pipeline) return
-          const elementPipeline = audioElementPipelinesRef.current.get(clip.id)
-          if (elementPipeline?.connected) {
-            elementPipeline.source.disconnect()
-            elementPipeline.gain.disconnect()
-            elementPipeline.connected = false
-          }
 
           setGainValue(ctx, pipeline.gain, gainValue)
 
@@ -312,9 +352,10 @@ export function useAudioPlaybackEngine({
             lastTimelineTimeRef.current.set(clip.id, timelineTime)
           }
 
-          const nativeAudio = audioElementRef.current.get(clip.id)
-          if (nativeAudio) {
-            nativeAudio.pause()
+          const nativeController = nativeAudioControllersRef.current.get(clip.id)
+          if (nativeController) {
+            nativeController.shouldPlay = false
+            nativeController.audio.pause()
           }
         } else {
           const pipeline = audioPipelinesRef.current.get(clip.id)
@@ -324,29 +365,27 @@ export function useAudioPlaybackEngine({
             pipeline.connected = false
           }
 
-          const elementPipeline = ensureAudioElementPipeline(clip)
-          setGainValue(ctx, elementPipeline.gain, gainValue)
-          if (Math.abs(elementPipeline.audio.currentTime - localTime) > 0.08) {
-            elementPipeline.audio.currentTime = localTime
+          const controller = ensureNativeAudioController(clip)
+          const { audio } = controller
+          audio.volume = Math.max(0, Math.min(1, gainValue))
+          if (audio.playbackRate !== speedRate) {
+            audio.playbackRate = speedRate
           }
-          if (elementPipeline.audio.playbackRate !== speedRate) {
-            elementPipeline.audio.playbackRate = speedRate
-          }
-          elementPipeline.audio.volume = 1
-          if (shouldPlay && !elementPipeline.connected) {
-            elementPipeline.source.connect(elementPipeline.gain)
-            elementPipeline.gain.connect(ctx.destination)
-            elementPipeline.connected = true
-          } else if (!shouldPlay && elementPipeline.connected) {
-            elementPipeline.source.disconnect()
-            elementPipeline.gain.disconnect()
-            elementPipeline.connected = false
-          }
+          const lastTimeline = lastTimelineTimeRef.current.get(clip.id)
+          const timelineJumped =
+            lastTimeline === undefined || Math.abs(timelineTime - lastTimeline) > 0.1
           if (shouldPlay) {
-            elementPipeline.audio.play().catch(() => {})
+            controller.shouldPlay = true
+            if (timelineJumped || paramsChanged) {
+              applyNativeAudioTime(controller, localTime)
+            }
+            startNativeAudio(controller)
           } else {
-            elementPipeline.audio.pause()
+            controller.shouldPlay = false
+            audio.pause()
+            applyNativeAudioTime(controller, localTime)
           }
+          lastTimelineTimeRef.current.set(clip.id, timelineTime)
         }
       })
 
@@ -358,17 +397,12 @@ export function useAudioPlaybackEngine({
         }
       })
 
-      audioElementRef.current.forEach((audio, id) => {
+      nativeAudioControllersRef.current.forEach((controller, id) => {
         if (!activeIds.has(id)) {
-          audio.pause()
-        }
-      })
-
-      audioElementPipelinesRef.current.forEach((pipeline, id) => {
-        if (!activeIds.has(id) && pipeline.connected) {
-          pipeline.source.disconnect()
-          pipeline.gain.disconnect()
-          pipeline.connected = false
+          controller.shouldPlay = false
+          controller.audio.pause()
+          controller.pendingTime = null
+          lastTimelineTimeRef.current.delete(id)
         }
       })
 
@@ -386,7 +420,8 @@ export function useAudioPlaybackEngine({
       getFadeMultiplierForClip,
       operationsByClip,
       ensureAudioPipeline,
-      ensureAudioElementPipeline,
+      ensureNativeAudioController,
+      getAudioContext,
       videoRef
     ]
   )
@@ -399,13 +434,9 @@ export function useAudioPlaybackEngine({
         pipeline.connected = false
       }
     })
-    audioElementRef.current.forEach((audio) => audio.pause())
-    audioElementPipelinesRef.current.forEach((pipeline) => {
-      if (pipeline.connected) {
-        pipeline.source.disconnect()
-        pipeline.gain.disconnect()
-        pipeline.connected = false
-      }
+    nativeAudioControllersRef.current.forEach((controller) => {
+      controller.shouldPlay = false
+      controller.audio.pause()
     })
   }, [])
 
@@ -421,24 +452,14 @@ export function useAudioPlaybackEngine({
       audioPipelinesRef.current.delete(id)
     })
 
-    audioElementPipelinesRef.current.forEach((pipeline, id) => {
+    nativeAudioControllersRef.current.forEach((controller, id) => {
       if (clipIds.has(id)) return
-      if (pipeline.connected) {
-        pipeline.source.disconnect()
-        pipeline.gain.disconnect()
-      }
-      pipeline.audio.pause()
-      pipeline.audio.removeAttribute('src')
-      pipeline.audio.load()
-      audioElementPipelinesRef.current.delete(id)
-    })
-
-    audioElementRef.current.forEach((audio, id) => {
-      if (clipIds.has(id)) return
-      audio.pause()
-      audio.removeAttribute('src')
-      audio.load()
-      audioElementRef.current.delete(id)
+      controller.shouldPlay = false
+      controller.audio.pause()
+      controller.audio.removeEventListener('loadedmetadata', controller.onLoadedMetadata)
+      controller.audio.removeAttribute('src')
+      controller.audio.load()
+      nativeAudioControllersRef.current.delete(id)
     })
 
     audioLoadingRef.current.forEach((_promise, id) => {
@@ -465,8 +486,12 @@ export function useAudioPlaybackEngine({
       stopAllAudio()
       audioLoadingRef.current.clear()
       audioPipelinesRef.current.clear()
-      audioElementRef.current.clear()
-      audioElementPipelinesRef.current.clear()
+      nativeAudioControllersRef.current.forEach((controller) => {
+        controller.audio.removeEventListener('loadedmetadata', controller.onLoadedMetadata)
+        controller.audio.removeAttribute('src')
+        controller.audio.load()
+      })
+      nativeAudioControllersRef.current.clear()
       lastTimelineTimeRef.current.clear()
       lastAudioParamsRef.current.clear()
       if (audioContextRef.current) {

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, protocol, net } from 'electron'
+import { app, BrowserWindow, shell, protocol } from 'electron'
 import { join, isAbsolute, normalize, extname } from 'path'
 import { existsSync, statSync } from 'fs'
 import { pathToFileURL, fileURLToPath } from 'url'
@@ -8,6 +8,7 @@ import { IPC_CHANNELS } from '../shared/types'
 import { authorizeMediaPaths, isMediaPathAuthorized } from './security/media-access'
 import { enforceCachePolicies } from './services/cache-manager'
 import { cancelAllMediaJobs } from './services/media-job-manager'
+import { createLocalMediaResponse } from './local-media-response'
 
 let mainWindow: BrowserWindow | null = null
 let isQuitting = false
@@ -114,7 +115,7 @@ protocol.registerSchemesAsPrivileged([
       secure: true,
       supportFetchAPI: true,
       stream: true,
-      corsEnabled: false,
+      corsEnabled: true,
       bypassCSP: false
     }
   }
@@ -148,6 +149,8 @@ function createWindow(): void {
     if (process.platform === 'darwin' || isQuitting) return
     event.preventDefault()
     isQuitting = true
+    cancelAllMediaJobs()
+    mainWindow?.destroy()
     app.quit()
   })
 
@@ -200,20 +203,20 @@ app.whenReady().then(() => {
       if (request.method !== 'GET' && request.method !== 'HEAD') {
         return new Response('Method not allowed', { status: 405 })
       }
-      // Decode URL manually to handle all edge cases (spaces, special chars)
-      // Remove 'local-media:///' prefix
-      const rawPath = request.url.replace(/^local-media:\/\//, '')
-      const decodedPath = decodeURIComponent(rawPath.startsWith('/') ? rawPath.slice(1) : rawPath)
+      const mediaUrl = new URL(request.url)
+      if (mediaUrl.hostname !== 'media') {
+        return new Response('Invalid media URL', { status: 400 })
+      }
+      const decodedUrlPath = decodeURIComponent(mediaUrl.pathname)
+      const decodedPath = decodedUrlPath.startsWith('/__unc__/')
+        ? `//${decodedUrlPath.slice('/__unc__/'.length)}`
+        : /^\/[A-Za-z]:\//.test(decodedUrlPath)
+          ? decodedUrlPath.slice(1)
+          : decodedUrlPath
       if (!isMediaPathAuthorized(decodedPath)) {
         return new Response('Media access denied', { status: 403 })
       }
-      const fileUrl = pathToFileURL(decodedPath).href
-
-      return await net.fetch(fileUrl, {
-        method: request.method,
-        headers: request.headers,
-        bypassCustomProtocolHandlers: true
-      })
+      return await createLocalMediaResponse(decodedPath, request)
     } catch (error) {
       console.error('Failed to load local media:', error)
       return new Response('Media not found', { status: 404 })
