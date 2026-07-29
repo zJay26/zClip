@@ -161,7 +161,7 @@ export interface TimelinePreviewResult {
 
 /** 导出选项 */
 export type ResolutionPreset = 'original' | '1080p' | '720p' | '480p'
-export type QualityPreset = 'high' | 'medium' | 'low' | 'custom'
+export type QualityPreset = 'ultra_high' | 'high' | 'medium' | 'low' | 'ultra_low' | 'custom'
 export type H264Preset =
   | 'ultrafast'
   | 'superfast'
@@ -173,12 +173,23 @@ export type H264Preset =
   | 'slower'
   | 'veryslow'
 
+export type PcmBitDepth = 16 | 24 | 32
+export type GifDither = 'bayer' | 'floyd_steinberg' | 'sierra2_4a'
+
 export interface ExportCustomOptions {
   crf?: number
   videoBitrateKbps?: number
   audioBitrateKbps?: number
   h264Preset?: H264Preset
+  vp9CpuUsed?: number
   animatedFps?: number
+  webpQuality?: number
+  webpCompressionLevel?: number
+  gifColors?: number
+  gifDither?: GifDither
+  audioSampleRate?: number
+  pcmBitDepth?: PcmBitDepth
+  flacCompressionLevel?: number
 }
 
 export type ExportFormat = 'mp4' | 'mov' | 'mkv' | 'webm' | 'gif' | 'webp' | 'mp3' | 'wav' | 'flac' | 'aac' | 'opus'

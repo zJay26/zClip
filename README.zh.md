@@ -21,10 +21,10 @@ zClip 是一个面向 Windows 的本地视频剪辑工具，强调「上手快�
 
 ## 下载
 
-> 当前仓库版本：`2.3.0`
+> 当前仓库版本：`2.4.0`
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.3.0/zClip.Setup.2.3.0.exe">
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.4.0/zClip.Setup.2.4.0.exe">
     <img src="https://img.shields.io/badge/Download_for_Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white" alt="Download for Windows"/>
   </a>
 </p>
@@ -56,8 +56,8 @@ zClip 目前未进行商业代码签名，首次下载运行时 Windows 可能�
   - 视频格式：`mp4` / `mov` / `mkv` / `webm` / `gif` / `webp`
   - 音频格式：`mp3` / `wav` / `flac` / `aac` / `opus`
   - 分辨率档位：`original` / `1080p` / `720p` / `480p`
-  - 质量档位：`high` / `medium` / `low`
-  - 支持整条时间线、选中片段或自定义范围导出，并可设置码率/CRF 和动图 FPS
+  - 跨格式质量档位：`ultra_high` / `high` / `medium` / `low` / `ultra_low`，分别映射视频、动图和音频编码参数
+  - 支持整条时间线、选中片段或自定义范围导出，并可自定义码率/CRF、编码速度、动图 FPS/调色板及无损音频采样率/位深
   - 支持导出进度、速度/预计剩余时间展示与取消导出
 
 ## 快捷键

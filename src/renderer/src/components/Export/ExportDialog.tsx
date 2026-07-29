@@ -9,11 +9,14 @@ import { useProjectStore } from '../../stores/project-store'
 import type {
   ExportCustomOptions,
   ExportFormat,
+  GifDither,
   GifLoopMode,
   H264Preset,
+  PcmBitDepth,
   QualityPreset,
   ResolutionPreset
 } from '../../../../shared/types'
+import { EXPORT_QUALITY_PROFILES } from '../../../../shared/export-quality-presets'
 import { Badge, Button, Dialog, ProgressBar } from '../ui'
 import { formatTime, parseTime } from '../../lib/utils'
 
@@ -30,11 +33,13 @@ const RESOLUTIONS: { value: ResolutionPreset; label: string }[] = [
   { value: '480p', label: '480p (854x480)' }
 ]
 
-const QUALITIES: { value: QualityPreset; label: string; desc: string }[] = [
-  { value: 'high', label: '高质量', desc: '文件较大，质量最佳' },
-  { value: 'medium', label: '中等', desc: '平衡质量与文件大小' },
-  { value: 'low', label: '低质量', desc: '文件最小，质量一般' },
-  { value: 'custom', label: '自定义', desc: '手动设置编码参数' }
+const QUALITIES: { value: QualityPreset; label: string }[] = [
+  { value: 'ultra_high', label: '超高质量' },
+  { value: 'high', label: '高质量' },
+  { value: 'medium', label: '中等' },
+  { value: 'low', label: '低质量' },
+  { value: 'ultra_low', label: '超低质量' },
+  { value: 'custom', label: '自定义' }
 ]
 
 const VIDEO_FORMATS: { value: ExportFormat; label: string }[] = [
@@ -69,12 +74,75 @@ const H264_PRESETS: { value: H264Preset; label: string }[] = [
 const DEFAULT_CUSTOM_OPTIONS: ExportCustomOptions = {
   crf: 23,
   h264Preset: 'medium',
-  audioBitrateKbps: 192
+  vp9CpuUsed: 4,
+  audioBitrateKbps: 192,
+  animatedFps: 15,
+  webpQuality: 75,
+  webpCompressionLevel: 4,
+  gifColors: 256,
+  gifDither: 'sierra2_4a',
+  audioSampleRate: 48_000,
+  pcmBitDepth: 16,
+  flacCompressionLevel: 5
 }
 
 type ExportStep = 'configure' | 'running'
 type ExportMode = 'timeline' | 'selection' | 'range'
-type NumericCustomOptionKey = 'crf' | 'videoBitrateKbps' | 'audioBitrateKbps' | 'animatedFps'
+type NumericCustomOptionKey =
+  | 'crf'
+  | 'videoBitrateKbps'
+  | 'audioBitrateKbps'
+  | 'vp9CpuUsed'
+  | 'animatedFps'
+  | 'webpQuality'
+  | 'webpCompressionLevel'
+  | 'gifColors'
+  | 'audioSampleRate'
+  | 'flacCompressionLevel'
+
+function getQualityDescription(quality: QualityPreset, format: ExportFormat): string {
+  if (quality === 'custom') return '手动设置当前格式支持的质量参数'
+  const profile = EXPORT_QUALITY_PROFILES[quality]
+  const sampleRateKHz = profile.audioSampleRateCap === 22_050
+    ? '22.05'
+    : String(profile.audioSampleRateCap / 1000)
+
+  if (format === 'mp4' || format === 'mov' || format === 'mkv') {
+    const speedNote = quality === 'ultra_high'
+      ? '慢速精细编码 · '
+      : quality === 'low' || quality === 'ultra_low'
+        ? '快速编码 · '
+        : ''
+    return `CRF ${profile.crf} · ${speedNote}AAC ${profile.aacBitrateKbps} kbps`
+  }
+  if (format === 'webm') {
+    return `VP9 CRF ${profile.vp9Crf} · Opus ${profile.opusBitrateKbps} kbps`
+  }
+  if (format === 'gif') {
+    const paletteNote = profile.gifNewPalette
+      ? '逐帧调色板'
+      : profile.gifDither === 'bayer'
+        ? '体积优先抖动'
+        : '高质量抖动'
+    return `最高 ${profile.animatedFps} FPS · ${profile.gifMaxColors} 色 · ${paletteNote}`
+  }
+  if (format === 'webp') {
+    return `质量 ${profile.webpQuality} · 最高 ${profile.animatedFps} FPS`
+  }
+  if (format === 'mp3') {
+    return `${profile.mp3BitrateKbps} kbps`
+  }
+  if (format === 'aac') {
+    return `${profile.aacBitrateKbps} kbps`
+  }
+  if (format === 'opus') {
+    return `${profile.opusBitrateKbps} kbps`
+  }
+  if (format === 'wav') {
+    return `最高 ${sampleRateKHz} kHz · ${profile.pcmBitDepth}-bit PCM`
+  }
+  return `最高 ${sampleRateKHz} kHz · ${Math.min(24, profile.pcmBitDepth)}-bit · 压缩级别 ${profile.flacCompressionLevel}`
+}
 
 function parseSpeedValue(speed: string | undefined): number | null {
   if (!speed) return null
@@ -115,7 +183,7 @@ function parseBoundedIntInput(value: string, min: number, max: number): number |
 
 const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef }) => {
   const [resolution, setResolution] = useState<ResolutionPreset>('original')
-  const [quality, setQuality] = useState<QualityPreset>('medium')
+  const [quality, setQuality] = useState<QualityPreset>('high')
   const [customOptions, setCustomOptions] = useState<ExportCustomOptions>(DEFAULT_CUSTOM_OPTIONS)
   const [format, setFormat] = useState<ExportFormat>('mp4')
   const [gifLoop, setGifLoop] = useState<GifLoopMode>('infinite')
@@ -139,12 +207,19 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
 
   const formatOptions = effectiveAudioOnly ? AUDIO_FORMATS : VIDEO_FORMATS
   const animatedFormat = isAnimatedImageFormat(format)
+  const h264Format = ['mp4', 'mov', 'mkv'].includes(format)
   const supportsAudioBitrate = ['mp3', 'aac', 'opus', 'mp4', 'mov', 'mkv', 'webm'].includes(format)
-  const showCustomCrf = quality === 'custom' && !effectiveAudioOnly && format !== 'gif'
+  const customAudioBitrateMax = format === 'mp3' ? 320 : format === 'opus' || format === 'webm' ? 510 : 512
+  const losslessAudioFormat = format === 'wav' || format === 'flac'
+  const showCustomCrf = quality === 'custom' && !effectiveAudioOnly && !animatedFormat
   const showCustomVideoBitrate = quality === 'custom' && !effectiveAudioOnly && !animatedFormat
-  const showCustomH264Preset = showCustomVideoBitrate && format !== 'webm'
+  const showCustomH264Preset = showCustomVideoBitrate && h264Format
+  const showCustomVp9CpuUsed = showCustomVideoBitrate && format === 'webm'
   const showCustomAudioBitrate = quality === 'custom' && !animatedFormat && supportsAudioBitrate
   const showCustomAnimatedFps = quality === 'custom' && !effectiveAudioOnly && animatedFormat
+  const showCustomWebpQuality = quality === 'custom' && format === 'webp'
+  const showCustomGifOptions = quality === 'custom' && format === 'gif'
+  const showCustomLosslessAudioOptions = quality === 'custom' && losslessAudioFormat
 
   const setCustomNumber = (key: NumericCustomOptionKey, value: string, min: number, max: number): void => {
     const next = parseBoundedIntInput(value, min, max)
@@ -344,6 +419,30 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
             )}
 
             <div>
+              <label className="text-xs font-medium text-text-secondary uppercase tracking-wider block mb-2">格式</label>
+              <div className="space-y-1">
+                {formatOptions.map((f) => (
+                  <label
+                    key={f.value}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer border transition-colors ${
+                      format === f.value ? 'border-accent bg-accent/10' : 'border-transparent hover:bg-panel-hover'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="format"
+                      value={f.value}
+                      checked={format === f.value}
+                      onChange={() => setFormat(f.value)}
+                      className="accent-accent"
+                    />
+                    <span className="text-sm text-text-primary">{f.label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div>
               <label className="text-xs font-medium text-text-secondary uppercase tracking-wider block mb-2">质量</label>
               <div className="space-y-1">
                 {QUALITIES.map((q) => (
@@ -363,7 +462,9 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
                     />
                     <div>
                       <span className="text-sm text-text-primary">{q.label}</span>
-                      <span className="text-[10px] text-text-muted ml-2">{q.desc}</span>
+                      <span className="text-[10px] text-text-muted ml-2">
+                        {getQualityDescription(q.value, format)}
+                      </span>
                     </div>
                   </label>
                 ))}
@@ -414,16 +515,31 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
                       </select>
                     </label>
                   )}
+                  {showCustomVp9CpuUsed && (
+                    <label>
+                      <span className="mb-1 block text-xs text-text-muted">VP9 CPU-used</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={8}
+                        className="ui-input w-full"
+                        value={customOptions.vp9CpuUsed ?? ''}
+                        onChange={(e) => setCustomNumber('vp9CpuUsed', e.target.value, 0, 8)}
+                      />
+                    </label>
+                  )}
                   {showCustomAudioBitrate && (
                     <label>
                       <span className="mb-1 block text-xs text-text-muted">音频码率 kbps</span>
                       <input
                         type="number"
                         min={32}
-                        max={512}
+                        max={customAudioBitrateMax}
                         className="ui-input w-full"
                         value={customOptions.audioBitrateKbps ?? ''}
-                        onChange={(e) => setCustomNumber('audioBitrateKbps', e.target.value, 32, 512)}
+                        onChange={(e) =>
+                          setCustomNumber('audioBitrateKbps', e.target.value, 32, customAudioBitrateMax)
+                        }
                       />
                     </label>
                   )}
@@ -440,32 +556,115 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
                       />
                     </label>
                   )}
+                  {showCustomWebpQuality && (
+                    <>
+                      <label>
+                        <span className="mb-1 block text-xs text-text-muted">WebP 质量</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          className="ui-input w-full"
+                          value={customOptions.webpQuality ?? ''}
+                          onChange={(e) => setCustomNumber('webpQuality', e.target.value, 0, 100)}
+                        />
+                      </label>
+                      <label>
+                        <span className="mb-1 block text-xs text-text-muted">WebP 压缩级别</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={6}
+                          className="ui-input w-full"
+                          value={customOptions.webpCompressionLevel ?? ''}
+                          onChange={(e) =>
+                            setCustomNumber('webpCompressionLevel', e.target.value, 0, 6)
+                          }
+                        />
+                      </label>
+                    </>
+                  )}
+                  {showCustomGifOptions && (
+                    <>
+                      <label>
+                        <span className="mb-1 block text-xs text-text-muted">GIF 色彩数</span>
+                        <input
+                          type="number"
+                          min={4}
+                          max={256}
+                          className="ui-input w-full"
+                          value={customOptions.gifColors ?? ''}
+                          onChange={(e) => setCustomNumber('gifColors', e.target.value, 4, 256)}
+                        />
+                      </label>
+                      <label>
+                        <span className="mb-1 block text-xs text-text-muted">GIF 抖动</span>
+                        <select
+                          className="ui-input w-full"
+                          value={customOptions.gifDither ?? 'sierra2_4a'}
+                          onChange={(e) =>
+                            setCustomOptions((prev) => ({ ...prev, gifDither: e.target.value as GifDither }))
+                          }
+                        >
+                          <option value="sierra2_4a">Sierra（细腻）</option>
+                          <option value="floyd_steinberg">Floyd–Steinberg</option>
+                          <option value="bayer">Bayer（体积优先）</option>
+                        </select>
+                      </label>
+                    </>
+                  )}
+                  {showCustomLosslessAudioOptions && (
+                    <>
+                      <label>
+                        <span className="mb-1 block text-xs text-text-muted">最高采样率 Hz</span>
+                        <input
+                          type="number"
+                          min={8000}
+                          max={192000}
+                          step={50}
+                          className="ui-input w-full"
+                          value={customOptions.audioSampleRate ?? ''}
+                          onChange={(e) => setCustomNumber('audioSampleRate', e.target.value, 8000, 192000)}
+                        />
+                      </label>
+                      <label>
+                        <span className="mb-1 block text-xs text-text-muted">音频位深</span>
+                        <select
+                          className="ui-input w-full"
+                          value={
+                            format === 'flac'
+                              ? Math.min(24, customOptions.pcmBitDepth ?? 16)
+                              : customOptions.pcmBitDepth ?? 16
+                          }
+                          onChange={(e) =>
+                            setCustomOptions((prev) => ({
+                              ...prev,
+                              pcmBitDepth: Number(e.target.value) as PcmBitDepth
+                            }))
+                          }
+                        >
+                          <option value={16}>16-bit</option>
+                          <option value={24}>24-bit</option>
+                          {format === 'wav' && <option value={32}>32-bit</option>}
+                        </select>
+                      </label>
+                    </>
+                  )}
+                  {quality === 'custom' && format === 'flac' && (
+                    <label>
+                      <span className="mb-1 block text-xs text-text-muted">FLAC 压缩级别</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={12}
+                        className="ui-input w-full"
+                        value={customOptions.flacCompressionLevel ?? ''}
+                        onChange={(e) => setCustomNumber('flacCompressionLevel', e.target.value, 0, 12)}
+                      />
+                    </label>
+                  )}
                 </div>
               )}
-            </div>
-
-            <div>
-              <label className="text-xs font-medium text-text-secondary uppercase tracking-wider block mb-2">格式</label>
-              <div className="space-y-1">
-                {formatOptions.map((f) => (
-                  <label
-                    key={f.value}
-                    className={`flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer border transition-colors ${
-                      format === f.value ? 'border-accent bg-accent/10' : 'border-transparent hover:bg-panel-hover'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="format"
-                      value={f.value}
-                      checked={format === f.value}
-                      onChange={() => setFormat(f.value)}
-                      className="accent-accent"
-                    />
-                    <span className="text-sm text-text-primary">{f.label}</span>
-                  </label>
-                ))}
-              </div>
             </div>
 
             <div>

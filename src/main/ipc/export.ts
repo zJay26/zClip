@@ -18,7 +18,7 @@ import { isMediaOperation, isTimelineClip } from '../../shared/project-validatio
 
 const EXPORT_FORMATS = new Set(['mp4', 'mov', 'mkv', 'webm', 'gif', 'webp', 'mp3', 'wav', 'flac', 'aac', 'opus'])
 const RESOLUTIONS = new Set(['original', '1080p', '720p', '480p'])
-const QUALITIES = new Set(['high', 'medium', 'low', 'custom'])
+const QUALITIES = new Set(['ultra_high', 'high', 'medium', 'low', 'ultra_low', 'custom'])
 
 export function registerExportHandlers(): void {
   // Show save dialog

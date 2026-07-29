@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import type { MediaInfo, MediaOperation, TimelineClip } from '../../shared/types'
 import { buildTimelineFFmpegArgs, sliceTimelineForRange } from './export-service'
+import { resolveExportEncodingOptions } from './export-quality'
 
 function createDefaultOperations(duration: number): MediaOperation[] {
   return [
@@ -61,7 +62,13 @@ describe('timeline export compiler', () => {
     }
     const args = buildTimelineFFmpegArgs(
       [video, audio], operations, 'C:\\output.mp4', { w: 1280, h: 720 }, 10, [], [],
-      { crf: 23, h264Preset: 'medium' }, 'mp4', 'infinite',
+      resolveExportEncodingOptions({
+        format: 'mp4',
+        resolution: '720p',
+        quality: 'medium',
+        outputPath: 'C:\\output.mp4'
+      }),
+      'mp4', 'infinite',
       { canvas: { preset: 'landscape', width: 1280, height: 720, backgroundColor: '#000000' } }
     )
     const graph = args[args.indexOf('-filter_complex') + 1]

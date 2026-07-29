@@ -21,10 +21,10 @@ zClip is built with Electron + React and uses FFmpeg for media analysis and expo
 
 ## Download
 
-> Current release in this repo: `2.3.0`
+> Current release in this repo: `2.4.0`
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.3.0/zClip.Setup.2.3.0.exe">
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.4.0/zClip.Setup.2.4.0.exe">
     <img src="https://img.shields.io/badge/Download_for_Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white" alt="Download for Windows"/>
   </a>
 </p>
@@ -56,8 +56,8 @@ If you want to add "Open with zClip" to the first-level right-click menu on Wind
   - Video formats: `mp4` / `mov` / `mkv` / `webm` / `gif` / `webp`
   - Audio formats: `mp3` / `wav` / `flac` / `aac` / `opus`
   - Resolution presets: `original` / `1080p` / `720p` / `480p`
-  - Quality presets: `high` / `medium` / `low`
-  - Timeline, selected clips, or custom-range export; custom bitrate/CRF and animated-image FPS controls
+  - Cross-format quality presets: `ultra_high` / `high` / `medium` / `low` / `ultra_low`, mapped to format-specific video, animated-image, and audio encoding parameters
+  - Timeline, selected clips, or custom-range export; custom bitrate/CRF, encoder speed, animated-image FPS/palette, and lossless-audio sample-rate/bit-depth controls
   - Progress, speed/ETA display, and cancel support
 
 ## Shortcuts

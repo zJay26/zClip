@@ -2,6 +2,24 @@
 
 All notable changes to zClip are documented in this file.
 
+## [2.4.0] - 2026-07-29
+
+### Added
+
+- Add `ultra_high` and `ultra_low` export quality presets alongside the existing high, medium, low, and custom options.
+- Apply format-aware quality controls to every supported video, animated-image, and audio export format.
+- Expand custom export controls for VP9 speed, WebP compression, GIF palettes and dithering, and WAV/FLAC sample rate, bit depth, and compression.
+
+### Changed
+
+- Make high quality the default export preset.
+- Show the effective encoding parameters for each format and place format selection before quality selection.
+- Share one quality-profile definition between the export UI and both FFmpeg export paths.
+
+### Tests
+
+- Add profile-matrix coverage and real bundled-FFmpeg export checks for all eleven supported formats.
+
 ## [2.3.0] - 2026-07-21
 
 ### Fixed
@@ -40,3 +58,4 @@ All notable changes to zClip are documented in this file.
 [2.2.0]: https://github.com/zJay26/zClip/compare/v2.1.0...v2.2.0
 [2.2.1]: https://github.com/zJay26/zClip/compare/v2.2.0...v2.2.1
 [2.3.0]: https://github.com/zJay26/zClip/compare/v2.2.1...v2.3.0
+[2.4.0]: https://github.com/zJay26/zClip/compare/v2.3.0...v2.4.0

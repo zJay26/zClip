@@ -27,11 +27,14 @@ import {
   getVisibleDurationFromOps
 } from '../../shared/timeline-utils'
 import { runFFmpeg, type FFmpegProgress } from './ffmpeg'
+import { buildFFmpegArgs } from './media-engine'
 import {
-  buildFFmpegArgs,
+  getAudioCodecArgs,
+  getGifPaletteOptions,
+  resolveAnimatedImageFps,
   resolveExportEncodingOptions,
   type ResolvedExportEncodingOptions
-} from './media-engine'
+} from './export-quality'
 import { buildAudioAdjustmentFilters } from './audio-filters'
 import type { ChildProcess } from 'child_process'
 import fs from 'fs/promises'
@@ -615,13 +618,24 @@ export function buildTimelineFFmpegArgs(
   }
 
   if (gifFormat && videoOutLabel) {
-    const gifFps = getTimelineAnimatedImageFps(clips, encoding.animatedFps)
+    const gifFps = resolveAnimatedImageFps(
+      clips
+        .filter((clip) => clip.track === 'video' && clip.mediaInfo.hasVideo)
+        .map((clip) => clip.mediaInfo.fps),
+      encoding.animatedFps
+    )
+    const palette = getGifPaletteOptions(encoding)
     filterParts.push(
-      `[${videoOutLabel}]fps=${gifFps},split[g0][g1];[g0]palettegen=stats_mode=diff[pal];[g1][pal]paletteuse=dither=sierra2_4a[gifout]`
+      `[${videoOutLabel}]fps=${gifFps},split[g0][g1];[g0]palettegen=${palette.palettegen}[pal];[g1][pal]paletteuse=${palette.paletteuse}[gifout]`
     )
     videoOutLabel = 'gifout'
   } else if (webpFormat && videoOutLabel) {
-    const webpFps = getTimelineAnimatedImageFps(clips, encoding.animatedFps)
+    const webpFps = resolveAnimatedImageFps(
+      clips
+        .filter((clip) => clip.track === 'video' && clip.mediaInfo.hasVideo)
+        .map((clip) => clip.mediaInfo.fps),
+      encoding.animatedFps
+    )
     filterParts.push(`[${videoOutLabel}]fps=${webpFps}[webpout]`)
     videoOutLabel = 'webpout'
   }
@@ -662,14 +676,20 @@ export function buildTimelineFFmpegArgs(
       args.push('-loop', gifLoop === 'once' ? '1' : '0')
       if (webpFormat) {
         // Use libwebp for broader FFmpeg compatibility across bundled builds.
-        args.push('-c:v', 'libwebp', '-lossless', '0', '-quality', String(mapWebpQuality(encoding.crf)), '-compression_level', '6')
+        args.push(
+          '-c:v', 'libwebp',
+          '-lossless', '0',
+          '-quality', String(encoding.webpQuality),
+          '-compression_level', String(encoding.webpCompressionLevel)
+        )
       }
     } else if (format === 'webm') {
       args.push('-c:v', 'libvpx-vp9')
+      args.push('-cpu-used', String(encoding.vp9CpuUsed))
       if (encoding.videoBitrateKbps) {
         args.push('-b:v', `${encoding.videoBitrateKbps}k`)
       } else {
-        args.push('-b:v', '0', '-crf', String(mapVp9Crf(encoding.crf)))
+        args.push('-b:v', '0', '-crf', String(encoding.vp9Crf))
       }
     } else {
       args.push('-c:v', 'libx264', '-preset', encoding.h264Preset)
@@ -687,7 +707,13 @@ export function buildTimelineFFmpegArgs(
     args.push('-an')
   } else if (audioOutLabel) {
     args.push('-map', `[${audioOutLabel}]`)
-    args.push(...getAudioCodecArgs(format, encoding.audioBitrateKbps))
+    args.push(...getAudioCodecArgs(
+      format,
+      encoding,
+      clips
+        .filter((clip) => clip.track === 'audio' && clip.mediaInfo.hasAudio)
+        .map((clip) => clip.mediaInfo.sampleRate)
+    ))
   } else {
     args.push('-an')
   }
@@ -710,47 +736,4 @@ function formatExportError(error: unknown): string {
 
 function isAudioFormat(format: ExportOptions['format']): boolean {
   return ['mp3', 'wav', 'flac', 'aac', 'opus'].includes(format)
-}
-
-function getAudioCodecArgs(format: ExportOptions['format'], audioBitrateKbps?: number): string[] {
-  const bitrate = audioBitrateKbps ? `${audioBitrateKbps}k` : undefined
-  switch (format) {
-    case 'mp3':
-      return ['-c:a', 'libmp3lame', '-b:a', bitrate ?? '192k']
-    case 'wav':
-      return ['-c:a', 'pcm_s16le']
-    case 'flac':
-      return ['-c:a', 'flac']
-    case 'opus':
-      return ['-c:a', 'libopus', '-b:a', bitrate ?? '160k']
-    case 'webm':
-      return ['-c:a', 'libopus', '-b:a', bitrate ?? '160k']
-    case 'aac':
-    case 'mp4':
-    case 'mov':
-    case 'mkv':
-    default:
-      return ['-c:a', 'aac', '-b:a', bitrate ?? '192k']
-  }
-}
-
-function mapVp9Crf(x264Crf: number): number {
-  const vp9 = Math.round(x264Crf + 10)
-  return Math.max(0, Math.min(63, vp9))
-}
-
-function mapWebpQuality(x264Crf: number): number {
-  // x264 CRF lower means better quality. WebP quality is inverse in [0,100].
-  const q = Math.round(100 - (x264Crf - 18) * 2.5)
-  return Math.max(35, Math.min(95, q))
-}
-
-function getTimelineAnimatedImageFps(clips: TimelineClip[], customFps?: number): number {
-  if (customFps) return Math.max(1, Math.min(60, Math.round(customFps)))
-  const videoFps = clips
-    .filter((clip) => clip.track === 'video' && clip.mediaInfo.hasVideo)
-    .map((clip) => clip.mediaInfo.fps)
-    .find((fps) => Number.isFinite(fps) && fps > 0)
-  if (!videoFps) return 15
-  return Math.max(5, Math.min(20, Math.round(videoFps)))
 }

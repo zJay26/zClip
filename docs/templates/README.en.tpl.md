@@ -56,8 +56,8 @@ If you want to add "Open with zClip" to the first-level right-click menu on Wind
   - Video formats: `mp4` / `mov` / `mkv` / `webm` / `gif` / `webp`
   - Audio formats: `mp3` / `wav` / `flac` / `aac` / `opus`
   - Resolution presets: `original` / `1080p` / `720p` / `480p`
-  - Quality presets: `high` / `medium` / `low`
-  - Timeline, selected clips, or custom-range export; custom bitrate/CRF and animated-image FPS controls
+  - Cross-format quality presets: `ultra_high` / `high` / `medium` / `low` / `ultra_low`, mapped to format-specific video, animated-image, and audio encoding parameters
+  - Timeline, selected clips, or custom-range export; custom bitrate/CRF, encoder speed, animated-image FPS/palette, and lossless-audio sample-rate/bit-depth controls
   - Progress, speed/ETA display, and cancel support
 
 ## Shortcuts
