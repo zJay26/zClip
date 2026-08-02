@@ -5,6 +5,7 @@
 
 import { useCallback, useMemo, useState } from 'react'
 import { useProjectStore } from '../../stores/project-store'
+import { useShallow } from 'zustand/react/shallow'
 import { SNAP_THRESHOLD_PX } from './timeline-constants'
 import { getClipTimelineRange } from '../../../../shared/timeline-utils'
 
@@ -27,13 +28,16 @@ export interface SnapEngine {
 }
 
 export function useSnap(): SnapEngine {
-  const { clips, currentTime, operationsByClip } = useProjectStore()
+  const { clips, operationsByClip } = useProjectStore(useShallow((state) => ({
+    clips: state.clips,
+    operationsByClip: state.operationsByClip
+  })))
   const [snapLineTime, setSnapLineTime] = useState<number | null>(null)
   const [lockedSnapTime, setLockedSnapTime] = useState<number | null>(null)
 
   // Collect all snap points: clip edges + playhead
   const snapPoints = useMemo(() => {
-    const points: number[] = [currentTime]
+    const points: number[] = []
 
     for (const clip of clips) {
       const range = getClipTimelineRange(clip, operationsByClip)
@@ -42,11 +46,11 @@ export function useSnap(): SnapEngine {
 
     // Deduplicate & sort
     return points.filter((point, idx, list) => list.indexOf(point) === idx).sort((a, b) => a - b)
-  }, [clips, currentTime, operationsByClip])
+  }, [clips, operationsByClip])
 
   const getFilteredPoints = useCallback(
     (excludeClipId?: string): number[] => {
-      let filteredPoints = snapPoints
+      let filteredPoints = [...snapPoints, useProjectStore.getState().currentTime]
       if (excludeClipId) {
         const clip = clips.find((c) => c.id === excludeClipId)
         if (clip) {

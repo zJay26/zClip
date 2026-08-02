@@ -3,10 +3,11 @@
 // 所有参数控制面板的基础组件
 // ============================================================
 
-import React, { useState, useCallback, useRef } from 'react'
+import React, { useState, useCallback, useId, useRef } from 'react'
 import { clamp } from '../../lib/utils'
 import { useProjectStore } from '../../stores/project-store'
 import type { HistoryEditOptions } from '../../stores/project-store-types'
+import { usePreferences } from '../../contexts/preferences'
 
 interface ParamSliderProps {
   label: string
@@ -37,6 +38,10 @@ const ParamSlider: React.FC<ParamSliderProps> = ({
   formatValue,
   parseValue
 }) => {
+  const { t } = usePreferences()
+  const id = useId()
+  const rangeId = `${id}-range`
+  const valueId = `${id}-value`
   const [inputValue, setInputValue] = useState('')
   const [editing, setEditing] = useState(false)
   const draggingRef = useRef(false)
@@ -135,11 +140,13 @@ const ParamSlider: React.FC<ParamSliderProps> = ({
     <div className={`flex flex-col gap-1.5 ${disabled ? 'opacity-40 pointer-events-none' : ''}`}>
       {(showInput || label) && (
         <div className="flex items-center justify-between">
-          {label ? <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">{label}</label> : <span />}
+          {label ? <label htmlFor={rangeId} className="text-xs font-medium text-text-secondary uppercase tracking-wide">{label}</label> : <span />}
           {showInput && (
             <div className="flex items-center gap-1">
               <input
                 type="text"
+                id={valueId}
+                aria-label={t(`${label}数值`, `${label} value`)}
                 className="ui-input w-16 text-right font-mono text-xs"
                 value={editing ? inputValue : displayValue}
                 onChange={(e) => setInputValue(e.target.value)}
@@ -155,7 +162,10 @@ const ParamSlider: React.FC<ParamSliderProps> = ({
       )}
       <div className="relative">
         <input
+          id={rangeId}
           type="range"
+          aria-label={label || t('参数', 'Parameter')}
+          aria-valuetext={`${displayValue}${unit}`}
           min={min}
           max={max}
           step={step}
@@ -170,7 +180,7 @@ const ParamSlider: React.FC<ParamSliderProps> = ({
           disabled={disabled}
           className="w-full"
           style={{
-            background: `linear-gradient(to right, #6c63ff ${percent}%, #3a3a5c ${percent}%)`
+            background: `linear-gradient(to right, rgb(var(--accent)) ${percent}%, rgb(var(--border-strong) / 0.62) ${percent}%)`
           }}
         />
       </div>

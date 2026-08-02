@@ -45,6 +45,36 @@
   --shadow-focus: 0 0 0 3px rgb(var(--accent) / 0.28);
 }
 
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --app-bg: 238 240 245;
+  --workspace-bg: 244 245 249;
+  --canvas-bg: 221 224 232;
+  --panel-bg: 255 255 255;
+  --panel-muted: 247 248 251;
+  --panel-hover: 238 240 246;
+  --floating-bg: 252 252 254;
+  --border: 188 193 205;
+  --border-subtle: 216 219 228;
+  --border-strong: 158 164 179;
+  --accent: 87 84 225;
+  --accent-hover: 72 69 207;
+  --accent-soft: 92 88 226;
+  --success: 23 143 88;
+  --warning: 190 116 12;
+  --danger: 214 54 70;
+  --timeline-video: 76 105 220;
+  --timeline-audio: 27 151 99;
+  --text-primary: 30 33 41;
+  --text-secondary: 78 84 99;
+  --text-muted: 118 125 143;
+
+  --shadow-panel: 0 10px 28px rgba(37, 42, 56, 0.08), 0 1px 2px rgba(37, 42, 56, 0.06);
+  --shadow-floating: 0 18px 45px rgba(37, 42, 56, 0.15), 0 1px 0 rgba(255, 255, 255, 0.85) inset;
+  --shadow-focus: 0 0 0 3px rgb(var(--accent) / 0.2);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -63,7 +93,7 @@ html {
 }
 
 body {
-  user-select: none;
+  user-select: text;
   background: rgb(var(--app-bg));
   color: rgb(var(--text-primary));
   font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
@@ -170,6 +200,10 @@ input[type='number'] {
     backdrop-filter: blur(22px) saturate(145%);
   }
 
+  :root[data-theme='light'] .ui-material {
+    border-color: rgb(29 34 48 / 0.1);
+  }
+
   .ui-section-title {
     @apply flex items-center gap-2 text-xs font-semibold text-text-secondary;
     letter-spacing: 0.015em;
@@ -231,6 +265,14 @@ input[type='number'] {
 
   .ui-btn-danger:hover {
     @apply border-danger/50 bg-danger/10 text-red-100;
+  }
+
+  :root[data-theme='light'] .ui-btn-danger {
+    color: rgb(var(--danger));
+  }
+
+  :root[data-theme='light'] .ui-btn-danger:hover {
+    color: rgb(169 34 51);
   }
 
   .ui-badge {

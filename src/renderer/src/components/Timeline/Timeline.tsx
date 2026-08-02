@@ -6,6 +6,7 @@
 import React, { useRef, useState, useCallback, useEffect, useMemo, useLayoutEffect } from 'react'
 import { Combine, Scissors, ScanLine } from 'lucide-react'
 import { useProjectStore } from '../../stores/project-store'
+import { useShallow } from 'zustand/react/shallow'
 import { formatTime } from '../../lib/utils'
 import {
   RULER_HEIGHT,
@@ -23,8 +24,10 @@ import TimelineTransitionBlock from './TimelineTransitionBlock'
 import TimelineAudioFadeBlock from './TimelineAudioFadeBlock'
 import TimelinePlayhead from './TimelinePlayhead'
 import type { TransitionEffectType, TrimParams } from '../../../../shared/types'
+import { getClipTimelineRange } from '../../../../shared/timeline-utils'
 import { TRANSITION_DRAG_MIME } from '../Controls/TransitionControl'
 import { Badge, Button, Panel } from '../ui'
+import { usePreferences } from '../../contexts/preferences'
 
 interface TimelineProps {
   seekTo: (time: number) => void
@@ -33,6 +36,11 @@ interface TimelineProps {
 const CONTEXT_MENU_MARGIN = 8
 const CONTEXT_MENU_ESTIMATED_WIDTH = 190
 const CONTEXT_MENU_ESTIMATED_HEIGHT = 244
+
+const CurrentTimeBadge: React.FC = () => {
+  const currentTime = useProjectStore((state) => state.currentTime)
+  return <Badge className="font-mono tabular-nums text-text-primary">{formatTime(currentTime)}</Badge>
+}
 
 function hasDragType(types: DOMStringList | readonly string[], type: string): boolean {
   const typeList = types as unknown as { contains?: (targetType: string) => boolean }
@@ -58,6 +66,7 @@ function getContextMenuPosition(
 }
 
 const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
+  const { t } = usePreferences()
   const containerRef = useRef<HTMLDivElement>(null)
   const contextMenuRef = useRef<HTMLDivElement>(null)
   const {
@@ -66,8 +75,6 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
     timelineDuration,
     videoTrackCount,
     audioTrackCount,
-    currentTime,
-    playing,
     operationsByClip,
     transitions,
     audioFades,
@@ -86,7 +93,31 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
     deleteSelectedClips,
     addTransitionAtTime,
     toggleGroupLink
-  } = useProjectStore()
+  } = useProjectStore(useShallow((state) => ({
+    clips: state.clips,
+    selectedClipId: state.selectedClipId,
+    timelineDuration: state.timelineDuration,
+    videoTrackCount: state.videoTrackCount,
+    audioTrackCount: state.audioTrackCount,
+    operationsByClip: state.operationsByClip,
+    transitions: state.transitions,
+    audioFades: state.audioFades,
+    selectClip: state.selectClip,
+    addVideoTrack: state.addVideoTrack,
+    removeVideoTrack: state.removeVideoTrack,
+    addAudioTrack: state.addAudioTrack,
+    removeAudioTrack: state.removeAudioTrack,
+    splitClipAtPlayhead: state.splitClipAtPlayhead,
+    mergeSelectedClips: state.mergeSelectedClips,
+    getMergeSelectionState: state.getMergeSelectionState,
+    selectedClipIds: state.selectedClipIds,
+    copySelectedClips: state.copySelectedClips,
+    cutSelectedClips: state.cutSelectedClips,
+    pasteCopiedClips: state.pasteCopiedClips,
+    deleteSelectedClips: state.deleteSelectedClips,
+    addTransitionAtTime: state.addTransitionAtTime,
+    toggleGroupLink: state.toggleGroupLink
+  })))
 
   const snap = useSnap()
 
@@ -149,8 +180,20 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
   const audioTrackTop = trackAreaTop + videoAreaHeight + groupGap
 
   // Filter clips by track type
-  const videoClips = useMemo(() => clips.filter((c) => c.track === 'video'), [clips])
-  const audioClips = useMemo(() => clips.filter((c) => c.track === 'audio'), [clips])
+  const visibleClips = useMemo(() => {
+    const overscanPixels = 800
+    const start = Math.max(0, (scrollLeft - overscanPixels) / Math.max(1, pixelsPerSecond))
+    const end = (scrollLeft + (containerRect?.width || 1200) + overscanPixels) / Math.max(1, pixelsPerSecond)
+    const selected = new Set(selectedClipIds)
+    return clips.filter((clip) => {
+      if (isDragging && selected.has(clip.id)) return true
+      const range = getClipTimelineRange(clip, operationsByClip)
+      return range.end >= start && range.start <= end
+    })
+  }, [clips, containerRect?.width, isDragging, operationsByClip, pixelsPerSecond, scrollLeft, selectedClipIds])
+  const videoClips = useMemo(() => visibleClips.filter((clip) => clip.track === 'video'), [visibleClips])
+  const audioClips = useMemo(() => visibleClips.filter((clip) => clip.track === 'audio'), [visibleClips])
+  const visibleClipIds = useMemo(() => new Set(visibleClips.map((clip) => clip.id)), [visibleClips])
 
   // Click on empty area = seek
   const handleBackgroundClick = useCallback(
@@ -221,7 +264,7 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
 
   const mergeSelectionState = useMemo(
     () => getMergeSelectionState(),
-    [getMergeSelectionState, clips, selectedClipId, selectedClipIds]
+    [getMergeSelectionState, clips, selectedClipId, selectedClipIds, t]
   )
 
   const contextClip = contextMenu
@@ -260,8 +303,6 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
     )
   }, [contextMenu])
 
-  if (timelineDuration <= 0) return null
-
   const handleWheelWithLock = useCallback(
     (e: React.WheelEvent) => {
       if (isDragging) {
@@ -274,14 +315,16 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
     [handleWheel, isDragging]
   )
 
+  if (timelineDuration <= 0) return null
+
   return (
     <Panel className="flex h-full min-h-0 flex-col overflow-hidden bg-panel">
       <div className="flex min-h-11 items-center gap-2 border-b border-border-subtle bg-panel px-3 py-1.5">
-        <span className="text-xs font-semibold tracking-[-0.01em] text-text-primary">时间线</span>
+        <span className="text-xs font-semibold tracking-[-0.01em] text-text-primary">{t('时间线', 'Timeline')}</span>
         <div className="mx-1 h-4 w-px bg-border-subtle" />
-        <span className="text-[11px] text-text-muted">缩放</span>
+        <span className="text-[11px] text-text-muted">{t('缩放', 'Zoom')}</span>
         <input
-          aria-label="时间线缩放"
+          aria-label={t('时间线缩放', 'Timeline zoom')}
           type="range"
           min={MIN_ZOOM * 0.5}
           max={MAX_ZOOM}
@@ -290,26 +333,26 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
           onChange={(event) => setZoom(parseFloat(event.target.value))}
           className="w-20 accent-accent"
         />
-        <Button onClick={zoomToFit} size="sm" leadingIcon={<ScanLine aria-hidden size={13} strokeWidth={1.75} />} title="适配全部片段">适配</Button>
+        <Button onClick={zoomToFit} size="sm" leadingIcon={<ScanLine aria-hidden size={13} strokeWidth={1.75} />} title={t('适配全部片段', 'Fit all clips')}>{t('适配', 'Fit')}</Button>
         <div className="mx-1 h-4 w-px bg-border-subtle" />
-        <Button onClick={splitClipAtPlayhead} size="sm" leadingIcon={<Scissors aria-hidden size={13} strokeWidth={1.75} />} title="在播放头位置分割 (C)">分割</Button>
+        <Button onClick={splitClipAtPlayhead} size="sm" leadingIcon={<Scissors aria-hidden size={13} strokeWidth={1.75} />} title={t('在播放头位置分割 (C)', 'Split at playhead (C)')}>{t('分割', 'Split')}</Button>
         <Button
           onClick={mergeSelectedClips}
           disabled={!mergeSelectionState.canMerge}
           size="sm"
           variant={mergeSelectionState.canMerge ? 'primary' : 'secondary'}
           leadingIcon={<Combine aria-hidden size={13} strokeWidth={1.75} />}
-          title={mergeSelectionState.canMerge ? '合并所选片段' : (mergeSelectionState.disabledReason || '当前选区不可合并')}
+          title={mergeSelectionState.canMerge ? t('合并所选片段', 'Merge selected clips') : (mergeSelectionState.disabledReason || t('当前选区不可合并', 'The current selection cannot be merged'))}
         >
-          合并
+          {t('合并', 'Merge')}
         </Button>
         <div className="flex-1" />
         {selectedClipTrimInfo && (
           <span className="hidden font-mono text-[10px] tabular-nums text-text-muted xl:inline">
-            入点 {formatTime(selectedClipTrimInfo.trimStart)} · 出点 {formatTime(selectedClipTrimInfo.trimEnd)}
+            {t(`入点 ${formatTime(selectedClipTrimInfo.trimStart)} · 出点 ${formatTime(selectedClipTrimInfo.trimEnd)}`, `In ${formatTime(selectedClipTrimInfo.trimStart)} · Out ${formatTime(selectedClipTrimInfo.trimEnd)}`)}
           </span>
         )}
-        <Badge className="font-mono tabular-nums text-text-primary">{formatTime(currentTime)}</Badge>
+        <CurrentTimeBadge />
       </div>
       {/* Main area: header + scrollable tracks */}
       <div className="flex flex-1 min-h-0">
@@ -340,7 +383,7 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
         >
           {transitionDropActive && (
             <div className="pointer-events-none absolute inset-1 z-40 flex items-center justify-center rounded-md border-2 border-dashed border-accent/60 bg-accent/10">
-              <span className="ui-material rounded-full px-3 py-1.5 text-xs font-medium text-text-primary">放到相邻视频片段的交界处</span>
+              <span className="ui-material rounded-full px-3 py-1.5 text-xs font-medium text-text-primary">{t('放到相邻视频片段的交界处', 'Drop on the cut between adjacent video clips')}</span>
             </div>
           )}
           <div
@@ -447,7 +490,7 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
               />
             ))}
 
-            {transitions.map((transition) => {
+            {transitions.filter((transition) => visibleClipIds.has(transition.leftClipId) || visibleClipIds.has(transition.rightClipId)).map((transition) => {
               const leftClip = clips.find((clip) => clip.id === transition.leftClipId)
               if (!leftClip) return null
               return (
@@ -465,16 +508,19 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
               )
             })}
 
-            {audioFades.map((fade) => {
+            {audioFades.filter((fade) => visibleClipIds.has(fade.clipId)).map((fade) => {
               const audioClip = clips.find((clip) => clip.id === fade.clipId)
               if (!audioClip) return null
+              const fadeTrackTop = audioClip.track === 'audio'
+                ? audioTrackTop + audioClip.trackIndex * (trackHeight + trackGap)
+                : trackAreaTop + audioClip.trackIndex * (trackHeight + trackGap)
               return (
                 <TimelineAudioFadeBlock
                   key={fade.id}
                   fade={fade}
                   clips={clips}
                   operationsByClip={operationsByClip}
-                  trackTopY={audioTrackTop + audioClip.trackIndex * (trackHeight + trackGap)}
+                  trackTopY={fadeTrackTop}
                   trackHeight={trackHeight}
                   timeToX={timeToX}
                   pixelsPerSecond={pixelsPerSecond}
@@ -498,12 +544,10 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
 
             {/* Playhead */}
             <TimelinePlayhead
-              currentTime={currentTime}
               timeToX={timeToX}
               xToTime={xToTime}
               seekTo={seekTo}
               trackAreaHeight={trackAreaHeight}
-              playing={playing}
               containerRef={containerRef}
               scrollLeft={scrollLeft}
               containerRect={containerRect}
@@ -522,13 +566,13 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
           onContextMenu={(e) => e.preventDefault()}
         >
           {[
-            { label: '在播放头处分割', action: splitClipAtPlayhead },
-            { label: '复制', action: copySelectedClips },
-            { label: '剪切', action: cutSelectedClips },
-            { label: '粘贴', action: pasteCopiedClips },
-            { label: '删除', action: deleteSelectedClips },
+            { label: t('在播放头处分割', 'Split at playhead'), action: splitClipAtPlayhead },
+            { label: t('复制', 'Copy'), action: copySelectedClips },
+            { label: t('剪切', 'Cut'), action: cutSelectedClips },
+            { label: t('粘贴', 'Paste'), action: pasteCopiedClips },
+            { label: t('删除', 'Delete'), action: deleteSelectedClips },
             {
-              label: contextClip.groupId && '音画链接/取消链接',
+              label: contextClip.groupId && t('音画链接/取消链接', 'Link/unlink audio and video'),
               action: () => toggleGroupLink(contextClip.groupId)
             }
           ].map((item, index) => (

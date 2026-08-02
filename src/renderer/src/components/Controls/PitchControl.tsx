@@ -6,12 +6,14 @@ import React from 'react'
 import { useProjectStore } from '../../stores/project-store'
 import ParamSlider from '../common/ParamSlider'
 import { Button, SectionCard } from '../ui'
+import { usePreferences } from '../../contexts/preferences'
 
 interface PitchControlProps {
   hideHeader?: boolean
 }
 
 const PitchControl: React.FC<PitchControlProps> = ({ hideHeader = false }) => {
+  const { t } = usePreferences()
   const { getAudioOperationsForSelection, setPitch } = useProjectStore()
   const audioOps = getAudioOperationsForSelection()
   const pitchOp = audioOps.find((op) => op.type === 'pitch')
@@ -57,7 +59,7 @@ const PitchControl: React.FC<PitchControlProps> = ({ hideHeader = false }) => {
 
   return (
     <SectionCard
-      title="音调"
+      title={t('音调', 'Pitch')}
       icon={
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <path d="M9 18V5l12-2v13" />

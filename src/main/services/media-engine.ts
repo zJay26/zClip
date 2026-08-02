@@ -22,14 +22,61 @@ import {
   resolveAnimatedImageFps,
   type ResolvedExportEncodingOptions
 } from './export-quality'
+import fs from 'fs/promises'
+import path from 'path'
+import { isMediaInfo } from '../../shared/project-validation'
 export { parseMediaInfo }
+
+const MEDIA_INFO_CACHE_LIMIT = 512
+const mediaInfoCache = new Map<string, { size: number; mtimeMs: number; info: MediaInfo }>()
+const mediaInfoPending = new Map<string, Promise<MediaInfo>>()
+
+function mediaCacheKey(filePath: string): string {
+  const normalized = path.resolve(filePath)
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+}
 
 /**
  * Probe a media file and return structured info
  */
 export async function getMediaInfo(filePath: string): Promise<MediaInfo> {
-  const data = await probe(filePath)
-  return parseMediaInfo(data, filePath)
+  const stat = await fs.stat(filePath)
+  const cacheKey = mediaCacheKey(filePath)
+  const cached = mediaInfoCache.get(cacheKey)
+  if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+    mediaInfoCache.delete(cacheKey)
+    mediaInfoCache.set(cacheKey, cached)
+    return cached.info
+  }
+
+  const pendingKey = `${cacheKey}\0${stat.size}\0${stat.mtimeMs}`
+  const existing = mediaInfoPending.get(pendingKey)
+  if (existing) return existing
+
+  const pending = (async () => {
+    const data = await probe(filePath)
+    const currentStat = await fs.stat(filePath)
+    if (currentStat.size !== stat.size || currentStat.mtimeMs !== stat.mtimeMs) {
+      throw new Error('媒体文件在探测期间发生变化，请等待写入完成后重试')
+    }
+    const info = { ...parseMediaInfo(data, filePath), fileSize: currentStat.size }
+    if (!isMediaInfo(info)) {
+      throw new Error('文件不包含可编辑且具有有效时长的音视频流')
+    }
+    mediaInfoCache.set(cacheKey, { size: currentStat.size, mtimeMs: currentStat.mtimeMs, info })
+    while (mediaInfoCache.size > MEDIA_INFO_CACHE_LIMIT) {
+      const oldest = mediaInfoCache.keys().next().value as string | undefined
+      if (!oldest) break
+      mediaInfoCache.delete(oldest)
+    }
+    return info
+  })()
+  mediaInfoPending.set(pendingKey, pending)
+  try {
+    return await pending
+  } finally {
+    if (mediaInfoPending.get(pendingKey) === pending) mediaInfoPending.delete(pendingKey)
+  }
 }
 
 /**
@@ -83,7 +130,11 @@ export function buildFFmpegArgs(
   }
 
   if (options.resolution) {
-    vFilters.push(`scale=${options.resolution.w}:${options.resolution.h}`)
+    vFilters.push(
+      `scale=${options.resolution.w}:${options.resolution.h}:force_original_aspect_ratio=decrease:force_divisible_by=2`,
+      `pad=${options.resolution.w}:${options.resolution.h}:(ow-iw)/2:(oh-ih)/2`,
+      'setsar=1'
+    )
   }
 
   // --- Build audio filter chain ---

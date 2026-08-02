@@ -11,6 +11,23 @@ const CACHE_POLICIES = [
   { name: 'proxy-cache', maxBytes: 10 * 1024 ** 3, maxAgeMs: 45 * 24 * 60 * 60 * 1000 },
   { name: 'preview-cache', maxBytes: 1024 ** 3, maxAgeMs: 30 * 24 * 60 * 60 * 1000 }
 ]
+let enforcementTimer: NodeJS.Timeout | null = null
+let lastEnforcedAt = 0
+
+export function scheduleCacheEnforcement(): void {
+  if (enforcementTimer || Date.now() - lastEnforcedAt < 60_000) return
+  enforcementTimer = setTimeout(() => {
+    enforcementTimer = null
+    lastEnforcedAt = Date.now()
+    void enforceCachePolicies()
+  }, 2_000)
+  enforcementTimer.unref()
+}
+
+export async function touchCacheFile(filePath: string): Promise<void> {
+  const now = new Date()
+  await fs.utimes(filePath, now, now).catch(() => {})
+}
 
 async function entriesFor(directory: string) {
   const names = await fs.readdir(directory).catch(() => [])
@@ -30,7 +47,8 @@ export async function enforceCachePolicies(): Promise<void> {
     let retainedBytes = 0
     for (const entry of entries) {
       retainedBytes += entry.size
-      if (now - entry.mtimeMs > policy.maxAgeMs || retainedBytes > policy.maxBytes || entry.filePath.endsWith('.tmp')) {
+      const isTemporary = /\.(?:tmp|partial)(?:\.|$)/i.test(path.basename(entry.filePath))
+      if (now - entry.mtimeMs > policy.maxAgeMs || retainedBytes > policy.maxBytes || isTemporary) {
         await fs.unlink(entry.filePath).catch(() => {})
       }
     }

@@ -36,6 +36,7 @@ describe('project defaults', () => {
 
   test('uses a source-based canvas by default', () => {
     expect(createDefaultProjectSettings()).toEqual({
+      frameRate: 30,
       canvas: {
         preset: 'source',
         width: 1920,

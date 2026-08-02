@@ -2,6 +2,7 @@ import React from 'react'
 import { AlertCircle, CheckCircle2, Info, X } from 'lucide-react'
 import { motion } from 'motion/react'
 import IconButton from './IconButton'
+import { usePreferences } from '../../contexts/preferences'
 
 type ToastTone = 'default' | 'success' | 'danger'
 
@@ -17,8 +18,10 @@ const icons = {
   danger: <AlertCircle aria-hidden size={16} strokeWidth={1.75} className="text-danger" />
 }
 
-const Toast: React.FC<ToastProps> = ({ children, tone = 'default', onClose }) => (
-  <motion.div
+const Toast: React.FC<ToastProps> = ({ children, tone = 'default', onClose }) => {
+  const { t } = usePreferences()
+  return (
+    <motion.div
     role={tone === 'danger' ? 'alert' : 'status'}
     aria-live={tone === 'danger' ? 'assertive' : 'polite'}
     initial={{ opacity: 0, y: 10, scale: 0.98 }}
@@ -29,8 +32,9 @@ const Toast: React.FC<ToastProps> = ({ children, tone = 'default', onClose }) =>
   >
     {icons[tone]}
     <span className="min-w-0 flex-1">{children}</span>
-    {onClose && <IconButton label="关闭通知" icon={<X aria-hidden size={14} />} size="sm" onClick={onClose} />}
-  </motion.div>
-)
+      {onClose && <IconButton label={t('关闭通知', 'Close notification')} icon={<X aria-hidden size={14} />} size="sm" onClick={onClose} />}
+    </motion.div>
+  )
+}
 
 export default Toast

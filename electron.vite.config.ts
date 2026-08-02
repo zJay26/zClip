@@ -30,8 +30,7 @@ export default defineConfig({
         output: {
           manualChunks: {
             react: ['react', 'react-dom'],
-            state: ['zustand'],
-            audio: ['soundtouchjs']
+            state: ['zustand']
           }
         }
       }

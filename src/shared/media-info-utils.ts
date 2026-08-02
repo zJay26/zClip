@@ -23,41 +23,82 @@ function isPlayableVideoStream(stream: Record<string, unknown>): boolean {
   )
 }
 
+function parseRational(value: unknown): number | null {
+  if (typeof value !== 'string') return null
+  const [numeratorText, denominatorText] = value.split('/')
+  const numerator = Number(numeratorText)
+  const denominator = Number(denominatorText)
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) return null
+  const result = numerator / denominator
+  return Number.isFinite(result) && result > 0 ? result : null
+}
+
+function parseDuration(format: Record<string, unknown> | undefined, streams: Record<string, unknown>[]): number {
+  const formatDuration = Number(format?.duration)
+  if (Number.isFinite(formatDuration) && formatDuration >= 0) return formatDuration
+  return streams.reduce((longest, stream) => {
+    const direct = Number(stream.duration)
+    if (Number.isFinite(direct) && direct >= 0) return Math.max(longest, direct)
+    const timeBase = parseRational(stream.time_base)
+    const durationTs = Number(stream.duration_ts)
+    return timeBase && Number.isFinite(durationTs) ? Math.max(longest, durationTs * timeBase) : longest
+  }, 0)
+}
+
+function parseRotation(stream: Record<string, unknown> | undefined): 0 | 90 | 180 | 270 {
+  if (!stream) return 0
+  const tags = stream.tags as Record<string, unknown> | undefined
+  const sideData = Array.isArray(stream.side_data_list)
+    ? stream.side_data_list as Record<string, unknown>[]
+    : []
+  const raw = Number(tags?.rotate ?? sideData.find((item) => item.rotation !== undefined)?.rotation ?? 0)
+  if (!Number.isFinite(raw)) return 0
+  const normalized = ((Math.round(raw / 90) * 90) % 360 + 360) % 360
+  return [0, 90, 180, 270].includes(normalized) ? normalized as 0 | 90 | 180 | 270 : 0
+}
+
 /**
  * Parse ffprobe output into the app's MediaInfo model.
  * Attached artwork in audio files is intentionally not treated as video.
  */
 export function parseMediaInfo(probeData: Record<string, unknown>, filePath: string): MediaInfo {
-  const format = probeData.format as Record<string, unknown>
-  const streams = probeData.streams as Record<string, unknown>[]
+  const format = probeData.format as Record<string, unknown> | undefined
+  const streams = Array.isArray(probeData.streams)
+    ? probeData.streams as Record<string, unknown>[]
+    : []
 
   const videoStream = streams?.find(isPlayableVideoStream)
   const audioStream = streams?.find((s) => s.codec_type === 'audio')
 
-  let fps = 30
-  if (videoStream?.r_frame_rate) {
-    const parts = (videoStream.r_frame_rate as string).split('/')
-    if (parts.length === 2) {
-      fps = Math.round((parseFloat(parts[0]) / parseFloat(parts[1])) * 100) / 100
-    }
-  }
+  const averageFps = parseRational(videoStream?.avg_frame_rate)
+  const realFps = parseRational(videoStream?.r_frame_rate)
+  const fps = Math.round((averageFps ?? realFps ?? 30) * 1000) / 1000
 
   const hasVideo = !!videoStream
   const hasAudio = !!audioStream
 
+  const rotation = parseRotation(videoStream)
+  const encodedWidth = Number(videoStream?.width) || 0
+  const encodedHeight = Number(videoStream?.height) || 0
+  const rotated = rotation === 90 || rotation === 270
+
   return {
-    duration: parseFloat(format?.duration as string) || 0,
+    duration: parseDuration(format, streams),
     containerFormat: (format?.format_name as string) || '',
-    width: (videoStream?.width as number) || 0,
-    height: (videoStream?.height as number) || 0,
+    width: rotated ? encodedHeight : encodedWidth,
+    height: rotated ? encodedWidth : encodedHeight,
     fps: hasVideo ? fps : 0,
     videoCodec: (videoStream?.codec_name as string) || '',
     pixelFormat: (videoStream?.pix_fmt as string) || '',
     audioCodec: (audioStream?.codec_name as string) || '',
-    sampleRate: parseInt(audioStream?.sample_rate as string) || 44100,
+    sampleRate: hasAudio ? parseInt(audioStream?.sample_rate as string) || 44_100 : 0,
     fileSize: parseInt(format?.size as string) || 0,
     filePath,
     hasVideo,
-    hasAudio
+    hasAudio,
+    rotation,
+    isVariableFrameRate: Boolean(averageFps && realFps && Math.abs(averageFps - realFps) / averageFps > 0.01),
+    sampleAspectRatio: (videoStream?.sample_aspect_ratio as string) || undefined,
+    colorSpace: (videoStream?.color_space as string) || undefined
   }
 }

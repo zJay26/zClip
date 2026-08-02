@@ -11,7 +11,7 @@ export function registerSystemHandlers(): void {
   })
   ipcMain.handle(IPC_CHANNELS.CACHE_CLEAR, async (event) => {
     assertTrustedIpcEvent(event)
-    cancelAllMediaJobs()
+    await cancelAllMediaJobs()
     await clearMediaCaches()
     return getCacheStats()
   })

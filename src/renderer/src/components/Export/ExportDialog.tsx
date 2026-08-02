@@ -19,6 +19,7 @@ import type {
 import { EXPORT_QUALITY_PROFILES } from '../../../../shared/export-quality-presets'
 import { Badge, Button, Dialog, ProgressBar } from '../ui'
 import { formatTime, parseTime } from '../../lib/utils'
+import { translate, usePreferences } from '../../contexts/preferences'
 
 interface ExportDialogProps {
   open: boolean
@@ -26,32 +27,32 @@ interface ExportDialogProps {
   originRef?: React.RefObject<HTMLElement | null>
 }
 
-const RESOLUTIONS: { value: ResolutionPreset; label: string }[] = [
-  { value: 'original', label: '原始分辨率' },
+const RESOLUTIONS: { value: ResolutionPreset; label: string; labelEn?: string }[] = [
+  { value: 'original', label: '原始分辨率', labelEn: 'Original resolution' },
   { value: '1080p', label: '1080p (1920x1080)' },
   { value: '720p', label: '720p (1280x720)' },
   { value: '480p', label: '480p (854x480)' }
 ]
 
-const QUALITIES: { value: QualityPreset; label: string }[] = [
-  { value: 'ultra_high', label: '超高质量' },
-  { value: 'high', label: '高质量' },
-  { value: 'medium', label: '中等' },
-  { value: 'low', label: '低质量' },
-  { value: 'ultra_low', label: '超低质量' },
-  { value: 'custom', label: '自定义' }
+const QUALITIES: { value: QualityPreset; label: string; labelEn: string }[] = [
+  { value: 'ultra_high', label: '超高质量', labelEn: 'Ultra high' },
+  { value: 'high', label: '高质量', labelEn: 'High' },
+  { value: 'medium', label: '中等', labelEn: 'Medium' },
+  { value: 'low', label: '低质量', labelEn: 'Low' },
+  { value: 'ultra_low', label: '超低质量', labelEn: 'Ultra low' },
+  { value: 'custom', label: '自定义', labelEn: 'Custom' }
 ]
 
-const VIDEO_FORMATS: { value: ExportFormat; label: string }[] = [
+const VIDEO_FORMATS: { value: ExportFormat; label: string; labelEn?: string }[] = [
   { value: 'mp4', label: 'MP4 (H.264 + AAC)' },
   { value: 'mov', label: 'MOV (H.264 + AAC)' },
   { value: 'mkv', label: 'MKV (H.264 + AAC)' },
   { value: 'webm', label: 'WEBM (VP9 + Opus)' },
-  { value: 'gif', label: 'GIF (动画图像)' },
-  { value: 'webp', label: 'WEBP (动画图像)' }
+  { value: 'gif', label: 'GIF (动画图像)', labelEn: 'GIF (animated image)' },
+  { value: 'webp', label: 'WEBP (动画图像)', labelEn: 'WEBP (animated image)' }
 ]
 
-const AUDIO_FORMATS: { value: ExportFormat; label: string }[] = [
+const AUDIO_FORMATS: { value: ExportFormat; label: string; labelEn?: string }[] = [
   { value: 'mp3', label: 'MP3' },
   { value: 'wav', label: 'WAV' },
   { value: 'flac', label: 'FLAC' },
@@ -101,7 +102,7 @@ type NumericCustomOptionKey =
   | 'flacCompressionLevel'
 
 function getQualityDescription(quality: QualityPreset, format: ExportFormat): string {
-  if (quality === 'custom') return '手动设置当前格式支持的质量参数'
+  if (quality === 'custom') return translate('手动设置当前格式支持的质量参数', 'Set supported quality parameters manually')
   const profile = EXPORT_QUALITY_PROFILES[quality]
   const sampleRateKHz = profile.audioSampleRateCap === 22_050
     ? '22.05'
@@ -109,9 +110,9 @@ function getQualityDescription(quality: QualityPreset, format: ExportFormat): st
 
   if (format === 'mp4' || format === 'mov' || format === 'mkv') {
     const speedNote = quality === 'ultra_high'
-      ? '慢速精细编码 · '
+      ? translate('慢速精细编码 · ', 'Slow precision encoding · ')
       : quality === 'low' || quality === 'ultra_low'
-        ? '快速编码 · '
+        ? translate('快速编码 · ', 'Fast encoding · ')
         : ''
     return `CRF ${profile.crf} · ${speedNote}AAC ${profile.aacBitrateKbps} kbps`
   }
@@ -120,14 +121,17 @@ function getQualityDescription(quality: QualityPreset, format: ExportFormat): st
   }
   if (format === 'gif') {
     const paletteNote = profile.gifNewPalette
-      ? '逐帧调色板'
+      ? translate('逐帧调色板', 'Per-frame palette')
       : profile.gifDither === 'bayer'
-        ? '体积优先抖动'
-        : '高质量抖动'
-    return `最高 ${profile.animatedFps} FPS · ${profile.gifMaxColors} 色 · ${paletteNote}`
+        ? translate('体积优先抖动', 'Size-first dithering')
+        : translate('高质量抖动', 'High-quality dithering')
+    return translate(
+      `最高 ${profile.animatedFps} FPS · ${profile.gifMaxColors} 色 · ${paletteNote}`,
+      `Up to ${profile.animatedFps} FPS · ${profile.gifMaxColors} colors · ${paletteNote}`
+    )
   }
   if (format === 'webp') {
-    return `质量 ${profile.webpQuality} · 最高 ${profile.animatedFps} FPS`
+    return translate(`质量 ${profile.webpQuality} · 最高 ${profile.animatedFps} FPS`, `Quality ${profile.webpQuality} · Up to ${profile.animatedFps} FPS`)
   }
   if (format === 'mp3') {
     return `${profile.mp3BitrateKbps} kbps`
@@ -139,9 +143,12 @@ function getQualityDescription(quality: QualityPreset, format: ExportFormat): st
     return `${profile.opusBitrateKbps} kbps`
   }
   if (format === 'wav') {
-    return `最高 ${sampleRateKHz} kHz · ${profile.pcmBitDepth}-bit PCM`
+    return translate(`最高 ${sampleRateKHz} kHz · ${profile.pcmBitDepth}-bit PCM`, `Up to ${sampleRateKHz} kHz · ${profile.pcmBitDepth}-bit PCM`)
   }
-  return `最高 ${sampleRateKHz} kHz · ${Math.min(24, profile.pcmBitDepth)}-bit · 压缩级别 ${profile.flacCompressionLevel}`
+  return translate(
+    `最高 ${sampleRateKHz} kHz · ${Math.min(24, profile.pcmBitDepth)}-bit · 压缩级别 ${profile.flacCompressionLevel}`,
+    `Up to ${sampleRateKHz} kHz · ${Math.min(24, profile.pcmBitDepth)}-bit · Compression ${profile.flacCompressionLevel}`
+  )
 }
 
 function parseSpeedValue(speed: string | undefined): number | null {
@@ -153,21 +160,21 @@ function parseSpeedValue(speed: string | undefined): number | null {
 }
 
 function getSpeedLevel(speedValue: number): string {
-  if (speedValue < 0.8) return '较慢'
-  if (speedValue < 1.2) return '接近实时'
-  if (speedValue < 2.0) return '较快'
-  return '很快'
+  if (speedValue < 0.8) return translate('较慢', 'Slow')
+  if (speedValue < 1.2) return translate('接近实时', 'Near real time')
+  if (speedValue < 2.0) return translate('较快', 'Fast')
+  return translate('很快', 'Very fast')
 }
 
 function formatEtaText(seconds: number): string {
   const safe = Math.max(0, Math.round(seconds))
-  if (safe <= 1) return '即将完成'
+  if (safe <= 1) return translate('即将完成', 'Almost done')
   const hours = Math.floor(safe / 3600)
   const minutes = Math.floor((safe % 3600) / 60)
   const secs = safe % 60
-  if (hours > 0) return `${hours}小时${minutes}分${secs}秒`
-  if (minutes > 0) return `${minutes}分${secs}秒`
-  return `${secs}秒`
+  if (hours > 0) return translate(`${hours}小时${minutes}分${secs}秒`, `${hours}h ${minutes}m ${secs}s`)
+  if (minutes > 0) return translate(`${minutes}分${secs}秒`, `${minutes}m ${secs}s`)
+  return translate(`${secs}秒`, `${secs}s`)
 }
 
 function isAnimatedImageFormat(format: ExportFormat): boolean {
@@ -182,6 +189,7 @@ function parseBoundedIntInput(value: string, min: number, max: number): number |
 }
 
 const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef }) => {
+  const { t } = usePreferences()
   const [resolution, setResolution] = useState<ResolutionPreset>('original')
   const [quality, setQuality] = useState<QualityPreset>('high')
   const [customOptions, setCustomOptions] = useState<ExportCustomOptions>(DEFAULT_CUSTOM_OPTIONS)
@@ -275,7 +283,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
     const now = Date.now()
     const percent = Number.isFinite(exportProgress.percent) ? exportProgress.percent : 0
     if (percent >= 99.6) {
-      setEtaFallbackText('即将完成')
+      setEtaFallbackText(translate('即将完成', 'Almost done'))
       return
     }
 
@@ -357,24 +365,24 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
   const canStartExport = Boolean(format && quality) &&
     rangeValid &&
     (exportMode !== 'selection' || selectedClipIds.length > 0)
-  const progressPercentText = exportProgress ? `${exportProgress.percent.toFixed(1)}%` : '准备中...'
+  const progressPercentText = exportProgress ? `${exportProgress.percent.toFixed(1)}%` : t('准备中…', 'Preparing…')
   const speedValue = parseSpeedValue(exportProgress?.speed)
   const progressSpeedText = speedValue
-    ? `${getSpeedLevel(speedValue)}（${speedValue.toFixed(speedValue >= 10 ? 0 : 1)}x）`
+    ? t(`${getSpeedLevel(speedValue)}（${speedValue.toFixed(speedValue >= 10 ? 0 : 1)}x）`, `${getSpeedLevel(speedValue)} (${speedValue.toFixed(speedValue >= 10 ? 0 : 1)}x)`)
     : exportProgress
-      ? '获取中...'
-      : '准备中...'
+      ? t('获取中…', 'Measuring…')
+      : t('准备中…', 'Preparing…')
   const progressEtaText = exportProgress
     ? exportProgress.percent >= 99.8
-      ? '即将完成'
+      ? t('即将完成', 'Almost done')
       : exportProgress.eta
-        ? `约 ${exportProgress.eta}`
+        ? t(`约 ${exportProgress.eta}`, `About ${exportProgress.eta}`)
         : etaFallbackText
-          ? `约 ${etaFallbackText}`
+          ? t(`约 ${etaFallbackText}`, `About ${etaFallbackText}`)
         : exportProgress.percent < 1
-          ? '准备中...'
-          : '估算中...'
-    : '准备中...'
+          ? t('准备中…', 'Preparing…')
+          : t('估算中…', 'Estimating…')
+    : t('准备中…', 'Preparing…')
 
   return (
     <Dialog
@@ -382,11 +390,11 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
       onClose={handleClose}
       originRef={originRef}
       closeOnBackdrop={!exporting}
-      title={effectiveAudioOnly ? '导出音频' : '导出视频'}
+      title={effectiveAudioOnly ? t('导出音频', 'Export audio') : t('导出视频', 'Export video')}
     >
       <div className="flex items-center gap-2 mb-4">
-        <Badge tone={step === 'configure' ? 'accent' : 'default'}>1 配置</Badge>
-        <Badge tone={step === 'running' ? 'accent' : 'default'}>2 执行</Badge>
+        <Badge tone={step === 'configure' ? 'accent' : 'default'}>{t('1 配置', '1 Configure')}</Badge>
+        <Badge tone={step === 'running' ? 'accent' : 'default'}>{t('2 执行', '2 Export')}</Badge>
       </div>
 
       {!exporting && step === 'configure' && (
@@ -394,7 +402,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
           <div ref={configureScrollRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1 pb-3">
             {!effectiveAudioOnly && (
               <div>
-                <label className="text-xs font-medium text-text-secondary uppercase tracking-wider block mb-2">分辨率</label>
+                <label className="text-xs font-medium text-text-secondary uppercase tracking-wider block mb-2">{t('分辨率', 'Resolution')}</label>
                 <div className="space-y-1">
                   {RESOLUTIONS.map((r) => (
                     <label
@@ -411,7 +419,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
                         onChange={() => setResolution(r.value)}
                         className="accent-accent"
                       />
-                      <span className="text-sm text-text-primary">{r.label}</span>
+                      <span className="text-sm text-text-primary">{r.labelEn ? t(r.label, r.labelEn) : r.label}</span>
                     </label>
                   ))}
                 </div>
@@ -419,7 +427,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
             )}
 
             <div>
-              <label className="text-xs font-medium text-text-secondary uppercase tracking-wider block mb-2">格式</label>
+              <label className="text-xs font-medium text-text-secondary uppercase tracking-wider block mb-2">{t('格式', 'Format')}</label>
               <div className="space-y-1">
                 {formatOptions.map((f) => (
                   <label
@@ -436,14 +444,14 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
                       onChange={() => setFormat(f.value)}
                       className="accent-accent"
                     />
-                    <span className="text-sm text-text-primary">{f.label}</span>
+                    <span className="text-sm text-text-primary">{f.labelEn ? t(f.label, f.labelEn) : f.label}</span>
                   </label>
                 ))}
               </div>
             </div>
 
             <div>
-              <label className="text-xs font-medium text-text-secondary uppercase tracking-wider block mb-2">质量</label>
+              <label className="text-xs font-medium text-text-secondary uppercase tracking-wider block mb-2">{t('质量', 'Quality')}</label>
               <div className="space-y-1">
                 {QUALITIES.map((q) => (
                   <label
@@ -461,7 +469,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
                       className="accent-accent"
                     />
                     <div>
-                      <span className="text-sm text-text-primary">{q.label}</span>
+                      <span className="text-sm text-text-primary">{t(q.label, q.labelEn)}</span>
                       <span className="text-[10px] text-text-muted ml-2">
                         {getQualityDescription(q.value, format)}
                       </span>
@@ -486,7 +494,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
                   )}
                   {showCustomVideoBitrate && (
                     <label>
-                      <span className="mb-1 block text-xs text-text-muted">视频码率 kbps</span>
+                      <span className="mb-1 block text-xs text-text-muted">{t('视频码率 kbps', 'Video bitrate kbps')}</span>
                       <input
                         type="number"
                         min={64}
@@ -530,7 +538,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
                   )}
                   {showCustomAudioBitrate && (
                     <label>
-                      <span className="mb-1 block text-xs text-text-muted">音频码率 kbps</span>
+                      <span className="mb-1 block text-xs text-text-muted">{t('音频码率 kbps', 'Audio bitrate kbps')}</span>
                       <input
                         type="number"
                         min={32}
@@ -545,7 +553,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
                   )}
                   {showCustomAnimatedFps && (
                     <label>
-                      <span className="mb-1 block text-xs text-text-muted">动图 FPS</span>
+                      <span className="mb-1 block text-xs text-text-muted">{t('动图 FPS', 'Animation FPS')}</span>
                       <input
                         type="number"
                         min={1}
@@ -559,7 +567,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
                   {showCustomWebpQuality && (
                     <>
                       <label>
-                        <span className="mb-1 block text-xs text-text-muted">WebP 质量</span>
+                        <span className="mb-1 block text-xs text-text-muted">{t('WebP 质量', 'WebP quality')}</span>
                         <input
                           type="number"
                           min={0}
@@ -570,7 +578,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
                         />
                       </label>
                       <label>
-                        <span className="mb-1 block text-xs text-text-muted">WebP 压缩级别</span>
+                        <span className="mb-1 block text-xs text-text-muted">{t('WebP 压缩级别', 'WebP compression')}</span>
                         <input
                           type="number"
                           min={0}
@@ -587,7 +595,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
                   {showCustomGifOptions && (
                     <>
                       <label>
-                        <span className="mb-1 block text-xs text-text-muted">GIF 色彩数</span>
+                        <span className="mb-1 block text-xs text-text-muted">{t('GIF 色彩数', 'GIF colors')}</span>
                         <input
                           type="number"
                           min={4}
@@ -598,7 +606,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
                         />
                       </label>
                       <label>
-                        <span className="mb-1 block text-xs text-text-muted">GIF 抖动</span>
+                        <span className="mb-1 block text-xs text-text-muted">{t('GIF 抖动', 'GIF dithering')}</span>
                         <select
                           className="ui-input w-full"
                           value={customOptions.gifDither ?? 'sierra2_4a'}
@@ -606,9 +614,9 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
                             setCustomOptions((prev) => ({ ...prev, gifDither: e.target.value as GifDither }))
                           }
                         >
-                          <option value="sierra2_4a">Sierra（细腻）</option>
+                          <option value="sierra2_4a">{t('Sierra（细腻）', 'Sierra (fine)')}</option>
                           <option value="floyd_steinberg">Floyd–Steinberg</option>
-                          <option value="bayer">Bayer（体积优先）</option>
+                          <option value="bayer">{t('Bayer（体积优先）', 'Bayer (smaller file)')}</option>
                         </select>
                       </label>
                     </>
@@ -616,7 +624,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
                   {showCustomLosslessAudioOptions && (
                     <>
                       <label>
-                        <span className="mb-1 block text-xs text-text-muted">最高采样率 Hz</span>
+                        <span className="mb-1 block text-xs text-text-muted">{t('最高采样率 Hz', 'Max sample rate Hz')}</span>
                         <input
                           type="number"
                           min={8000}
@@ -628,7 +636,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
                         />
                       </label>
                       <label>
-                        <span className="mb-1 block text-xs text-text-muted">音频位深</span>
+                        <span className="mb-1 block text-xs text-text-muted">{t('音频位深', 'Audio bit depth')}</span>
                         <select
                           className="ui-input w-full"
                           value={
@@ -652,7 +660,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
                   )}
                   {quality === 'custom' && format === 'flac' && (
                     <label>
-                      <span className="mb-1 block text-xs text-text-muted">FLAC 压缩级别</span>
+                      <span className="mb-1 block text-xs text-text-muted">{t('FLAC 压缩级别', 'FLAC compression')}</span>
                       <input
                         type="number"
                         min={0}
@@ -668,12 +676,12 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
             </div>
 
             <div>
-              <label className="text-xs font-medium text-text-secondary uppercase tracking-wider block mb-2">导出范围</label>
+              <label className="text-xs font-medium text-text-secondary uppercase tracking-wider block mb-2">{t('导出范围', 'Export range')}</label>
               <div className="space-y-1">
                 {[
-                  { value: 'timeline' as const, label: '整条时间线', disabled: false },
-                  { value: 'selection' as const, label: `所选片段（${selectedClipIds.length}）`, disabled: selectedClipIds.length === 0 },
-                  { value: 'range' as const, label: '自定义片段范围', disabled: false }
+                  { value: 'timeline' as const, label: t('整条时间线', 'Entire timeline'), disabled: false },
+                  { value: 'selection' as const, label: t(`所选片段（${selectedClipIds.length}）`, `Selected clips (${selectedClipIds.length})`), disabled: selectedClipIds.length === 0 },
+                  { value: 'range' as const, label: t('自定义片段范围', 'Custom time range'), disabled: false }
                 ].map((item) => (
                   <label
                     key={item.value}
@@ -701,7 +709,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
               {exportMode === 'range' && (
                 <div className="mt-2 grid grid-cols-2 gap-2">
                   <label>
-                    <span className="mb-1 block text-xs text-text-muted">开始</span>
+                    <span className="mb-1 block text-xs text-text-muted">{t('开始', 'Start')}</span>
                     <input
                       className={`ui-input w-full font-mono ${rangeValid ? '' : 'border-danger/60'}`}
                       value={rangeStartText}
@@ -709,7 +717,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
                     />
                   </label>
                   <label>
-                    <span className="mb-1 block text-xs text-text-muted">结束</span>
+                    <span className="mb-1 block text-xs text-text-muted">{t('结束', 'End')}</span>
                     <input
                       className={`ui-input w-full font-mono ${rangeValid ? '' : 'border-danger/60'}`}
                       value={rangeEndText}
@@ -717,7 +725,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
                     />
                   </label>
                   <p className="col-span-2 text-[10px] text-text-muted">
-                    当前时间线总时长：{formatTime(timelineDuration)}
+                    {t(`当前时间线总时长：${formatTime(timelineDuration)}`, `Timeline duration: ${formatTime(timelineDuration)}`)}
                   </p>
                 </div>
               )}
@@ -725,7 +733,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
 
             {isAnimatedImageFormat(format) && (
               <div>
-                <label className="text-xs font-medium text-text-secondary uppercase tracking-wider block mb-2">动图循环</label>
+                <label className="text-xs font-medium text-text-secondary uppercase tracking-wider block mb-2">{t('动图循环', 'Animation loop')}</label>
                 <div className="space-y-1">
                   <label
                     className={`flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer border transition-colors ${
@@ -740,7 +748,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
                       onChange={() => setGifLoop('infinite')}
                       className="accent-accent"
                     />
-                    <span className="text-sm text-text-primary">无限循环</span>
+                    <span className="text-sm text-text-primary">{t('无限循环', 'Loop forever')}</span>
                   </label>
                   <label
                     className={`flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer border transition-colors ${
@@ -755,7 +763,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
                       onChange={() => setGifLoop('once')}
                       className="accent-accent"
                     />
-                    <span className="text-sm text-text-primary">仅播放一次</span>
+                    <span className="text-sm text-text-primary">{t('仅播放一次', 'Play once')}</span>
                   </label>
                 </div>
               </div>
@@ -764,9 +772,9 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
 
           <div className="mt-2 border-t border-border bg-panel pt-3">
             <div className="flex gap-2 justify-end">
-              <Button onClick={handleClose}>取消</Button>
+              <Button onClick={handleClose}>{t('取消', 'Cancel')}</Button>
               <Button onClick={handleExport} variant="primary" disabled={!canStartExport}>
-                开始导出
+                {t('开始导出', 'Start export')}
               </Button>
             </div>
           </div>
@@ -777,26 +785,26 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
         <div className="flex max-h-[62vh] flex-col">
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1 pb-3">
             <div className="flex items-end justify-between">
-              <span className="text-sm font-medium text-text-secondary">导出执行中</span>
+              <span className="text-sm font-medium text-text-secondary">{t('导出执行中', 'Export in progress')}</span>
               <span className="text-base font-semibold tabular-nums text-text-primary">{progressPercentText}</span>
             </div>
             <ProgressBar value={exportProgress?.percent ?? 0} />
             <div className="grid grid-cols-2 gap-3">
               <div className="rounded-md border border-border bg-panel-hover/30 px-3 py-2">
-                <p className="text-xs text-text-secondary">处理速度（相对实时）</p>
+                <p className="text-xs text-text-secondary">{t('处理速度（相对实时）', 'Processing speed (vs. real time)')}</p>
                 <p className="mt-1 text-base font-semibold tabular-nums text-text-primary">{progressSpeedText}</p>
               </div>
               <div className="rounded-md border border-border bg-panel-hover/30 px-3 py-2">
-                <p className="text-xs text-text-secondary">预计剩余</p>
+                <p className="text-xs text-text-secondary">{t('预计剩余', 'Time remaining')}</p>
                 <p className="mt-1 text-base font-semibold tabular-nums text-text-primary">{progressEtaText}</p>
               </div>
             </div>
-            <p className="text-xs text-text-muted">说明：1.0x 代表与实时处理速度相当，数值越大导出越快。</p>
+            <p className="text-xs text-text-muted">{t('说明：1.0x 代表与实时处理速度相当，数值越大导出越快。', '1.0x matches real-time processing; higher values export faster.')}</p>
           </div>
           <div className="mt-2 border-t border-border bg-panel pt-3">
             <div className="flex justify-end">
               <Button onClick={handleClose} variant="danger">
-                取消导出
+                {t('取消导出', 'Cancel export')}
               </Button>
             </div>
           </div>

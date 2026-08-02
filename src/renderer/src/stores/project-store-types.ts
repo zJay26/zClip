@@ -57,8 +57,10 @@ export interface ProjectStore {
   projectSettings: ProjectSettings
   projectFilePath: string | null
   projectDirty: boolean
+  documentRevision: number
   recentProjects: RecentProject[]
   autosaveReady: boolean
+  missingMediaPaths: string[]
 
   sourceFile: string | null
   mediaInfo: MediaInfo | null
@@ -152,6 +154,8 @@ export interface ProjectStore {
   refreshRecentProjects: () => Promise<void>
   removeRecentProject: (filePath: string) => Promise<void>
   restoreProjectData: (data: ProjectData, filePath?: string | null) => void
+  recoverAutosave: (data: ProjectData) => Promise<void>
+  relinkMissingMedia: () => Promise<boolean>
   buildProjectData: () => ProjectData
   autosaveNow: () => Promise<void>
   clearAutosave: () => Promise<void>

@@ -1,23 +1,87 @@
-import { app, BrowserWindow, shell, protocol } from 'electron'
+import { app, BrowserWindow, dialog, shell, protocol, ipcMain } from 'electron'
 import { join, isAbsolute, normalize, extname } from 'path'
 import { existsSync, statSync } from 'fs'
-import { pathToFileURL, fileURLToPath } from 'url'
+import { fileURLToPath } from 'url'
 import { is } from '@electron-toolkit/utils'
 import { registerAllHandlers } from './ipc'
 import { IPC_CHANNELS } from '../shared/types'
-import { authorizeMediaPaths, isMediaPathAuthorized } from './security/media-access'
+import {
+  assertAuthorizedMediaPath,
+  authorizeMediaPaths,
+  clearAuthorizedMediaPaths
+} from './security/media-access'
 import { enforceCachePolicies } from './services/cache-manager'
 import { cancelAllMediaJobs } from './services/media-job-manager'
+import { cancelExport } from './services/export-service'
 import { createLocalMediaResponse } from './local-media-response'
+import { isSupportedMediaExtension } from '../shared/media-formats'
+import {
+  assertTrustedIpcEvent,
+  isTrustedRendererUrl,
+  PRODUCTION_RENDERER_URL,
+  registerTrustedWebContents
+} from './security/ipc-security'
+import { clearFileCapabilities, grantFileCapability } from './security/file-capabilities'
+import type { AppCloseDecision } from '../shared/types'
+import { createRendererAssetResponse } from './renderer-asset-response'
 
 let mainWindow: BrowserWindow | null = null
 let isQuitting = false
+let closeRequestPending = false
+let unresponsivePromptPending = false
+let shutdownPromise: Promise<void> | null = null
+let rendererReady = false
 const pendingOpenFiles: string[] = []
+const smokeTestMode = process.argv.includes('--smoke-test')
 
-const MEDIA_EXTENSIONS = new Set([
-  '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.ts', '.m4v',
-  '.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a', '.opus'
-])
+async function shutdownAndQuit(): Promise<void> {
+  if (shutdownPromise) return shutdownPromise
+  isQuitting = true
+  closeRequestPending = false
+  shutdownPromise = (async () => {
+    await Promise.allSettled([cancelExport(), cancelAllMediaJobs()])
+    clearAuthorizedMediaPaths()
+    clearFileCapabilities()
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy()
+    app.quit()
+  })()
+  return shutdownPromise
+}
+
+function requestAppClose(): void {
+  if (!mainWindow || mainWindow.isDestroyed() || closeRequestPending) return
+  closeRequestPending = true
+  mainWindow.webContents.send(IPC_CHANNELS.APP_CLOSE_REQUEST)
+}
+
+ipcMain.on(IPC_CHANNELS.APP_CLOSE_RESPONSE, async (event, decision: AppCloseDecision) => {
+  try {
+    assertTrustedIpcEvent(event)
+  } catch (error) {
+    console.warn('Rejected app close response:', event.senderFrame?.url, error)
+    return
+  }
+  if (!closeRequestPending || (decision !== 'close' && decision !== 'cancel')) return
+  closeRequestPending = false
+  if (decision === 'cancel') return
+  await shutdownAndQuit()
+})
+
+ipcMain.on(IPC_CHANNELS.RENDERER_READY, (event) => {
+  try {
+    assertTrustedIpcEvent(event)
+  } catch (error) {
+    console.warn('Rejected renderer ready signal:', event.senderFrame?.url, error)
+    return
+  }
+  rendererReady = true
+  if (pendingOpenFiles.length > 0) {
+    const uniqueFiles = Array.from(new Set(pendingOpenFiles))
+    pendingOpenFiles.length = 0
+    sendOpenFiles(uniqueFiles)
+  }
+  if (smokeTestMode) requestAppClose()
+})
 
 function extractFilePaths(argv: string[]): string[] {
   const resolved: string[] = []
@@ -66,7 +130,7 @@ function extractFilePaths(argv: string[]): string[] {
       if (!isAbsolute(normalized)) continue
       const extension = extname(normalized).toLowerCase()
       if (extension === '.exe' || extension === '.lnk') continue
-      if (extension && !MEDIA_EXTENSIONS.has(extension)) continue
+      if (extension !== '.zclip' && !isSupportedMediaExtension(normalized)) continue
       if (seen.has(normalized)) continue
       if (!existsSync(normalized)) continue
       const stat = statSync(normalized)
@@ -83,11 +147,17 @@ function extractFilePaths(argv: string[]): string[] {
 
 function sendOpenFiles(filePaths: string[]): void {
   if (filePaths.length === 0) return
-  if (!mainWindow || mainWindow.webContents.isDestroyed()) {
-    pendingOpenFiles.push(...filePaths)
+  const projectFiles = filePaths.filter((filePath) => extname(filePath).toLowerCase() === '.zclip')
+  const mediaFiles = filePaths.filter((filePath) => isSupportedMediaExtension(filePath))
+  authorizeMediaPaths(mediaFiles)
+  projectFiles.forEach((filePath) => grantFileCapability('project-read', filePath))
+  const acceptedFiles = [...projectFiles, ...mediaFiles]
+  if (acceptedFiles.length === 0) return
+  if (!mainWindow || mainWindow.webContents.isDestroyed() || !rendererReady) {
+    pendingOpenFiles.push(...acceptedFiles)
     return
   }
-  mainWindow.webContents.send(IPC_CHANNELS.OPEN_FILE, filePaths)
+  mainWindow.webContents.send(IPC_CHANNELS.OPEN_FILE, acceptedFiles)
 }
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
@@ -96,18 +166,27 @@ if (!gotSingleInstanceLock) {
 } else {
   app.on('second-instance', (_event, argv) => {
     const filePaths = extractFilePaths(argv)
-    if (filePaths.length > 0) {
-      if (mainWindow) {
-        if (mainWindow.isMinimized()) mainWindow.restore()
-        mainWindow.focus()
-      }
-      sendOpenFiles(filePaths)
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+      mainWindow.focus()
     }
+    sendOpenFiles(filePaths)
   })
 }
 
 // Register scheme early so Chromium treats it as standard/streamable.
 protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'zclip-app',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: false,
+      bypassCSP: false
+    }
+  },
   {
     scheme: 'local-media',
     privileges: {
@@ -122,6 +201,7 @@ protocol.registerSchemesAsPrivileged([
 ])
 
 function createWindow(): void {
+  rendererReady = false
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -135,68 +215,114 @@ function createWindow(): void {
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
-      webSecurity: true
+      webSecurity: true,
+      webviewTag: false,
+      navigateOnDragDrop: false,
+      spellcheck: false,
+      devTools: is.dev
     }
   })
 
   mainWindow.on('ready-to-show', () => {
-    mainWindow?.show()
+    if (!smokeTestMode) mainWindow?.show()
   })
 
-  // Route Windows native close requests through app.quit(). This makes the
-  // title-bar close button and taskbar "Close window" action behave reliably.
+  const unregisterTrustedRenderer = registerTrustedWebContents(mainWindow.webContents)
+
   mainWindow.on('close', (event) => {
-    if (process.platform === 'darwin' || isQuitting) return
+    if (isQuitting) return
     event.preventDefault()
-    isQuitting = true
-    cancelAllMediaJobs()
-    mainWindow?.destroy()
-    app.quit()
+    requestAppClose()
   })
 
   mainWindow.on('closed', () => {
+    unregisterTrustedRenderer()
+    closeRequestPending = false
+    rendererReady = false
     mainWindow = null
   })
 
-  mainWindow.webContents.on('did-finish-load', () => {
-    if (pendingOpenFiles.length === 0) return
-    const uniqueFiles = Array.from(new Set(pendingOpenFiles))
-    pendingOpenFiles.length = 0
-    sendOpenFiles(uniqueFiles)
+  mainWindow.on('unresponsive', async () => {
+    if (!mainWindow || mainWindow.isDestroyed() || unresponsivePromptPending || isQuitting) return
+    unresponsivePromptPending = true
+    try {
+      const result = await dialog.showMessageBox(mainWindow, {
+        type: 'warning',
+        title: 'zClip 无响应',
+        message: '渲染界面暂时无响应。可以继续等待，或强制退出并在下次启动时尝试恢复自动保存。',
+        buttons: ['继续等待', '强制退出'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true
+      })
+      if (result.response === 1) await shutdownAndQuit()
+    } catch (error) {
+      console.error('Failed to handle unresponsive renderer:', error)
+    } finally {
+      unresponsivePromptPending = false
+    }
+  })
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.error(`Renderer process exited: ${details.reason}`)
+    void shutdownAndQuit()
+  })
+
+  mainWindow.webContents.on('did-start-loading', () => {
+    rendererReady = false
   })
 
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    const rendererUrl = process.env['ELECTRON_RENDERER_URL']
-    const productionRendererUrl = pathToFileURL(join(__dirname, '../renderer/index.html')).href
-    const isAllowed = is.dev && rendererUrl ? url.startsWith(rendererUrl) : url === productionRendererUrl
+    const isAllowed = is.dev ? isTrustedRendererUrl(url) : url === PRODUCTION_RENDERER_URL
     if (!isAllowed) event.preventDefault()
   })
 
   mainWindow.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => {
     callback(false)
   })
+  mainWindow.webContents.session.setPermissionCheckHandler(() => false)
 
   // Open safe external links in browser
   mainWindow.webContents.setWindowOpenHandler((details) => {
     try {
       const url = new URL(details.url)
-      if (url.protocol === 'https:') void shell.openExternal(url.href)
+      if (
+        url.protocol === 'https:' &&
+        url.hostname === 'github.com' &&
+        (url.pathname === '/zJay26/zClip' || url.pathname.startsWith('/zJay26/zClip/'))
+      ) void shell.openExternal(url.href)
     } catch {
       // Ignore malformed or unsafe external URLs.
     }
     return { action: 'deny' }
   })
 
-  // Dev: load from vite dev server; Prod: load built file
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
-  } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
-  }
+  // Dev: load from vite dev server; Prod: load through the hardened app protocol.
+  const rendererUrl =
+    is.dev && process.env['ELECTRON_RENDERER_URL']
+      ? process.env['ELECTRON_RENDERER_URL']
+      : PRODUCTION_RENDERER_URL
+  void mainWindow.loadURL(rendererUrl).catch(async (error) => {
+    console.error(`Failed to load renderer from ${rendererUrl}:`, error)
+    if (!smokeTestMode) {
+      await dialog.showMessageBox({
+        type: 'error',
+        title: 'zClip 启动失败',
+        message: '界面资源加载失败，应用将退出。',
+        detail: error instanceof Error ? error.message : String(error),
+        buttons: ['退出'],
+        noLink: true
+      })
+    }
+    await shutdownAndQuit()
+  })
 }
 
 app.whenReady().then(() => {
   void enforceCachePolicies()
+  protocol.handle('zclip-app', (request) =>
+    createRendererAssetResponse(join(__dirname, '../renderer'), request)
+  )
   // Register custom protocol to serve local media files safely.
   protocol.handle('local-media', async (request) => {
     try {
@@ -213,10 +339,12 @@ app.whenReady().then(() => {
         : /^\/[A-Za-z]:\//.test(decodedUrlPath)
           ? decodedUrlPath.slice(1)
           : decodedUrlPath
-      if (!isMediaPathAuthorized(decodedPath)) {
-        return new Response('Media access denied', { status: 403 })
+      const authorizedPath = await assertAuthorizedMediaPath(decodedPath)
+      const allowedOrigins = new Set(['null', new URL(PRODUCTION_RENDERER_URL).origin])
+      if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+        allowedOrigins.add(new URL(process.env['ELECTRON_RENDERER_URL']).origin)
       }
-      return await createLocalMediaResponse(decodedPath, request)
+      return await createLocalMediaResponse(authorizedPath, request, allowedOrigins)
     } catch (error) {
       console.error('Failed to load local media:', error)
       return new Response('Media not found', { status: 404 })
@@ -225,10 +353,7 @@ app.whenReady().then(() => {
 
   registerAllHandlers()
   const initialFiles = extractFilePaths(process.argv)
-  if (initialFiles.length > 0) {
-    authorizeMediaPaths(initialFiles)
-    pendingOpenFiles.push(...initialFiles)
-  }
+  if (initialFiles.length > 0) sendOpenFiles(initialFiles)
   createWindow()
 
   app.on('activate', () => {
@@ -241,7 +366,7 @@ app.whenReady().then(() => {
 // macOS: open file from Finder
 app.on('open-file', (event, filePath) => {
   event.preventDefault()
-  sendOpenFiles([filePath])
+  sendOpenFiles(extractFilePaths([filePath]))
 })
 
 app.on('window-all-closed', () => {
@@ -250,9 +375,16 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
+  if (mainWindow && !mainWindow.isDestroyed() && !isQuitting) {
+    event.preventDefault()
+    requestAppClose()
+    return
+  }
   isQuitting = true
-  cancelAllMediaJobs()
+  void Promise.allSettled([cancelExport(), cancelAllMediaJobs()])
+  clearAuthorizedMediaPaths()
+  clearFileCapabilities()
 })
 
 export { mainWindow }

@@ -18,14 +18,16 @@ import type {
   TimelinePreviewOptions,
   TimelinePreviewResult
 } from '../shared/types'
+import type { AppCloseDecision } from '../shared/types'
 
 export interface ElectronAPI {
   // File operations
   openFile: () => Promise<string | null>
   openFiles: () => Promise<string[] | null>
-  getPathForFile: (file: File) => string
+  resolveDroppedFiles: (files: File[]) => Promise<string[]>
   getMediaInfo: (filePath: string) => Promise<{ success: boolean; data?: MediaInfo; error?: string }>
   preparePlayback: (filePath: string) => Promise<{ success: boolean; playbackPath?: string; playbackIsProxy?: boolean; error?: string }>
+  prepareAudioPitch: (filePath: string, pitchPercent: number) => Promise<{ success: boolean; playbackPath?: string; error?: string }>
   getTimelinePreview: (filePath: string, options: TimelinePreviewOptions) => Promise<{ success: boolean; data?: TimelinePreviewResult; error?: string }>
   // Project
   showProjectSaveDialog: (defaultName: string) => Promise<string | null>
@@ -55,18 +57,30 @@ export interface ElectronAPI {
   onExportComplete: (callback: (outputPath: string) => void) => () => void
   onExportError: (callback: (error: string) => void) => () => void
   onOpenFile: (callback: (filePaths: string[]) => void) => () => void
+  rendererReady: () => void
+  onAppCloseRequest: (callback: () => Promise<AppCloseDecision>) => () => void
 }
 
 const api: ElectronAPI = {
   openFile: () => ipcRenderer.invoke(IPC_CHANNELS.SHOW_OPEN_DIALOG),
   openFiles: () => ipcRenderer.invoke(IPC_CHANNELS.SHOW_OPEN_DIALOG_MULTI),
-  getPathForFile: (file) => webUtils.getPathForFile(file),
+  resolveDroppedFiles: (files) => {
+    const paths = files.slice(0, 200).map((file) => webUtils.getPathForFile(file)).filter(Boolean)
+    return ipcRenderer.invoke(IPC_CHANNELS.AUTHORIZE_DROPPED_FILES, paths)
+  },
 
   getMediaInfo: (filePath: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.GET_MEDIA_INFO, filePath),
 
   preparePlayback: (filePath: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.PREPARE_PLAYBACK, filePath),
+
+  prepareAudioPitch: (filePath: string, pitchPercent: number) =>
+    ipcRenderer.invoke(
+      IPC_CHANNELS.PREPARE_AUDIO_PITCH,
+      filePath,
+      Math.round(pitchPercent * 100) / 100
+    ),
 
   getTimelinePreview: (filePath: string, options: TimelinePreviewOptions) =>
     ipcRenderer.invoke(IPC_CHANNELS.GET_TIMELINE_PREVIEW, filePath, options),
@@ -140,6 +154,21 @@ const api: ElectronAPI = {
     }
     ipcRenderer.on(IPC_CHANNELS.OPEN_FILE, handler)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.OPEN_FILE, handler)
+  },
+
+  rendererReady: () => ipcRenderer.send(IPC_CHANNELS.RENDERER_READY),
+
+  onAppCloseRequest: (callback) => {
+    const handler = async (): Promise<void> => {
+      let decision: AppCloseDecision = 'cancel'
+      try {
+        decision = await callback()
+      } finally {
+        ipcRenderer.send(IPC_CHANNELS.APP_CLOSE_RESPONSE, decision)
+      }
+    }
+    ipcRenderer.on(IPC_CHANNELS.APP_CLOSE_REQUEST, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.APP_CLOSE_REQUEST, handler)
   }
 }
 

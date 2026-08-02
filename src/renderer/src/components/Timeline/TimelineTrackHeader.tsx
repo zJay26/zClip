@@ -4,6 +4,7 @@
 
 import React from 'react'
 import { HEADER_WIDTH, RULER_HEIGHT } from './timeline-constants'
+import { usePreferences } from '../../contexts/preferences'
 
 interface TimelineTrackHeaderProps {
   videoTrackCount: number
@@ -50,6 +51,7 @@ const TimelineTrackHeader: React.FC<TimelineTrackHeaderProps> = ({
   trackGap,
   groupGap
 }) => {
+  const { t } = usePreferences()
   const videoAreaHeight = videoTrackCount * trackHeight + Math.max(0, videoTrackCount - 1) * trackGap
   const audioAreaHeight = audioTrackCount * trackHeight + Math.max(0, audioTrackCount - 1) * trackGap
   const actionSize = Math.max(6, Math.min(20, trackHeight - 2))
@@ -82,8 +84,8 @@ const TimelineTrackHeader: React.FC<TimelineTrackHeaderProps> = ({
             </span>
             {i === videoTrackCount - 1 && (
               <div className="flex items-center gap-0.5">
-                <TrackActionButton onClick={removeVideoTrack} title="减少画面轨道" type="remove" size={actionSize} />
-                <TrackActionButton onClick={addVideoTrack} title="增加画面轨道" type="add" size={actionSize} />
+                <TrackActionButton onClick={removeVideoTrack} title={t('减少画面轨道', 'Remove video track')} type="remove" size={actionSize} />
+                <TrackActionButton onClick={addVideoTrack} title={t('增加画面轨道', 'Add video track')} type="add" size={actionSize} />
               </div>
             )}
           </div>
@@ -109,8 +111,8 @@ const TimelineTrackHeader: React.FC<TimelineTrackHeaderProps> = ({
             </span>
             {i === audioTrackCount - 1 && (
               <div className="flex items-center gap-0.5">
-                <TrackActionButton onClick={removeAudioTrack} title="减少音频轨道" type="remove" size={actionSize} />
-                <TrackActionButton onClick={addAudioTrack} title="增加音频轨道" type="add" size={actionSize} />
+                <TrackActionButton onClick={removeAudioTrack} title={t('减少音频轨道', 'Remove audio track')} type="remove" size={actionSize} />
+                <TrackActionButton onClick={addAudioTrack} title={t('增加音频轨道', 'Add audio track')} type="add" size={actionSize} />
               </div>
             )}
           </div>

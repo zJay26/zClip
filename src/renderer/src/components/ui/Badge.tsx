@@ -11,10 +11,10 @@ interface BadgeProps {
 
 const toneClass: Record<BadgeTone, string> = {
   default: 'ui-badge',
-  accent: 'ui-badge border-accent/40 text-indigo-200 bg-accent/10',
-  success: 'ui-badge border-emerald-400/40 text-emerald-200 bg-emerald-500/10',
-  warning: 'ui-badge border-amber-400/40 text-amber-200 bg-amber-500/10',
-  danger: 'ui-badge border-red-400/40 text-red-200 bg-red-500/10'
+  accent: 'ui-badge border-accent/40 text-accent-soft bg-accent/10',
+  success: 'ui-badge border-success/40 text-success bg-success/10',
+  warning: 'ui-badge border-warning/40 text-warning bg-warning/10',
+  danger: 'ui-badge border-danger/40 text-danger bg-danger/10'
 }
 
 const Badge: React.FC<BadgeProps> = ({ children, tone = 'default', className }) => {

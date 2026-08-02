@@ -4,6 +4,7 @@
 
 import { useRef, useEffect, useCallback } from 'react'
 import { useProjectStore } from '../stores/project-store'
+import { useShallow } from 'zustand/react/shallow'
 import type { TimelineClip } from '../../../shared/types'
 import {
   getClipTimelineRange,
@@ -37,12 +38,20 @@ export function useVideoPlayer() {
     playing,
     operationsByClip,
     audioFades,
-    currentTime,
     setCurrentTime,
     setPlaying,
-    setClipDuration,
     activateClip
-  } = useProjectStore()
+  } = useProjectStore(useShallow((state) => ({
+    clips: state.clips,
+    selectedClipId: state.selectedClipId,
+    timelineDuration: state.timelineDuration,
+    playing: state.playing,
+    operationsByClip: state.operationsByClip,
+    audioFades: state.audioFades,
+    setCurrentTime: state.setCurrentTime,
+    setPlaying: state.setPlaying,
+    activateClip: state.activateClip
+  })))
 
   const selectedClip = clips.find((clip) => clip.id === selectedClipId) || null
 
@@ -206,9 +215,13 @@ export function useVideoPlayer() {
     }
   }
 
-  useEffect(() => {
-    currentTimeRef.current = currentTime
-  }, [currentTime])
+  useEffect(() => useProjectStore.subscribe((state, previous) => {
+    if (state.currentTime === previous.currentTime) return
+    currentTimeRef.current = state.currentTime
+    if (playingRef.current) return
+    const active = findClipAtTime(state.currentTime)
+    if (active?.track === 'video') seekVideoRef.current?.(active, state.currentTime, false)
+  }), [findClipAtTime])
 
   useEffect(() => {
     playingRef.current = playing
@@ -470,10 +483,10 @@ export function useVideoPlayer() {
   // Step forward/backward by seconds
   const step = useCallback(
     (seconds: number) => {
-      const next = Math.max(0, Math.min(currentTime + seconds, timelineDuration))
+      const next = Math.max(0, Math.min(currentTimeRef.current + seconds, timelineDuration))
       seekTo(next)
     },
-    [currentTime, timelineDuration, seekTo]
+    [timelineDuration, seekTo]
   )
 
   // Handle video metadata loaded
@@ -482,7 +495,6 @@ export function useVideoPlayer() {
     if (video) {
       const active = findClipAtTime(currentTimeRef.current)
       if (active) {
-        setClipDuration(active.id, video.duration)
         if (active.track === 'video') {
           const targetTime = timelineTimeToMediaTime(active, operationsByClip, currentTimeRef.current)
           if (Number.isFinite(targetTime)) {
@@ -499,21 +511,23 @@ export function useVideoPlayer() {
         pendingSeekRef.current = null
         if (pendingAutoPlayRef.current) {
           pendingAutoPlayRef.current = false
-          video.play()
+          void video.play().catch(() => {
+            pendingAutoPlayRef.current = true
+          })
           setPlaying(true)
           startTimeLoop()
         }
       }
     }
-  }, [findClipAtTime, setClipDuration, setPlaying, startTimeLoop, operationsByClip])
+  }, [findClipAtTime, setPlaying, startTimeLoop, operationsByClip])
 
-  // Keep paused video frame in sync when source/clip changes.
+  // Keep paused video frame in sync when source/clip structure changes.
   useEffect(() => {
     if (playingRef.current) return
     const active = findClipAtTime(currentTimeRef.current)
     if (!active || active.track !== 'video') return
     seekVideoForTime(active, currentTimeRef.current, false)
-  }, [clips, operationsByClip, currentTime, findClipAtTime, seekVideoForTime])
+  }, [clips, operationsByClip, findClipAtTime, seekVideoForTime])
 
   // Handle video ended
   const onEnded = useCallback(() => {

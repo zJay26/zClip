@@ -142,6 +142,12 @@ export interface MediaInfo {
   filePath: string
   hasVideo: boolean   // 是否包含视频流
   hasAudio: boolean   // 是否包含音频流
+  /** Display rotation from stream metadata/display matrix. */
+  rotation?: 0 | 90 | 180 | 270
+  /** Whether average and real frame rates materially differ. */
+  isVariableFrameRate?: boolean
+  sampleAspectRatio?: string
+  colorSpace?: string
   playbackPath?: string
   playbackIsProxy?: boolean
   playbackProxyFailed?: boolean
@@ -207,6 +213,8 @@ export interface CanvasSettings {
 
 export interface ProjectSettings {
   canvas: CanvasSettings
+  /** Project/output frame rate. Older projects omit it and default to 30. */
+  frameRate?: number
 }
 
 export interface ExportRange {
@@ -267,15 +275,22 @@ export interface CacheStats {
   files: number
 }
 
+export type AppCloseDecision = 'close' | 'cancel'
+
 /** IPC channel 名称常量 */
 export const IPC_CHANNELS = {
   // Media
   OPEN_FILE: 'media:open-file',
+  AUTHORIZE_DROPPED_FILES: 'media:authorize-dropped-files',
   GET_MEDIA_INFO: 'media:get-info',
   PREPARE_PLAYBACK: 'media:prepare-playback',
+  PREPARE_AUDIO_PITCH: 'media:prepare-audio-pitch',
   GET_TIMELINE_PREVIEW: 'media:get-timeline-preview',
   CACHE_GET_STATS: 'cache:get-stats',
   CACHE_CLEAR: 'cache:clear',
+  APP_CLOSE_REQUEST: 'app:close-request',
+  APP_CLOSE_RESPONSE: 'app:close-response',
+  RENDERER_READY: 'app:renderer-ready',
   // Project
   PROJECT_SHOW_SAVE_DIALOG: 'project:show-save-dialog',
   PROJECT_SHOW_OPEN_DIALOG: 'project:show-open-dialog',

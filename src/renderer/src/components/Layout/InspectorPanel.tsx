@@ -11,6 +11,7 @@ import TransitionControl from '../Controls/TransitionControl'
 import { InspectorSection, SegmentedControl } from '../ui'
 import { useProjectStore } from '../../stores/project-store'
 import { clamp, formatTime } from '../../lib/utils'
+import { usePreferences } from '../../contexts/preferences'
 import type { SpeedParams, VolumeParams, PitchParams } from '../../../../shared/types'
 
 type InspectorTab = 'clip' | 'canvas' | 'transitions'
@@ -72,6 +73,7 @@ function readInitialTab(): InspectorTab {
 }
 
 const InspectorPanel: React.FC = () => {
+  const { t } = usePreferences()
   const {
     operations, getAudioOperationsForSelection, setSpeed, setVolume, setPitch,
     selectedClipId, selectedClipIds, clips
@@ -97,25 +99,32 @@ const InspectorPanel: React.FC = () => {
     <aside className="flex h-full w-full shrink-0 flex-col border-l border-border-subtle bg-panel">
       <div className="border-b border-border-subtle px-3 pb-3 pt-3">
         <SegmentedControl
-          label="检查器内容"
+          idPrefix="inspector"
+          label={t('检查器内容', 'Inspector content')}
           value={tab}
           onChange={selectTab}
           options={[
-            { value: 'clip', label: '片段', icon: <SlidersHorizontal aria-hidden size={14} /> },
-            { value: 'canvas', label: '画布', icon: <Layers3 aria-hidden size={14} /> },
-            { value: 'transitions', label: '转场', icon: <Clapperboard aria-hidden size={14} /> }
+            { value: 'clip', label: t('片段', 'Clip'), icon: <SlidersHorizontal aria-hidden size={14} /> },
+            { value: 'canvas', label: t('画布', 'Canvas'), icon: <Layers3 aria-hidden size={14} /> },
+            { value: 'transitions', label: t('转场', 'Transitions'), icon: <Clapperboard aria-hidden size={14} /> }
           ]}
         />
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div
+        id={`inspector-panel-${tab}`}
+        role="tabpanel"
+        aria-labelledby={`inspector-tab-${tab}`}
+        tabIndex={0}
+        className="min-h-0 flex-1 overflow-y-auto outline-none"
+      >
         {tab === 'clip' && !selectedClip && (
           <div className="flex h-full min-h-52 flex-col items-center justify-center px-6 text-center">
             <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-panel-muted text-text-muted">
               <SlidersHorizontal aria-hidden size={19} strokeWidth={1.5} />
             </div>
-            <p className="text-sm font-medium text-text-secondary">选择一个片段</p>
-            <p className="mt-1 text-xs leading-relaxed text-text-muted">片段的画面、时间与声音参数会显示在这里。</p>
+            <p className="text-sm font-medium text-text-secondary">{t('选择一个片段', 'Select a clip')}</p>
+            <p className="mt-1 text-xs leading-relaxed text-text-muted">{t('片段的画面、时间与声音参数会显示在这里。', 'Video, timing, and audio controls for the clip appear here.')}</p>
           </div>
         )}
 
@@ -124,29 +133,29 @@ const InspectorPanel: React.FC = () => {
             <div className="border-b border-border-subtle px-4 py-3">
               <p className="truncate text-sm font-semibold tracking-[-0.01em] text-text-primary" title={fileName}>{fileName}</p>
               <div className="mt-1 flex items-center gap-2 text-[11px] text-text-muted">
-                <span>{selectedClip.track === 'video' ? '视频片段' : '音频片段'}</span>
+                <span>{selectedClip.track === 'video' ? t('视频片段', 'Video clip') : t('音频片段', 'Audio clip')}</span>
                 <span aria-hidden>·</span>
                 <span className="font-mono">{formatTime(selectedClip.duration)}</span>
-                {selectedClipIds.length > 1 && <><span aria-hidden>·</span><span>已选 {selectedClipIds.length} 项</span></>}
+                {selectedClipIds.length > 1 && <><span aria-hidden>·</span><span>{t(`已选 ${selectedClipIds.length} 项`, `${selectedClipIds.length} selected`)}</span></>}
               </div>
             </div>
             {selectedClip.track === 'video' && (
-              <InspectorSection title="画面">
+              <InspectorSection title={t('画面', 'Video')}>
                 <TransformControl />
               </InspectorSection>
             )}
-            <InspectorSection title="时间" meta={<InlineValueInput value={speedRate} unit="x" min={0.1} max={16} step={0.05} format={(value) => value.toFixed(2)} onCommit={setSpeed} />}>
+            <InspectorSection title={t('时间', 'Timing')} meta={<InlineValueInput value={speedRate} unit="x" min={0.1} max={16} step={0.05} format={(value) => value.toFixed(2)} onCommit={setSpeed} />}>
               <div className="space-y-4">
                 <TrimControl hideHeader />
                 <SpeedControl hideHeader />
               </div>
             </InspectorSection>
             {hasAudio && (
-              <InspectorSection title="声音" meta={<InlineValueInput value={volumePercent} unit="%" min={0} max={1000} format={(value) => `${Math.round(value)}`} parse={(text) => parseFloat(text.replace('%', '').trim())} onCommit={setVolume} />}>
+              <InspectorSection title={t('声音', 'Audio')} meta={<InlineValueInput value={volumePercent} unit="%" min={0} max={1000} format={(value) => `${Math.round(value)}`} parse={(text) => parseFloat(text.replace('%', '').trim())} onCommit={setVolume} />}>
                 <div className="space-y-4">
                   <VolumeControl hideHeader />
                   <div className="flex items-center justify-between gap-3">
-                    <span className="text-xs font-medium text-text-secondary">音调</span>
+                    <span className="text-xs font-medium text-text-secondary">{t('音调', 'Pitch')}</span>
                     <InlineValueInput value={pitchPercent} unit="%" min={25} max={400} format={(value) => `${Math.round(value)}`} onCommit={setPitch} />
                   </div>
                   <PitchControl hideHeader />
@@ -160,8 +169,8 @@ const InspectorPanel: React.FC = () => {
         {tab === 'canvas' && (
           <div className="p-4">
             <div className="mb-4">
-              <h2 className="text-sm font-semibold text-text-primary">项目画布</h2>
-              <p className="mt-1 text-xs leading-relaxed text-text-muted">设置最终画面的比例、分辨率与背景。</p>
+              <h2 className="text-sm font-semibold text-text-primary">{t('项目画布', 'Project canvas')}</h2>
+              <p className="mt-1 text-xs leading-relaxed text-text-muted">{t('设置最终画面的比例、分辨率与背景。', 'Set the final aspect ratio, resolution, and background.')}</p>
             </div>
             <CanvasControl />
           </div>
@@ -170,8 +179,8 @@ const InspectorPanel: React.FC = () => {
         {tab === 'transitions' && (
           <div className="p-4">
             <div className="mb-4">
-              <h2 className="text-sm font-semibold text-text-primary">转场</h2>
-              <p className="mt-1 text-xs leading-relaxed text-text-muted">拖动一个转场到相邻视频片段的交界处。</p>
+              <h2 className="text-sm font-semibold text-text-primary">{t('转场', 'Transitions')}</h2>
+              <p className="mt-1 text-xs leading-relaxed text-text-muted">{t('拖动一个转场到相邻视频片段的交界处。', 'Drag a transition onto the cut between adjacent video clips.')}</p>
             </div>
             <TransitionControl />
           </div>

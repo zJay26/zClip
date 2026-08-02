@@ -7,17 +7,15 @@ import fs from 'fs'
 import path from 'path'
 import crypto from 'crypto'
 import type { MediaInfo } from '../../shared/types'
-import { ffmpegPath } from './ffmpeg'
 import { runMediaJob } from './media-job-manager'
+import { scheduleCacheEnforcement, touchCacheFile } from './cache-manager'
 
 const SUPPORTED_VIDEO_CODECS = new Set([
   'h264',
   'avc1',
   'vp8',
   'vp9',
-  'av1',
-  'hevc',
-  'h265'
+  'av1'
 ])
 
 const SUPPORTED_VIDEO_CONTAINERS = new Set([
@@ -34,6 +32,13 @@ const SUPPORTED_PIXEL_FORMATS = new Set([
   'p010le',
   'yuv420p10le'
 ])
+const SUPPORTED_AUDIO_CODECS = new Set(['aac', 'mp3', 'opus', 'vorbis', 'flac', 'pcm_s16le'])
+const proxyPromises = new Map<string, Promise<void>>()
+
+async function isNonEmptyFile(filePath: string): Promise<boolean> {
+  const stat = await fs.promises.stat(filePath).catch(() => null)
+  return Boolean(stat?.isFile() && stat.size > 0)
+}
 
 function hashKey(input: string): string {
   return crypto.createHash('sha1').update(input).digest('hex')
@@ -44,9 +49,10 @@ async function ensureDir(dir: string): Promise<void> {
 }
 
 function needsProxy(filePath: string, info: MediaInfo): boolean {
-  if (!info.hasVideo) return false
+  if (!info.hasVideo && !info.hasAudio) return false
   const ext = path.extname(filePath).toLowerCase()
-  if (ext === '.mkv') return true
+  if (ext === '.mkv' || ext === '.wma' || ext === '.ac3' || ext === '.eac3' || ext === '.alac') return true
+  if (!info.hasVideo) return !SUPPORTED_AUDIO_CODECS.has((info.audioCodec || '').toLowerCase())
   const codec = (info.videoCodec || '').toLowerCase()
   const pix = (info.pixelFormat || '').toLowerCase()
   const container = (info.containerFormat || '').toLowerCase()
@@ -56,6 +62,7 @@ function needsProxy(filePath: string, info: MediaInfo): boolean {
   if (containerNames.length > 0 && !hasSupportedContainer) return true
   if (!pix) return true
   if (!SUPPORTED_PIXEL_FORMATS.has(pix)) return true
+  if (info.hasAudio && !SUPPORTED_AUDIO_CODECS.has((info.audioCodec || '').toLowerCase())) return true
   return false
 }
 
@@ -81,33 +88,41 @@ export async function ensurePlaybackPath(
       pix: info.pixelFormat
     })
   )
-  const proxyPath = path.join(cacheDir, `${key}.mp4`)
+  const proxyPath = path.join(cacheDir, `${key}${info.hasVideo ? '.mp4' : '.m4a'}`)
 
-  if (!fs.existsSync(proxyPath)) {
-    const args = [
-      '-y',
-      '-i', filePath,
-      '-map', '0:v:0?',
-      '-map', '0:a:0?',
-      '-c:v', 'libx264',
-      '-pix_fmt', 'yuv420p',
-      '-preset', 'veryfast',
-      '-crf', '23',
-      '-c:a', 'aac',
-      '-b:a', '128k',
-      '-movflags', '+faststart',
-      proxyPath
-    ]
-    const tempPath = `${proxyPath}.${process.pid}.tmp.mp4`
-    args[args.length - 1] = tempPath
-    try {
-      await runMediaJob(`proxy:${proxyPath}`, args)
-      await fs.promises.rename(tempPath, proxyPath)
-    } catch (error) {
-      await fs.promises.unlink(tempPath).catch(() => {})
-      throw error
+  if (!await isNonEmptyFile(proxyPath)) {
+    let pending = proxyPromises.get(proxyPath)
+    if (!pending) {
+      pending = (async () => {
+        const tempPath = `${proxyPath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp${path.extname(proxyPath)}`
+        const args = info.hasVideo
+          ? [
+              '-y', '-i', filePath,
+              '-map', '0:v:0?', '-map', '0:a:0?',
+              '-vf', `scale=w='min(1920,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=${Math.min(60, Math.max(1, info.fps || 30)).toFixed(3)}`,
+              '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'veryfast', '-crf', '23',
+              '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', tempPath
+            ]
+          : [
+              '-y', '-i', filePath, '-vn', '-map', '0:a:0',
+              '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', tempPath
+            ]
+        try {
+          await runMediaJob(`proxy:${proxyPath}`, args)
+          if (!await isNonEmptyFile(tempPath)) throw new Error('生成的播放代理为空')
+          await fs.promises.rename(tempPath, proxyPath)
+        } catch (error) {
+          await fs.promises.unlink(tempPath).catch(() => {})
+          throw error
+        }
+      })()
+      proxyPromises.set(proxyPath, pending)
+      void pending.finally(() => proxyPromises.delete(proxyPath)).catch(() => {})
     }
+    await pending
   }
 
+  await touchCacheFile(proxyPath)
+  scheduleCacheEnforcement()
   return { playbackPath: proxyPath, isProxy: true }
 }

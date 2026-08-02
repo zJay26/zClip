@@ -10,6 +10,7 @@ import type {
   TrimParams,
   VolumeParams
 } from '../../../shared/types'
+import { translate } from '../contexts/preferences'
 import {
   getClipTimelineRange,
   getTimelineDuration as getTimelineDurationShared
@@ -69,6 +70,7 @@ export function createDefaultOperations(duration: number): MediaOperation[] {
 
 export function createDefaultProjectSettings(): ProjectSettings {
   return {
+    frameRate: 30,
     canvas: {
       preset: 'source',
       width: 1920,
@@ -138,9 +140,9 @@ export function getLinkedAudioClipId(
   if (!selected) return null
   if (selected.track === 'audio') return selected.id
   const isLinked = linkedGroups[selected.groupId] !== false
-  if (!isLinked) return null
+  if (!isLinked) return selected.mediaInfo.hasAudio ? selected.id : null
   const audioClip = clips.find((clip) => clip.groupId === selected.groupId && clip.track === 'audio')
-  return audioClip?.id || null
+  return audioClip?.id || (selected.mediaInfo.hasAudio ? selected.id : null)
 }
 
 export function takeSnapshot(state: ProjectStore): ProjectSnapshot {
@@ -203,6 +205,6 @@ export function setDocumentTitle(filePath: string | null, totalClips: number): v
     return
   }
   const fileName = filePath.split(/[\\/]/).pop() || 'zClip'
-  const suffix = totalClips > 1 ? ` · ${totalClips} 段` : ''
+  const suffix = totalClips > 1 ? translate(` · ${totalClips} 段`, ` · ${totalClips} clips`) : ''
   document.title = `${fileName}${suffix} — zClip`
 }

@@ -35,20 +35,35 @@ export function parseByteRange(value: string | null, size: number): ByteRange | 
 
 const MEDIA_CONTENT_TYPES: Record<string, string> = {
   '.aac': 'audio/aac',
+  '.ac3': 'audio/ac3',
+  '.3g2': 'video/3gpp2',
+  '.3gp': 'video/3gpp',
+  '.aif': 'audio/aiff',
+  '.aiff': 'audio/aiff',
+  '.alac': 'audio/mp4',
+  '.amr': 'audio/amr',
   '.avi': 'video/x-msvideo',
   '.flac': 'audio/flac',
   '.flv': 'video/x-flv',
+  '.eac3': 'audio/eac3',
   '.m4a': 'audio/mp4',
   '.m4v': 'video/mp4',
+  '.m2ts': 'video/mp2t',
   '.mkv': 'video/x-matroska',
   '.mov': 'video/quicktime',
   '.mp3': 'audio/mpeg',
   '.mp4': 'video/mp4',
+  '.mpe': 'video/mpeg',
+  '.mpeg': 'video/mpeg',
+  '.mpg': 'video/mpeg',
+  '.mts': 'video/mp2t',
   '.ogg': 'audio/ogg',
   '.opus': 'audio/ogg',
+  '.png': 'image/png',
   '.ts': 'video/mp2t',
   '.wav': 'audio/wav',
   '.webm': 'video/webm',
+  '.vob': 'video/mpeg',
   '.wma': 'audio/x-ms-wma',
   '.wmv': 'video/x-ms-wmv'
 }
@@ -57,22 +72,33 @@ function getContentType(filePath: string): string {
   return MEDIA_CONTENT_TYPES[extname(filePath).toLowerCase()] || 'application/octet-stream'
 }
 
-function createHeaders(filePath: string): Headers {
-  return new Headers({
+function createHeaders(filePath: string, request: Request, allowedOrigins: ReadonlySet<string>): Headers {
+  const headers = new Headers({
     'Accept-Ranges': 'bytes',
-    'Access-Control-Allow-Origin': '*',
     'Content-Type': getContentType(filePath),
-    'Cross-Origin-Resource-Policy': 'cross-origin'
+    'Cross-Origin-Resource-Policy': 'cross-origin',
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'private, max-age=0, must-revalidate',
+    'Vary': 'Origin'
   })
+  const origin = request.headers.get('origin')
+  if (origin && allowedOrigins.has(origin)) {
+    headers.set('Access-Control-Allow-Origin', origin)
+  }
+  return headers
 }
 
-export async function createLocalMediaResponse(filePath: string, request: Request): Promise<Response> {
+export async function createLocalMediaResponse(
+  filePath: string,
+  request: Request,
+  allowedOrigins: ReadonlySet<string> = new Set(['null', 'zclip-app://app'])
+): Promise<Response> {
   const fileStat = await stat(filePath)
   if (!fileStat.isFile()) return new Response('Media not found', { status: 404 })
 
   const size = fileStat.size
   const range = parseByteRange(request.headers.get('range'), size)
-  const headers = createHeaders(filePath)
+  const headers = createHeaders(filePath, request, allowedOrigins)
   if (range === false) {
     headers.set('Content-Range', `bytes */${size}`)
     return new Response(null, { status: 416, headers })

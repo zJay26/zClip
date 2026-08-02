@@ -4,30 +4,35 @@
 
 import React, { useEffect, useState } from 'react'
 import { RULER_HEIGHT } from './timeline-constants'
+import { useProjectStore } from '../../stores/project-store'
+import { useShallow } from 'zustand/react/shallow'
+import { usePreferences } from '../../contexts/preferences'
 
 interface TimelinePlayheadProps {
-  currentTime: number
   timeToX: (time: number) => number
   xToTime: (x: number) => number
   seekTo: (time: number) => void
   trackAreaHeight: number
-  playing: boolean
   containerRef: React.RefObject<HTMLDivElement | null>
   scrollLeft: number
   containerRect: DOMRect | null
 }
 
 const TimelinePlayhead: React.FC<TimelinePlayheadProps> = ({
-  currentTime,
   timeToX,
   xToTime,
   seekTo,
   trackAreaHeight,
-  playing,
   containerRef,
   scrollLeft,
   containerRect
 }) => {
+  const { t } = usePreferences()
+  const { currentTime, playing, frameRate } = useProjectStore(useShallow((state) => ({
+    currentTime: state.currentTime,
+    playing: state.playing,
+    frameRate: state.projectSettings.frameRate ?? 30
+  })))
   const [dragging, setDragging] = useState(false)
   const x = Math.round(timeToX(currentTime))
 
@@ -63,10 +68,10 @@ const TimelinePlayhead: React.FC<TimelinePlayheadProps> = ({
         className="absolute pointer-events-auto outline-none focus-visible:ring-2 focus-visible:ring-danger"
         role="slider"
         tabIndex={0}
-        aria-label="播放头"
+        aria-label={t('播放头', 'Playhead')}
         aria-valuemin={0}
         aria-valuenow={currentTime}
-        aria-valuetext={`${currentTime.toFixed(2)} 秒`}
+        aria-valuetext={t(`${currentTime.toFixed(2)} 秒`, `${currentTime.toFixed(2)} seconds`)}
         style={{
           left: -8,
           width: 16,
@@ -95,7 +100,7 @@ const TimelinePlayhead: React.FC<TimelinePlayheadProps> = ({
           if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
           event.preventDefault()
           const secondsPerPixel = Math.abs(xToTime(x + 1) - xToTime(x))
-          seekTo(Math.max(0, currentTime + (event.key === 'ArrowRight' ? 1 : -1) * Math.max(secondsPerPixel, 1 / 30)))
+          seekTo(Math.max(0, currentTime + (event.key === 'ArrowRight' ? 1 : -1) * Math.max(secondsPerPixel, 1 / frameRate)))
         }}
       />
 

@@ -17,6 +17,7 @@ import type {
   TransformParams
 } from '../../../../shared/types'
 import { getClipTimelineRange } from '../../../../shared/timeline-utils'
+import { usePreferences } from '../../contexts/preferences'
 
 interface TimelineClipBlockProps {
   clip: TimelineClip
@@ -59,17 +60,17 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
   onDragStateChange,
   onClipContextMenu
 }) => {
-  const {
-    selectedClipId,
-    selectedClipIds,
-    selectClip,
-    moveClip,
-    trimClipEdge,
-    operationsByClip,
-    linkedGroups,
-    toggleGroupLink,
-    clips
-  } = useProjectStore()
+  const { t } = usePreferences()
+  const isSelected = useProjectStore((state) => state.selectedClipIds.includes(clip.id))
+  const isPrimary = useProjectStore((state) => state.selectedClipId === clip.id)
+  const selectClip = useProjectStore((state) => state.selectClip)
+  const moveClip = useProjectStore((state) => state.moveClip)
+  const trimClipEdge = useProjectStore((state) => state.trimClipEdge)
+  const clipOperations = useProjectStore((state) => state.operationsByClip[clip.id] || [])
+  const isLinked = useProjectStore((state) => state.linkedGroups[clip.groupId] !== false)
+  const groupClipCount = useProjectStore((state) => state.clips.filter((item) => item.groupId === clip.groupId).length)
+  const toggleGroupLink = useProjectStore((state) => state.toggleGroupLink)
+  const operationsByClip = useMemo(() => ({ [clip.id]: clipOperations }), [clip.id, clipOperations])
 
   const [dragMode, setDragMode] = useState<DragMode>(null)
   const dragStartRef = useRef({ clientX: 0, startTime: 0, visibleDuration: 0, pointerId: -1 })
@@ -77,11 +78,8 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
   const historyCapturedRef = useRef(false)
   const [dragOriginTime, setDragOriginTime] = useState<number | null>(null)
   const [previewUrls, setPreviewUrls] = useState<{ video?: string; audio?: string }>({})
-  const isSelected = selectedClipIds.includes(clip.id)
-  const isPrimary = clip.id === selectedClipId
-
   // Get trim values for this clip
-  const ops = operationsByClip[clip.id]
+  const ops = clipOperations
   const trimOp = ops?.find((op) => op.type === 'trim')
   const trimParams = trimOp?.params as TrimParams | undefined
   const range = getClipTimelineRange(clip, operationsByClip)
@@ -108,12 +106,8 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
   const borderSelected = isVideo
     ? 'border-timeline-video shadow-[0_0_0_1px_rgb(var(--timeline-video)/0.24),0_8px_18px_rgb(0_0_0/0.24)]'
     : 'border-timeline-audio shadow-[0_0_0_1px_rgb(var(--timeline-audio)/0.22),0_8px_18px_rgb(0_0_0/0.24)]'
-  const textColor = isSelected
-    ? (isVideo ? 'text-blue-100' : 'text-emerald-100')
-    : 'text-text-secondary'
+  const textColor = isSelected ? 'text-text-primary' : 'text-text-secondary'
 
-  const groupClipCount = clips.filter((c) => c.groupId === clip.groupId).length
-  const isLinked = linkedGroups[clip.groupId] !== false
 
   const formatRate = (rate: number): string => {
     const str = rate.toFixed(2).replace(/\.?0+$/, '')
@@ -121,22 +115,22 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
   }
 
   const buildBadges = (): string[] => {
-    const opsForClip = operationsByClip[clip.id] || []
+    const opsForClip = clipOperations
     const speedOp = opsForClip.find((op) => op.type === 'speed' && op.enabled)
     const volumeOp = opsForClip.find((op) => op.type === 'volume' && op.enabled)
     const pitchOp = opsForClip.find((op) => op.type === 'pitch' && op.enabled)
     const transformOp = opsForClip.find((op) => op.type === 'transform' && op.enabled)
     const badges: string[] = []
     if (speedOp) {
-      badges.push(`速 ${formatRate((speedOp.params as SpeedParams).rate)}`)
+      badges.push(t(`速 ${formatRate((speedOp.params as SpeedParams).rate)}`, `Speed ${formatRate((speedOp.params as SpeedParams).rate)}`))
     }
     if (volumeOp) {
       const percent = (volumeOp.params as VolumeParams).percent
-      badges.push(`音量 ${Math.round(percent)}%`)
+      badges.push(t(`音量 ${Math.round(percent)}%`, `Volume ${Math.round(percent)}%`))
     }
     if (pitchOp) {
       const percent = (pitchOp.params as PitchParams).percent
-      badges.push(`音调 ${Math.round(percent)}%`)
+      badges.push(t(`音调 ${Math.round(percent)}%`, `Pitch ${Math.round(percent)}%`))
     }
     if (transformOp && isVideo) {
       const transform = transformOp.params as TransformParams
@@ -150,7 +144,7 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
         transform.flipX ||
         transform.flipY
       ) {
-        badges.push('构图')
+        badges.push(t('构图', 'Framing'))
       }
     }
     return badges
@@ -174,8 +168,8 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
     const load = async (): Promise<void> => {
       if (!window.api?.getTimelinePreview) return
       const options = isVideo
-        ? { video: { height: Math.max(8, Math.round(trackHeight - 6)), frames: 12 } }
-        : { audio: { width: 800, height: Math.max(8, Math.round(trackHeight - 8)) } }
+        ? { video: { height: 72, frames: 12 } }
+        : { audio: { width: 800, height: 56 } }
       const res = await window.api.getTimelinePreview(clip.filePath, options)
       if (cancelled || !res?.success || !res.data) return
       const next = {
@@ -188,7 +182,7 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
     return () => {
       cancelled = true
     }
-  }, [clip.filePath, isVideo, trackHeight])
+  }, [clip.filePath, isVideo])
 
   // Click handler
   const handleClick = useCallback(
@@ -204,12 +198,12 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
     (e: React.MouseEvent) => {
       e.preventDefault()
       e.stopPropagation()
-      if (!selectedClipIds.includes(clip.id)) {
+      if (!isSelected) {
         selectClip(clip.id, 'single')
       }
       onClipContextMenu?.(clip.id, e.clientX, e.clientY)
     },
-    [clip.id, onClipContextMenu, selectClip, selectedClipIds]
+    [clip.id, isSelected, onClipContextMenu, selectClip]
   )
 
   // Drag start for move
@@ -225,7 +219,7 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
       e.preventDefault()
       e.stopPropagation()
       e.currentTarget.setPointerCapture(e.pointerId)
-      if (!selectedClipIds.includes(clip.id)) {
+      if (!isSelected) {
         selectClip(clip.id, 'single')
       }
       setDragMode('move')
@@ -239,7 +233,7 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
       }
       setDragOriginTime(clip.startTime)
     },
-    [clip.id, clip.startTime, selectClip, trimStart, trimEnd, selectedClipIds]
+    [clip.id, clip.startTime, isSelected, selectClip, trimStart, trimEnd]
   )
 
   // Drag start for trim
@@ -250,7 +244,7 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
       e.preventDefault()
       e.stopPropagation()
       e.currentTarget.setPointerCapture(e.pointerId)
-      if (!selectedClipIds.includes(clip.id)) {
+      if (!isSelected) {
         selectClip(clip.id, 'single')
       }
       setDragMode(edge)
@@ -264,7 +258,7 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
       }
       setDragOriginTime(clip.startTime)
     },
-    [clip.id, clip.startTime, selectClip, trimStart, trimEnd, selectedClipIds]
+    [clip.id, clip.startTime, isSelected, selectClip, trimStart, trimEnd]
   )
 
   const handlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>): void => {
@@ -353,7 +347,10 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
       role="button"
       tabIndex={0}
       aria-pressed={isSelected}
-      aria-label={`${isVideo ? '视频' : '音频'}片段 ${fileName}，时长 ${formatTime(visibleDuration)}`}
+      aria-label={t(
+        `${isVideo ? '视频' : '音频'}片段 ${fileName}，时长 ${formatTime(visibleDuration)}`,
+        `${isVideo ? 'Video' : 'Audio'} clip ${fileName}, duration ${formatTime(visibleDuration)}`
+      )}
       className={`absolute overflow-hidden rounded-sm border select-none outline-none focus-visible:ring-2 focus-visible:ring-accent
         ${isSelected ? bgSelected : bgNormal}
         ${isSelected ? borderSelected : borderNormal}
@@ -416,7 +413,7 @@ const TimelineClipBlock: React.FC<TimelineClipBlockProps> = ({
         <button
           className="absolute left-1 top-1 z-20 rounded bg-black/40 text-white/80 hover:text-white hover:bg-black/60
                      px-1 py-[1px] text-[9px] pointer-events-auto"
-          title={isLinked ? '取消链接' : '链接音画'}
+          title={isLinked ? t('取消链接', 'Unlink') : t('链接音画', 'Link audio and video')}
           onClick={(e) => {
             e.stopPropagation()
             toggleGroupLink(clip.groupId)

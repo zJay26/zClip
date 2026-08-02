@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import type { AudioFadeSegment, MediaOperation, TimelineClip } from '../../../../shared/types'
 import { getClipTimelineRange } from '../../../../shared/timeline-utils'
 import { useProjectStore } from '../../stores/project-store'
+import { usePreferences } from '../../contexts/preferences'
 
 interface TimelineAudioFadeBlockProps {
   fade: AudioFadeSegment
@@ -26,6 +27,7 @@ const TimelineAudioFadeBlock: React.FC<TimelineAudioFadeBlockProps> = ({
   pixelsPerSecond,
   onDragStateChange
 }) => {
+  const { t } = usePreferences()
   const { updateAudioFade, deleteAudioFade, beginHistoryTransaction, commitHistoryTransaction } = useProjectStore()
   const [dragging, setDragging] = useState<Edge | null>(null)
   const dragRef = useRef({ clientX: 0, startOffset: 0, endOffset: 0 })
@@ -73,7 +75,7 @@ const TimelineAudioFadeBlock: React.FC<TimelineAudioFadeBlockProps> = ({
   const left = timeToX(timing.start)
   const width = Math.max(14, (timing.end - timing.start) * pixelsPerSecond)
   const verticalInset = Math.min(10, Math.max(1, trackHeight * 0.2))
-  const label = fade.kind === 'in' ? '淡入' : '淡出'
+  const label = fade.kind === 'in' ? t('淡入', 'Fade in') : t('淡出', 'Fade out')
 
   const startDrag = (event: React.MouseEvent, edge: Edge): void => {
     event.preventDefault()
@@ -100,7 +102,7 @@ const TimelineAudioFadeBlock: React.FC<TimelineAudioFadeBlockProps> = ({
         event.stopPropagation()
         deleteAudioFade(fade.id)
       }}
-      title="双击删除音频淡化"
+      title={t('双击删除音频淡化', 'Double-click to delete audio fade')}
     >
       <div
         className="absolute inset-y-0 left-0 z-10 w-2 cursor-ew-resize bg-white/15 hover:bg-white/35"

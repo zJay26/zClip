@@ -6,12 +6,14 @@ import React from 'react'
 import { useProjectStore } from '../../stores/project-store'
 import ParamSlider from '../common/ParamSlider'
 import { Button, SectionCard } from '../ui'
+import { usePreferences } from '../../contexts/preferences'
 
 interface SpeedControlProps {
   hideHeader?: boolean
 }
 
 const SpeedControl: React.FC<SpeedControlProps> = ({ hideHeader = false }) => {
+  const { t } = usePreferences()
   const { operations, setSpeed } = useProjectStore()
   const speedOp = operations.find((op) => op.type === 'speed')
   const rate = speedOp ? (speedOp.params as { rate: number }).rate : 1.0
@@ -56,7 +58,7 @@ const SpeedControl: React.FC<SpeedControlProps> = ({ hideHeader = false }) => {
 
   return (
     <SectionCard
-      title="倍速"
+      title={t('倍速', 'Speed')}
       icon={
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <circle cx="12" cy="12" r="10" />

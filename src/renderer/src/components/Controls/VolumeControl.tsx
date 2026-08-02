@@ -6,12 +6,14 @@ import React from 'react'
 import { useProjectStore } from '../../stores/project-store'
 import ParamSlider from '../common/ParamSlider'
 import { Button, SectionCard } from '../ui'
+import { usePreferences } from '../../contexts/preferences'
 
 interface VolumeControlProps {
   hideHeader?: boolean
 }
 
 const VolumeControl: React.FC<VolumeControlProps> = ({ hideHeader = false }) => {
+  const { t } = usePreferences()
   const { getAudioOperationsForSelection, setVolume } = useProjectStore()
   const audioOps = getAudioOperationsForSelection()
   const volumeOp = audioOps.find((op) => op.type === 'volume')
@@ -57,7 +59,7 @@ const VolumeControl: React.FC<VolumeControlProps> = ({ hideHeader = false }) => 
 
   return (
     <SectionCard
-      title="音量"
+      title={t('音量', 'Volume')}
       icon={
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <polygon points="11,5 6,9 2,9 2,15 6,15 11,19" />

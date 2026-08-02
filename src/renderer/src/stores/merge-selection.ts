@@ -1,4 +1,5 @@
 import type { TimelineClip } from '../../../shared/types'
+import { translate } from '../contexts/preferences'
 
 export type MergeSelectionMeta = {
   selectedClips: TimelineClip[]
@@ -36,11 +37,11 @@ export function getMergeSelectionMeta(
 
   let disabledReason: string | null = null
   if (selectedClips.length === 0) {
-    disabledReason = '请先选择片段'
+    disabledReason = translate('请先选择片段', 'Select clips first')
   } else if (!isUniformTrackSelection) {
-    disabledReason = '请仅选择同类型逻辑片段（纯视频、纯音频或完整音画段）'
+    disabledReason = translate('请仅选择同类型逻辑片段（纯视频、纯音频或完整音画段）', 'Select clips of the same logical type: video-only, audio-only, or complete audio-video clips')
   } else if (logicalSelectionCount < 2) {
-    disabledReason = '请至少选择两个逻辑片段以合并'
+    disabledReason = translate('请至少选择两个逻辑片段以合并', 'Select at least two logical clips to merge')
   }
 
   return {

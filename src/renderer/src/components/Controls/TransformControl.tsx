@@ -3,6 +3,7 @@ import { useProjectStore } from '../../stores/project-store'
 import type { TransformParams } from '../../../../shared/types'
 import ParamSlider from '../common/ParamSlider'
 import { Button } from '../ui'
+import { usePreferences } from '../../contexts/preferences'
 
 const DEFAULT_TRANSFORM: TransformParams = {
   fit: 'contain',
@@ -16,10 +17,11 @@ const DEFAULT_TRANSFORM: TransformParams = {
 }
 
 const TransformControl: React.FC = () => {
+  const { t } = usePreferences()
   const { operations, clips, selectedClipId, setTransform } = useProjectStore()
   const selectedClip = selectedClipId ? clips.find((clip) => clip.id === selectedClipId) : null
   if (!selectedClip || selectedClip.track !== 'video') {
-    return <p className="text-xs text-text-muted">请选择视频片段调整构图。</p>
+    return <p className="text-xs text-text-muted">{t('请选择视频片段调整构图。', 'Select a video clip to adjust its framing.')}</p>
   }
 
   const transformOp = operations.find((op) => op.type === 'transform')
@@ -32,9 +34,9 @@ const TransformControl: React.FC = () => {
     <div className="space-y-3">
       <div className="grid grid-cols-3 gap-1">
         {[
-          { value: 'contain' as const, label: '适应' },
-          { value: 'cover' as const, label: '裁满' },
-          { value: 'stretch' as const, label: '拉伸' }
+          { value: 'contain' as const, label: t('适应', 'Fit') },
+          { value: 'cover' as const, label: t('裁满', 'Fill') },
+          { value: 'stretch' as const, label: t('拉伸', 'Stretch') }
         ].map((item) => (
           <Button
             key={item.value}
@@ -49,7 +51,7 @@ const TransformControl: React.FC = () => {
       </div>
 
       <ParamSlider
-        label="缩放"
+        label={t('缩放', 'Scale')}
         value={params.scale}
         min={0.1}
         max={4}
@@ -59,7 +61,7 @@ const TransformControl: React.FC = () => {
         formatValue={(v) => v.toFixed(2)}
       />
       <ParamSlider
-        label="水平"
+        label={t('水平', 'Horizontal')}
         value={params.x}
         min={-2000}
         max={2000}
@@ -69,7 +71,7 @@ const TransformControl: React.FC = () => {
         formatValue={(v) => `${Math.round(v)}`}
       />
       <ParamSlider
-        label="垂直"
+        label={t('垂直', 'Vertical')}
         value={params.y}
         min={-2000}
         max={2000}
@@ -79,7 +81,7 @@ const TransformControl: React.FC = () => {
         formatValue={(v) => `${Math.round(v)}`}
       />
       <ParamSlider
-        label="不透明度"
+        label={t('不透明度', 'Opacity')}
         value={params.opacity}
         min={0}
         max={100}
@@ -109,7 +111,7 @@ const TransformControl: React.FC = () => {
           className="!px-1 !py-1 text-[10px]"
           onClick={() => setTransform({ flipX: !params.flipX })}
         >
-          水平翻转
+          {t('水平翻转', 'Flip horizontal')}
         </Button>
         <Button
           size="sm"
@@ -117,7 +119,7 @@ const TransformControl: React.FC = () => {
           className="!px-1 !py-1 text-[10px]"
           onClick={() => setTransform({ flipY: !params.flipY })}
         >
-          垂直翻转
+          {t('垂直翻转', 'Flip vertical')}
         </Button>
       </div>
     </div>

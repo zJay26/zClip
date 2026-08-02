@@ -2,6 +2,7 @@ import React from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { LoaderCircle, Upload } from 'lucide-react'
 import { Toast } from '../ui'
+import { usePreferences } from '../../contexts/preferences'
 
 interface ToastState {
   message: string
@@ -35,8 +36,10 @@ const BlockingStatus: React.FC<{ label: string; strong?: boolean }> = ({ label, 
   </motion.div>
 )
 
-const OverlayStack: React.FC<OverlayStackProps> = ({ dragActive, loading, merging, error, toast, clearToast }) => (
-  <>
+const OverlayStack: React.FC<OverlayStackProps> = ({ dragActive, loading, merging, error, toast, clearToast }) => {
+  const { t } = usePreferences()
+  return (
+    <>
     <AnimatePresence>
       {dragActive && (
         <motion.div
@@ -45,13 +48,13 @@ const OverlayStack: React.FC<OverlayStackProps> = ({ dragActive, loading, mergin
         >
           <motion.div initial={{ scale: 0.96, y: 6 }} animate={{ scale: 1, y: 0 }} className="ui-material flex flex-col items-center rounded-lg px-8 py-6 text-center">
             <Upload aria-hidden size={25} strokeWidth={1.6} className="mb-3 text-accent-soft" />
-            <span className="text-sm font-semibold text-text-primary">松开以导入媒体</span>
-            <span className="mt-1 text-xs text-text-secondary">支持同时导入多个视频或音频文件</span>
+            <span className="text-sm font-semibold text-text-primary">{t('松开以导入媒体', 'Drop to import media')}</span>
+            <span className="mt-1 text-xs text-text-secondary">{t('支持同时导入多个视频或音频文件', 'Import multiple video or audio files at once')}</span>
           </motion.div>
         </motion.div>
       )}
-      {loading && !merging && <BlockingStatus label="正在准备媒体…" />}
-      {merging && <BlockingStatus label="正在合并片段…" strong />}
+      {loading && !merging && <BlockingStatus label={t('正在准备媒体…', 'Preparing media…')} />}
+      {merging && <BlockingStatus label={t('正在合并片段…', 'Merging clips…')} strong />}
     </AnimatePresence>
 
     <div className="pointer-events-none fixed bottom-4 left-1/2 z-[70] flex -translate-x-1/2 flex-col items-center gap-2">
@@ -66,7 +69,8 @@ const OverlayStack: React.FC<OverlayStackProps> = ({ dragActive, loading, mergin
         )}
       </AnimatePresence>
     </div>
-  </>
-)
+    </>
+  )
+}
 
 export default OverlayStack

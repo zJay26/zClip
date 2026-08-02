@@ -3,13 +3,16 @@
 // 自动识别纯音频文件，展示不同 UI
 // ============================================================
 
-import React, { useEffect, useMemo, useRef } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef } from 'react'
 import { Film, Pause, Play, SkipBack, SkipForward, Upload } from 'lucide-react'
 import { useProjectStore } from '../../stores/project-store'
+import { useShallow } from 'zustand/react/shallow'
 import { formatTime, mediaUrlToPath, toMediaUrl } from '../../lib/utils'
 import {
+  compareVideoOverlayOrder,
   getClipTimelineRange,
-  getTopmostVideoClipAtTime
+  getTopmostVideoClipAtTime,
+  timelineTimeToMediaTime
 } from '../../../../shared/timeline-utils'
 import { Badge, Button, IconButton } from '../ui'
 import type { ClipTimelineRange } from '../../../../shared/timeline-utils'
@@ -20,6 +23,7 @@ import type {
   TransformParams,
   TransitionEffectType
 } from '../../../../shared/types'
+import { translate, usePreferences } from '../../contexts/preferences'
 
 interface VideoPreviewProps {
   videoRef: React.RefObject<HTMLVideoElement>
@@ -95,7 +99,7 @@ function getClipTransform(
   operationsByClip: Record<string, MediaOperation[]>
 ): TransformParams {
   if (!clip) return DEFAULT_TRANSFORM
-  const transformOp = operationsByClip[clip.id]?.find((op) => op.type === 'transform')
+  const transformOp = operationsByClip[clip.id]?.find((op) => op.type === 'transform' && op.enabled)
   return {
     ...DEFAULT_TRANSFORM,
     ...(transformOp?.params as Partial<TransformParams> | undefined)
@@ -104,6 +108,8 @@ function getClipTransform(
 
 function buildVideoLayerStyle(
   transform: TransformParams,
+  canvasWidth: number,
+  canvasHeight: number,
   opacityMultiplier = 1,
   transformPrefix = ''
 ): React.CSSProperties {
@@ -111,7 +117,9 @@ function buildVideoLayerStyle(
     transform.fit === 'cover' ? 'cover' : transform.fit === 'stretch' ? 'fill' : 'contain'
   const flipX = transform.flipX ? -1 : 1
   const flipY = transform.flipY ? -1 : 1
-  const baseTransform = `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale * flipX}, ${transform.scale * flipY}) rotate(${transform.rotation}deg)`
+  const translateX = canvasWidth > 0 ? (transform.x / canvasWidth) * 100 : 0
+  const translateY = canvasHeight > 0 ? (transform.y / canvasHeight) * 100 : 0
+  const baseTransform = `translate(${translateX}%, ${translateY}%) scale(${transform.scale * flipX}, ${transform.scale * flipY}) rotate(${transform.rotation}deg)`
 
   return {
     width: '100%',
@@ -293,6 +301,30 @@ function syncTransitionVideo(
   }
 }
 
+const PreviewVideoLayer: React.FC<{
+  clip: TimelineClip
+  operationsByClip: Record<string, MediaOperation[]>
+  currentTime: number
+  playing: boolean
+  style: React.CSSProperties
+}> = ({ clip, operationsByClip, currentTime, playing, style }) => {
+  const ref = useRef<HTMLVideoElement>(null)
+  useEffect(() => {
+    const cleanup: Array<() => void> = []
+    const range = getClipTimelineRange(clip, operationsByClip)
+    syncTransitionVideo(
+      ref.current,
+      clip,
+      timelineTimeToMediaTime(clip, operationsByClip, currentTime),
+      range.speedRate,
+      playing,
+      cleanup
+    )
+    return () => cleanup.forEach((dispose) => dispose())
+  }, [clip, currentTime, operationsByClip, playing])
+  return <video ref={ref} className="pointer-events-none absolute inset-0" style={style} muted playsInline aria-hidden="true" />
+}
+
 const VideoPreview: React.FC<VideoPreviewProps> = ({
   videoRef,
   onLoadedMetadata,
@@ -301,6 +333,7 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
   step,
   onOpenFiles
 }) => {
+  const { t } = usePreferences()
   const {
     playing,
     currentTime,
@@ -309,11 +342,38 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
     operationsByClip,
     transitions,
     projectSettings,
-    showToast
-  } = useProjectStore()
+    selectedClipId,
+    showToast,
+    activateClip,
+    setTransform,
+    beginHistoryTransaction,
+    commitHistoryTransaction
+  } = useProjectStore(useShallow((state) => ({
+    playing: state.playing,
+    currentTime: state.currentTime,
+    timelineDuration: state.timelineDuration,
+    clips: state.clips,
+    operationsByClip: state.operationsByClip,
+    transitions: state.transitions,
+    projectSettings: state.projectSettings,
+    selectedClipId: state.selectedClipId,
+    showToast: state.showToast,
+    activateClip: state.activateClip,
+    setTransform: state.setTransform,
+    beginHistoryTransaction: state.beginHistoryTransaction,
+    commitHistoryTransaction: state.commitHistoryTransaction
+  })))
 
+  const canvasRef = useRef<HTMLDivElement>(null)
   const transitionLeftVideoRef = useRef<HTMLVideoElement>(null)
   const transitionRightVideoRef = useRef<HTMLVideoElement>(null)
+  const transformDragRef = useRef<{
+    pointerId: number
+    startX: number
+    startY: number
+    transformX: number
+    transformY: number
+  } | null>(null)
 
   const activeVideoClip = getTopmostVideoClipAtTime(clips, operationsByClip, currentTime)
   const activeTransitionPreview = useMemo(
@@ -332,13 +392,69 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
     !['yuv420p', 'yuvj420p', 'nv12', 'p010le', 'yuv420p10le'].includes(pixelFormat)
   )
 
+  const sourceCanvasClip = useMemo(() => clips
+    .filter((clip) => clip.track === 'video' && clip.mediaInfo.hasVideo)
+    .sort((a, b) => a.startTime - b.startTime || a.trackIndex - b.trackIndex || a.id.localeCompare(b.id))[0] ?? null,
+  [clips])
+  const canvasWidth = projectSettings.canvas.preset === 'source' && sourceCanvasClip?.mediaInfo.width
+    ? sourceCanvasClip.mediaInfo.width
+    : projectSettings.canvas.width
+  const canvasHeight = projectSettings.canvas.preset === 'source' && sourceCanvasClip?.mediaInfo.height
+    ? sourceCanvasClip.mediaInfo.height
+    : projectSettings.canvas.height
+  const activeVideoLayers = useMemo(() => clips
+    .filter((clip) => {
+      if (clip.track !== 'video' || !clip.mediaInfo.hasVideo) return false
+      const range = getClipTimelineRange(clip, operationsByClip)
+      return currentTime >= range.start && currentTime < range.end
+    })
+    .sort(compareVideoOverlayOrder), [clips, currentTime, operationsByClip])
+  const supportingVideoLayers = activeVideoLayers.filter((clip) => clip.id !== activeVideoClip?.id)
+
   const hasActiveVideoClip = !!activeVideoClip
   const hasTransitionPreview = !!activeTransitionPreview
   const transform = getClipTransform(activeVideoClip, operationsByClip)
+  const finishTransformDrag = useCallback(() => {
+    if (!transformDragRef.current) return
+    transformDragRef.current = null
+    commitHistoryTransaction()
+  }, [commitHistoryTransaction])
+
+  useEffect(() => () => finishTransformDrag(), [finishTransformDrag])
+
+  const beginTransformDrag = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (!activeVideoClip || activeTransitionPreview || event.button !== 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    activateClip(activeVideoClip.id)
+    beginHistoryTransaction()
+    transformDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      transformX: transform.x,
+      transformY: transform.y
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }, [activateClip, activeTransitionPreview, activeVideoClip, beginHistoryTransaction, transform.x, transform.y])
+
+  const moveTransformDrag = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = transformDragRef.current
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!drag || drag.pointerId !== event.pointerId || !rect || rect.width <= 0 || rect.height <= 0) return
+    event.preventDefault()
+    setTransform({
+      x: Math.round(drag.transformX + (event.clientX - drag.startX) * canvasWidth / rect.width),
+      y: Math.round(drag.transformY + (event.clientY - drag.startY) * canvasHeight / rect.height)
+    }, { recordHistory: false })
+  }, [canvasHeight, canvasWidth, setTransform])
   const mainVideoStyle = buildVideoLayerStyle(
     transform,
+    canvasWidth,
+    canvasHeight,
     hasTransitionPreview ? 0 : 1
   )
+  mainVideoStyle.zIndex = Math.max(1, activeVideoLayers.findIndex((clip) => clip.id === activeVideoClip?.id) + 1)
   const transitionLeftTransform = getClipTransform(activeTransitionPreview?.leftClip ?? null, operationsByClip)
   const transitionRightTransform = getClipTransform(activeTransitionPreview?.rightClip ?? null, operationsByClip)
   const rightTransitionEffect = activeTransitionPreview
@@ -352,19 +468,23 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
     ? {
         ...buildVideoLayerStyle(
           transitionLeftTransform,
+          canvasWidth,
+          canvasHeight,
           getTransitionLayerOpacity(
             activeTransitionPreview.transition.type,
             'left',
             activeTransitionPreview.progress
           )
         ),
-        zIndex: 2
+        zIndex: 101
       }
     : undefined
   const transitionRightVideoStyle: React.CSSProperties | undefined = activeTransitionPreview
     ? {
         ...buildVideoLayerStyle(
           transitionRightTransform,
+          canvasWidth,
+          canvasHeight,
           getTransitionLayerOpacity(
             activeTransitionPreview.transition.type,
             'right',
@@ -373,7 +493,7 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
           rightTransitionEffect.transformPrefix
         ),
         clipPath: rightTransitionEffect.clipPath,
-        zIndex: 3
+        zIndex: 102
       }
     : undefined
   const transitionMatteStyle = activeTransitionPreview
@@ -409,14 +529,6 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
     }
   }, [activeTransitionPreview, playing])
 
-  const canvasWidth =
-    projectSettings.canvas.preset === 'source' && mediaInfo?.width
-      ? mediaInfo.width
-      : projectSettings.canvas.width
-  const canvasHeight =
-    projectSettings.canvas.preset === 'source' && mediaInfo?.height
-      ? mediaInfo.height
-      : projectSettings.canvas.height
   const canvasStyle: React.CSSProperties = {
     aspectRatio: `${canvasWidth} / ${canvasHeight}`,
     backgroundColor: projectSettings.canvas.backgroundColor,
@@ -430,7 +542,7 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
   const previewStageStyle: React.CSSProperties = {
     backgroundColor: 'rgb(var(--canvas-bg))',
     backgroundImage:
-      'linear-gradient(45deg, rgba(255,255,255,0.055) 25%, transparent 25%), linear-gradient(-45deg, rgba(255,255,255,0.055) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, rgba(255,255,255,0.055) 75%), linear-gradient(-45deg, transparent 75%, rgba(255,255,255,0.055) 75%)',
+      'linear-gradient(45deg, rgb(var(--text-primary) / 0.045) 25%, transparent 25%), linear-gradient(-45deg, rgb(var(--text-primary) / 0.045) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, rgb(var(--text-primary) / 0.045) 75%), linear-gradient(-45deg, transparent 75%, rgb(var(--text-primary) / 0.045) 75%)',
     backgroundPosition: '0 0, 0 12px, 12px -12px, -12px 0px',
     backgroundSize: '24px 24px'
   }
@@ -446,26 +558,26 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
     top: `${(sourceFrameRect.top / canvasHeight) * 100}%`,
     width: `${(sourceFrameRect.width / canvasWidth) * 100}%`,
     height: `${(sourceFrameRect.height / canvasHeight) * 100}%`,
-    border: '1px dashed rgba(255, 255, 255, 0.7)',
+    border: `1px dashed ${selectedClipId === activeVideoClip?.id ? 'rgb(var(--accent))' : 'rgba(255, 255, 255, 0.7)'}`,
     boxShadow: '0 0 0 1px rgba(0, 0, 0, 0.8), inset 0 0 0 1px rgba(0, 0, 0, 0.35)'
   }
   const playbackControls = (
     <div className="ui-material flex min-h-11 items-center gap-1.5 rounded-md px-2 py-1.5">
-      <IconButton label="后退 5 秒" icon={<SkipBack aria-hidden size={16} fill="currentColor" />} onClick={() => step(-5)} />
+      <IconButton label={t('后退 5 秒', 'Back 5 seconds')} icon={<SkipBack aria-hidden size={16} fill="currentColor" />} onClick={() => step(-5)} />
       <IconButton
-        label={playing ? '暂停' : '播放'}
+        label={playing ? t('暂停', 'Pause') : t('播放', 'Play')}
         variant="primary"
         icon={playing ? <Pause aria-hidden size={17} fill="currentColor" /> : <Play aria-hidden size={17} fill="currentColor" />}
         onClick={togglePlay}
       />
-      <IconButton label="前进 5 秒" icon={<SkipForward aria-hidden size={16} fill="currentColor" />} onClick={() => step(5)} />
+      <IconButton label={t('前进 5 秒', 'Forward 5 seconds')} icon={<SkipForward aria-hidden size={16} fill="currentColor" />} onClick={() => step(5)} />
       <div className="flex-1" />
       <span className="px-1 font-mono text-xs tabular-nums text-text-secondary">
         {formatTime(currentTime)} <span className="text-text-muted">/ {formatTime(timelineDuration)}</span>
       </span>
       {mediaInfo ? <Badge>{`${mediaInfo.width}×${mediaInfo.height} · ${mediaInfo.fps} fps`}</Badge> : <Badge>J / K / L</Badge>}
-      {isLikelyUnsupported && <Badge tone="danger">像素格式可能不兼容：{pixelFormat}</Badge>}
-      {playbackProxyFailed && <Badge tone="danger">代理生成失败</Badge>}
+      {isLikelyUnsupported && <Badge tone="danger">{t(`像素格式可能不兼容：${pixelFormat}`, `Pixel format may be incompatible: ${pixelFormat}`)}</Badge>}
+      {playbackProxyFailed && <Badge tone="danger">{t('代理生成失败', 'Proxy generation failed')}</Badge>}
     </div>
   )
 
@@ -477,12 +589,12 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
           <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-xl border border-border-subtle bg-panel/80 text-accent-soft shadow-panel">
             <Film aria-hidden size={28} strokeWidth={1.45} />
           </div>
-          <h1 className="text-xl font-semibold tracking-[-0.025em] text-text-primary">开始创作</h1>
-          <p className="mt-2 text-sm leading-relaxed text-text-secondary">导入视频或音频，把素材拖到窗口中的任意位置也可以。</p>
+          <h1 className="text-xl font-semibold tracking-[-0.025em] text-text-primary">{t('开始创作', 'Start creating')}</h1>
+          <p className="mt-2 text-sm leading-relaxed text-text-secondary">{t('导入视频或音频，把素材拖到窗口中的任意位置也可以。', 'Import video or audio, or drag media anywhere into the window.')}</p>
           <Button className="mt-5" size="lg" variant="primary" leadingIcon={<Upload aria-hidden size={17} strokeWidth={1.75} />} onClick={onOpenFiles}>
-            导入媒体
+            {t('导入媒体', 'Import media')}
           </Button>
-          <p className="mt-4 text-[11px] text-text-muted">支持常见视频与音频格式 · 所有处理均在本地完成</p>
+          <p className="mt-4 text-[11px] text-text-muted">{t('支持常见视频与音频格式 · 所有处理均在本地完成', 'Common video and audio formats · Everything is processed locally')}</p>
         </div>
       </div>
     )
@@ -508,10 +620,27 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
         className="flex-1 flex items-center justify-center rounded-lg overflow-hidden min-h-0 relative"
         style={previewStageStyle}
       >
-        <div className="relative overflow-hidden" style={canvasStyle}>
+        <div ref={canvasRef} className="relative overflow-hidden" style={canvasStyle}>
         {!hasActiveVideoClip && !hasTransitionPreview && (
           <div className="absolute inset-0 bg-black" />
         )}
+        {supportingVideoLayers
+          .filter((clip) => !activeTransitionPreview || (
+            clip.id !== activeTransitionPreview.leftClip.id && clip.id !== activeTransitionPreview.rightClip.id
+          ))
+          .map((clip, index) => (
+            <PreviewVideoLayer
+              key={clip.id}
+              clip={clip}
+              operationsByClip={operationsByClip}
+              currentTime={currentTime}
+              playing={playing}
+              style={{
+                ...buildVideoLayerStyle(getClipTransform(clip, operationsByClip), canvasWidth, canvasHeight),
+                zIndex: index + 1
+              }}
+            />
+          ))}
         {hasActiveVideoClip && (
           /* Video: normal <video> element */
           <video
@@ -531,8 +660,11 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
               if (isLikelyUnsupported && !playbackProxyFailed) return
               showToast(
                 playbackProxyFailed
-                  ? '视频兼容代理生成失败，请检查素材文件'
-                  : `视频预览加载失败${error?.code ? `（错误码 ${error.code}）` : ''}`,
+                  ? translate('视频兼容代理生成失败，请检查素材文件', 'Compatible video proxy generation failed. Check the media file.')
+                  : translate(
+                      `视频预览加载失败${error?.code ? `（错误码 ${error.code}）` : ''}`,
+                      `Video preview failed to load${error?.code ? ` (error code ${error.code})` : ''}`
+                    ),
                 'error'
               )
             }}
@@ -567,13 +699,39 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
         )}
         {hasActiveVideoClip && (
           <div
-            className="absolute inset-0 pointer-events-none"
+            role="group"
+            tabIndex={0}
+            data-preview-transform-handle
+            aria-label={t('拖动调整当前视频片段位置；方向键微调', 'Drag to position the current video clip; use arrow keys for fine adjustments')}
+            className={`absolute inset-0 touch-none outline-none focus-visible:ring-2 focus-visible:ring-accent ${activeTransitionPreview ? 'pointer-events-none' : 'cursor-move'}`}
             style={{
               transform: mainVideoStyle.transform,
               transformOrigin: 'center center'
             }}
+            onPointerDown={beginTransformDrag}
+            onPointerMove={moveTransformDrag}
+            onPointerUp={(event) => {
+              if (transformDragRef.current?.pointerId !== event.pointerId) return
+              event.currentTarget.releasePointerCapture(event.pointerId)
+              finishTransformDrag()
+            }}
+            onPointerCancel={finishTransformDrag}
+            onLostPointerCapture={finishTransformDrag}
+            onKeyDown={(event) => {
+              if (!activeVideoClip || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return
+              event.preventDefault()
+              activateClip(activeVideoClip.id)
+              const amount = event.shiftKey ? 10 : 1
+              setTransform({
+                x: transform.x + (event.key === 'ArrowLeft' ? -amount : event.key === 'ArrowRight' ? amount : 0),
+                y: transform.y + (event.key === 'ArrowUp' ? -amount : event.key === 'ArrowDown' ? amount : 0)
+              })
+            }}
           >
-            <div className="absolute" style={sourceFrameStyle} />
+            <div
+              className="absolute"
+              style={sourceFrameStyle}
+            />
           </div>
         )}
         </div>

@@ -8,12 +8,12 @@ exports[`UI primitives visual baseline > badge tones render stable classes 1`] =
     Default
   </span>
   <span
-    class="ui-badge border-accent/40 text-indigo-200 bg-accent/10"
+    class="ui-badge border-accent/40 text-accent-soft bg-accent/10"
   >
     Accent
   </span>
   <span
-    class="ui-badge border-red-400/40 text-red-200 bg-red-500/10"
+    class="ui-badge border-danger/40 text-danger bg-danger/10"
   >
     Danger
   </span>

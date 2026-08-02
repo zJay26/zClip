@@ -35,17 +35,13 @@ export function buildAudioAdjustmentFilters(options: AudioAdjustmentOptions): st
   const hasPitchShift = Math.abs(pitchRatio - 1) > AUDIO_EPSILON
 
   if (hasPitchShift) {
-    const originalRate = Number.isFinite(options.sampleRate) && options.sampleRate && options.sampleRate > 0
-      ? Math.round(options.sampleRate)
-      : 44100
-    const shiftedRate = Math.max(1, Math.round(originalRate * pitchRatio))
-    filters.push(`asetrate=${shiftedRate}`)
-    filters.push(`aresample=${originalRate}`)
+    // The bundled FFmpeg is checked for librubberband support. This keeps
+    // duration stable and avoids the resampling artefacts of asetrate hacks.
+    filters.push(`rubberband=pitch=${pitchRatio.toFixed(6)}`)
   }
 
-  const tempo = hasPitchShift ? speedRate / pitchRatio : speedRate
-  if (Math.abs(tempo - 1) > AUDIO_EPSILON) {
-    filters.push(...buildTempoChain(tempo))
+  if (Math.abs(speedRate - 1) > AUDIO_EPSILON) {
+    filters.push(...buildTempoChain(speedRate))
   }
 
   if (options.volumePercent !== undefined) {

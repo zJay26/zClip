@@ -13,6 +13,7 @@ import type {
   GifLoopMode
 } from '../../../shared/types'
 import { getClipTimelineRange } from '../../../shared/timeline-utils'
+import { translate } from '../contexts/preferences'
 
 export type ExportScope =
   | { mode: 'timeline' }
@@ -58,7 +59,7 @@ export function useExport(opts?: UseExportOptions) {
     const unsubComplete = window.api.onExportComplete((outputPath) => {
       setExporting(false)
       setExportProgress(null)
-      showToast(`导出完成: ${outputPath}`, 'success')
+      showToast(translate(`导出完成：${outputPath}`, `Export complete: ${outputPath}`), 'success')
       // Auto-close dialog after a short delay so user can see 100%
       setTimeout(() => {
         onCompleteRef.current?.()
@@ -68,7 +69,7 @@ export function useExport(opts?: UseExportOptions) {
       errorEventSeenRef.current = true
       setExporting(false)
       setExportProgress(null)
-      showToast(`导出失败: ${error}`, 'error')
+      showToast(translate(`导出失败：${error}`, `Export failed: ${error}`), 'error')
     })
 
     return () => {
@@ -98,7 +99,7 @@ export function useExport(opts?: UseExportOptions) {
         const selected = new Set(selectedClipIds)
         exportClips = clips.filter((clip) => selected.has(clip.id))
         if (exportClips.length === 0) {
-          showToast('请先选择要导出的片段', 'info')
+          showToast(translate('请先选择要导出的片段', 'Select clips to export first'), 'info')
           return false
         }
         const starts = exportClips.map((clip) => getClipTimelineRange(clip, operationsByClip).start)
@@ -118,7 +119,7 @@ export function useExport(opts?: UseExportOptions) {
         const startTime = Math.max(0, Math.min(scope.startTime, scope.endTime))
         const endTime = Math.max(startTime, scope.endTime)
         if (endTime - startTime <= 0.001) {
-          showToast('导出范围时长必须大于 0', 'info')
+          showToast(translate('导出范围时长必须大于 0', 'Export range duration must be greater than 0'), 'info')
           return false
         }
         range = { startTime, endTime }
@@ -160,7 +161,7 @@ export function useExport(opts?: UseExportOptions) {
         setExporting(false)
         setExportProgress(null)
         if (!errorEventSeenRef.current) {
-          showToast(`导出失败: ${result.error || 'Export failed'}`, 'error')
+          showToast(translate(`导出失败：${result.error || '未知错误'}`, `Export failed: ${result.error || 'Unknown error'}`), 'error')
         }
         return false
       }
@@ -185,7 +186,7 @@ export function useExport(opts?: UseExportOptions) {
     window.api.cancelExport()
     setExporting(false)
     setExportProgress(null)
-    showToast('导出已取消', 'info')
+    showToast(translate('导出已取消', 'Export canceled'), 'info')
   }, [setExporting, setExportProgress, showToast])
 
   return { startExport, cancelExport, exporting, exportProgress }

@@ -45,4 +45,40 @@ describe('project validation', () => {
     value.operationsByClip.clip[1].params = { rate: 0 }
     expect(isProjectData(value)).toBe(false)
   })
+
+  it('rejects malformed dates, unsupported media and mismatched track streams', () => {
+    const invalidDate = project()
+    invalidDate.savedAt = 'not-a-date'
+    expect(isProjectData(invalidDate)).toBe(false)
+
+    const unsupported = project()
+    unsupported.clips[0].filePath = 'C:\\still.png'
+    unsupported.clips[0].mediaInfo.filePath = unsupported.clips[0].filePath
+    expect(isProjectData(unsupported)).toBe(false)
+
+    const wrongStream = project()
+    wrongStream.clips[0].mediaInfo.hasVideo = false
+    expect(isProjectData(wrongStream)).toBe(false)
+  })
+
+  it('rejects duplicate operations and effects outside their clip bounds', () => {
+    const duplicateOperation = project()
+    duplicateOperation.operationsByClip.clip.push({
+      ...duplicateOperation.operationsByClip.clip[1],
+      id: 'another-speed'
+    })
+    expect(isProjectData(duplicateOperation)).toBe(false)
+
+    const invalidFade = project()
+    invalidFade.audioFades = [{
+      id: 'fade', clipId: 'clip', kind: 'out', startOffset: 4, endOffset: 6
+    }]
+    expect(isProjectData(invalidFade)).toBe(false)
+  })
+
+  it('rejects a playhead beyond the effective timeline', () => {
+    const value = project()
+    value.currentTime = 6
+    expect(isProjectData(value)).toBe(false)
+  })
 })

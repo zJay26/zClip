@@ -4,6 +4,7 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react'
 import { useProjectStore } from '../../stores/project-store'
+import { useShallow } from 'zustand/react/shallow'
 import VideoPreview from '../Preview/VideoPreview'
 import Timeline from '../Timeline/Timeline'
 import { useVideoPlayer } from '../../hooks/useVideoPlayer'
@@ -12,7 +13,8 @@ import InspectorPanel from './InspectorPanel'
 import OverlayStack from './OverlayStack'
 import { Button, Dialog } from '../ui'
 import { clamp } from '../../lib/utils'
-import type { CacheStats, ProjectData } from '../../../../shared/types'
+import { translate, usePreferences } from '../../contexts/preferences'
+import type { AppCloseDecision, CacheStats, ProjectData } from '../../../../shared/types'
 
 interface LayoutSizeState {
   inspectorWidth: number
@@ -98,16 +100,21 @@ function readLayoutSizes(): LayoutSizeState {
 }
 
 const AppLayout: React.FC = () => {
+  const { t } = usePreferences()
   const {
     clips,
     sourceFile,
     mediaInfo,
     loading,
     merging,
+    exporting,
     error,
     toast,
     projectFilePath,
     projectDirty,
+    documentRevision,
+    projectSettings,
+    missingMediaPaths,
     recentProjects,
     clearToast,
     showToast,
@@ -118,11 +125,11 @@ const AppLayout: React.FC = () => {
     openProject,
     openProjectFromPath,
     refreshRecentProjects,
-    restoreProjectData,
-    buildProjectData,
+    recoverAutosave,
     autosaveNow,
     clearAutosave,
-    markProjectDirty,
+    relinkMissingMedia,
+    reset,
     splitClipAtPlayhead,
     copySelectedClips,
     cutSelectedClips,
@@ -131,24 +138,58 @@ const AppLayout: React.FC = () => {
     selectedClipIds,
     undo,
     redo,
-    operationsByClip,
-    transitions,
-    audioFades,
-    linkedGroups,
-    projectSettings,
-    videoTrackCount,
-    audioTrackCount,
     historyPast,
     historyFuture
-  } = useProjectStore()
+  } = useProjectStore(useShallow((state) => ({
+    clips: state.clips,
+    sourceFile: state.sourceFile,
+    mediaInfo: state.mediaInfo,
+    loading: state.loading,
+    merging: state.merging,
+    exporting: state.exporting,
+    error: state.error,
+    toast: state.toast,
+    projectFilePath: state.projectFilePath,
+    projectDirty: state.projectDirty,
+    documentRevision: state.documentRevision,
+    projectSettings: state.projectSettings,
+    missingMediaPaths: state.missingMediaPaths,
+    recentProjects: state.recentProjects,
+    clearToast: state.clearToast,
+    showToast: state.showToast,
+    openFiles: state.openFiles,
+    loadFiles: state.loadFiles,
+    saveProject: state.saveProject,
+    saveProjectAs: state.saveProjectAs,
+    openProject: state.openProject,
+    openProjectFromPath: state.openProjectFromPath,
+    refreshRecentProjects: state.refreshRecentProjects,
+    recoverAutosave: state.recoverAutosave,
+    autosaveNow: state.autosaveNow,
+    clearAutosave: state.clearAutosave,
+    relinkMissingMedia: state.relinkMissingMedia,
+    reset: state.reset,
+    splitClipAtPlayhead: state.splitClipAtPlayhead,
+    copySelectedClips: state.copySelectedClips,
+    cutSelectedClips: state.cutSelectedClips,
+    pasteCopiedClips: state.pasteCopiedClips,
+    deleteSelectedClips: state.deleteSelectedClips,
+    selectedClipIds: state.selectedClipIds,
+    undo: state.undo,
+    redo: state.redo,
+    historyPast: state.historyPast,
+    historyFuture: state.historyFuture
+  })))
 
   const [showExport, setShowExport] = useState(false)
   const [autosavePrompt, setAutosavePrompt] = useState<ProjectData | null>(null)
+  const [closePrompt, setClosePrompt] = useState(false)
+  const [closeSaving, setCloseSaving] = useState(false)
   const [cacheStats, setCacheStats] = useState<CacheStats | null>(null)
   const [layoutSizes, setLayoutSizes] = useState<LayoutSizeState>(readLayoutSizes)
-  const lastAutosaveSignatureRef = useRef<string | null>(null)
   const resizeCleanupRef = useRef<(() => void) | null>(null)
   const exportButtonRef = useRef<HTMLButtonElement>(null)
+  const closeResolverRef = useRef<((decision: AppCloseDecision) => void) | null>(null)
 
   const {
     videoRef,
@@ -159,6 +200,21 @@ const AppLayout: React.FC = () => {
     onEnded,
     playing
   } = useVideoPlayer()
+  const frameStep = 1 / Math.max(1, projectSettings.frameRate ?? mediaInfo?.fps ?? 30)
+
+  const newProject = useCallback(() => {
+    if (useProjectStore.getState().projectDirty && !window.confirm(translate('新建项目会放弃当前未保存的更改，是否继续？', 'Creating a new project will discard unsaved changes. Continue?'))) return
+    void clearAutosave()
+      .then(() => {
+        reset()
+        showToast(translate('已新建空项目', 'New empty project created'), 'success')
+      })
+      .catch((error) => {
+        showToast(error instanceof Error
+          ? translate(`无法清理旧自动保存：${error.message}`, `Could not clear the previous autosave: ${error.message}`)
+          : translate('无法清理旧自动保存', 'Could not clear the previous autosave'), 'error')
+      })
+  }, [clearAutosave, reset, showToast])
 
   useEffect(() => {
     try {
@@ -248,6 +304,23 @@ const AppLayout: React.FC = () => {
       return false
     }
     const handler = (e: KeyboardEvent): void => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+        if (e.code === 'KeyS') {
+          e.preventDefault()
+          if (clips.length > 0) void (e.shiftKey ? saveProjectAs() : saveProject())
+          return
+        }
+        if (e.code === 'KeyO') {
+          e.preventDefault()
+          void openProject()
+          return
+        }
+        if (e.code === 'KeyN') {
+          e.preventDefault()
+          newProject()
+          return
+        }
+      }
       if (e.code === 'Space') {
         if (isTextEditableTarget(e.target)) return
         // Capture and override browser/button default "Space triggers click".
@@ -337,20 +410,22 @@ const AppLayout: React.FC = () => {
           deleteSelectedClips()
           break
         case 'ArrowLeft':
+          if (e.target instanceof HTMLElement && e.target.closest('[data-preview-transform-handle]')) return
           if (
             e.target instanceof HTMLInputElement ||
             e.target instanceof HTMLTextAreaElement
           )
             return
-          step(e.shiftKey ? -1 : -0.04) // frame step ~25fps
+          step(e.shiftKey ? -1 : -frameStep)
           break
         case 'ArrowRight':
+          if (e.target instanceof HTMLElement && e.target.closest('[data-preview-transform-handle]')) return
           if (
             e.target instanceof HTMLInputElement ||
             e.target instanceof HTMLTextAreaElement
           )
             return
-          step(e.shiftKey ? 1 : 0.04)
+          step(e.shiftKey ? 1 : frameStep)
           break
       }
     }
@@ -381,7 +456,13 @@ const AppLayout: React.FC = () => {
     selectedClipIds,
     undo,
     redo,
-    merging
+    merging,
+    frameStep,
+    clips.length,
+    saveProject,
+    saveProjectAs,
+    openProject,
+    newProject
   ])
 
   // ---- Drag & Drop ----
@@ -411,61 +492,20 @@ const AppLayout: React.FC = () => {
   }, [])
 
   const handleDrop = useCallback(
-    (e: React.DragEvent) => {
+    async (e: React.DragEvent) => {
       if (isInternalTimelineDrag(e)) return
       e.preventDefault()
       e.stopPropagation()
       setDragActive(false)
       
-      let filePaths: string[] = []
-  
-      // 方式1: 从 files 获取
       const files = Array.from(e.dataTransfer.files || [])
-      if (files.length > 0) {
-        filePaths = files
-          .map((file) => {
-            // 浏览器环境直接使用 file.path (Electron)
-            if ('path' in file && file.path) {
-              return file.path as string
-            }
-            // 或使用自定义 API
-            return window.api?.getPathForFile?.(file) || ''
-          })
-          .filter(Boolean)
-      }
-      // 方式2: 从 URI 列表获取（拖拽文件资源管理器的情况）
-      if (filePaths.length === 0) {
-        const uriList = e.dataTransfer.getData('text/uri-list') || 
-                        e.dataTransfer.getData('text/plain')
-        if (uriList) {
-          filePaths = uriList
-            .split(/\r?\n/)
-            .map(line => line.trim())
-            .filter(line => line && !line.startsWith('#'))
-            .map(line => {
-              try {
-                if (line.startsWith('file://')) {
-                  const url = new URL(line)
-                  let path = decodeURIComponent(url.pathname)
-                  // Windows: /C:/path -> C:/path
-                  if (/^\/[A-Za-z]:/.test(path)) {
-                    path = path.substring(1)
-                  }
-                  return path.replace(/\//g, '\\') // Windows 路径格式
-                }
-                return line
-              } catch (error) {
-                console.error('URI 解析失败:', line, error)
-                return ''
-              }
-            })
-            .filter(Boolean)
-        }
-      }
+      const filePaths = files.length > 0
+        ? await window.api.resolveDroppedFiles(files).catch(() => [])
+        : []
       if (filePaths.length > 0) {
-        loadFiles(filePaths)
+        await loadFiles(filePaths)
       } else {
-        showToast?.('未检测到可导入的文件，请从资源管理器拖入', 'error')
+        showToast?.(translate('未检测到可导入的文件，请从资源管理器拖入', 'No importable files found. Drag files from File Explorer.'), 'error')
       }
     },
     [loadFiles, showToast]
@@ -509,10 +549,53 @@ const AppLayout: React.FC = () => {
     if (!window.api?.onOpenFile) return
     const unsubscribe = window.api.onOpenFile((filePaths) => {
       if (!filePaths || filePaths.length === 0) return
-      loadFiles(filePaths)
+      const projectFiles = filePaths.filter((filePath) => filePath.toLowerCase().endsWith('.zclip'))
+      const mediaFiles = filePaths.filter((filePath) => !filePath.toLowerCase().endsWith('.zclip'))
+      void (async () => {
+        if (projectFiles.length > 0) {
+          const opened = await openProjectFromPath(projectFiles[0])
+          if (!opened) return
+          if (projectFiles.length > 1) showToast(translate('一次只能打开一个项目文件', 'Only one project file can be opened at a time'), 'info')
+        }
+        if (mediaFiles.length > 0) await loadFiles(mediaFiles)
+      })()
     })
-    return () => unsubscribe()
-  }, [loadFiles])
+    const readyTimer = window.setTimeout(() => window.api.rendererReady(), 0)
+    return () => {
+      window.clearTimeout(readyTimer)
+      unsubscribe()
+    }
+  }, [loadFiles, openProjectFromPath, showToast])
+
+  useEffect(() => {
+    const unsubscribe = window.api.onAppCloseRequest(async () => {
+      const state = useProjectStore.getState()
+      if (!state.projectDirty) return 'close'
+      try {
+        await state.autosaveNow()
+      } catch (error) {
+        state.showToast(error instanceof Error
+          ? translate(`退出前自动保存失败：${error.message}`, `Autosave before exit failed: ${error.message}`)
+          : translate('退出前自动保存失败', 'Autosave before exit failed'), 'error')
+      }
+      return new Promise<AppCloseDecision>((resolve) => {
+        closeResolverRef.current = resolve
+        setClosePrompt(true)
+      })
+    })
+    return () => {
+      unsubscribe()
+      closeResolverRef.current?.('cancel')
+      closeResolverRef.current = null
+    }
+  }, [])
+
+  const resolveCloseRequest = useCallback((decision: AppCloseDecision): void => {
+    setClosePrompt(false)
+    setCloseSaving(false)
+    closeResolverRef.current?.(decision)
+    closeResolverRef.current = null
+  }, [])
 
   useEffect(() => {
     refreshRecentProjects()
@@ -525,7 +608,7 @@ const AppLayout: React.FC = () => {
   }, [])
 
   const clearCaches = useCallback(async () => {
-    if (!window.confirm('确定清理代理视频和时间线预览缓存吗？原始素材不会被删除。')) return
+    if (!window.confirm(translate('确定清理代理视频和时间线预览缓存吗？原始素材不会被删除。', 'Clear proxy videos and timeline preview cache? Original media will not be deleted.'))) return
     try {
       setCacheStats(await window.api.clearMediaCaches())
       useProjectStore.setState((state) => ({
@@ -537,9 +620,9 @@ const AppLayout: React.FC = () => {
           ? { ...state.mediaInfo, playbackPath: state.mediaInfo.filePath, playbackIsProxy: false }
           : null
       }))
-      showToast('媒体缓存已清理', 'success')
+      showToast(translate('媒体缓存已清理', 'Media cache cleared'), 'success')
     } catch {
-      showToast('缓存清理失败，请稍后重试', 'error')
+      showToast(translate('缓存清理失败，请稍后重试', 'Could not clear the cache. Try again later.'), 'error')
     }
   }, [showToast])
 
@@ -554,33 +637,21 @@ const AppLayout: React.FC = () => {
   }, [projectDirty])
 
   useEffect(() => {
-    if (clips.length === 0) return
+    if (clips.length === 0 || !projectDirty) return
     const handle = window.setTimeout(() => {
-      const projectData = buildProjectData()
-      const signature = JSON.stringify({ ...projectData, savedAt: '' })
-      if (lastAutosaveSignatureRef.current === signature) return
-      const isInitialSavedProjectLoad =
-        lastAutosaveSignatureRef.current === null && Boolean(projectFilePath)
-      if (!isInitialSavedProjectLoad) {
-        markProjectDirty()
-      }
-      lastAutosaveSignatureRef.current = signature
-      autosaveNow().catch(() => {})
+      autosaveNow().catch((error) => {
+        showToast(error instanceof Error
+          ? translate(`自动保存失败：${error.message}`, `Autosave failed: ${error.message}`)
+          : translate('自动保存失败', 'Autosave failed'), 'error')
+      })
     }, 900)
     return () => window.clearTimeout(handle)
   }, [
-    clips,
-    operationsByClip,
-    transitions,
-    audioFades,
-    linkedGroups,
-    projectSettings,
-    videoTrackCount,
-    audioTrackCount,
-    projectFilePath,
-    buildProjectData,
+    documentRevision,
+    projectDirty,
     autosaveNow,
-    markProjectDirty
+    clips.length,
+    showToast
   ])
 
   return (
@@ -606,12 +677,15 @@ const AppLayout: React.FC = () => {
         onUndo={undo}
         onRedo={redo}
         onOpenFiles={openFiles}
+        onNewProject={newProject}
         onOpenProject={openProject}
         onSaveProject={saveProject}
         onSaveProjectAs={saveProjectAs}
         onOpenRecentProject={openProjectFromPath}
         onClearCache={clearCaches}
         cacheLabel={formatCacheSize(cacheStats)}
+        missingMediaCount={missingMediaPaths.length}
+        onRelinkMissingMedia={() => { void relinkMissingMedia() }}
         onOpenExport={() => setShowExport(true)}
         exportButtonRef={exportButtonRef}
       />
@@ -634,11 +708,11 @@ const AppLayout: React.FC = () => {
               role="separator"
               tabIndex={0}
               aria-orientation="vertical"
-              aria-label="调整检查器宽度"
+              aria-label={t('调整检查器宽度', 'Resize inspector')}
               aria-valuemin={INSPECTOR_MIN_WIDTH}
               aria-valuemax={getInspectorMaxWidth()}
               aria-valuenow={Math.round(layoutSizes.inspectorWidth)}
-              title="拖动调整检查器宽度，双击恢复默认"
+              title={t('拖动调整检查器宽度，双击恢复默认', 'Drag to resize the inspector; double-click to reset')}
               className="group absolute -left-1 top-0 z-20 h-full w-2 cursor-col-resize outline-none"
               onPointerDown={(event) => beginResize('inspector', event)}
               onDoubleClick={() => setLayoutSizes((current) => ({ ...current, inspectorWidth: DEFAULT_LAYOUT_SIZES.inspectorWidth }))}
@@ -667,11 +741,11 @@ const AppLayout: React.FC = () => {
             role="separator"
             tabIndex={0}
             aria-orientation="horizontal"
-            aria-label="调整时间轴高度"
+            aria-label={t('调整时间轴高度', 'Resize timeline')}
             aria-valuemin={TIMELINE_MIN_HEIGHT}
             aria-valuemax={getTimelineMaxHeight()}
             aria-valuenow={Math.round(layoutSizes.timelineHeight)}
-            title="拖动调整时间轴高度，双击恢复默认"
+            title={t('拖动调整时间轴高度，双击恢复默认', 'Drag to resize the timeline; double-click to reset')}
             className="group relative h-2 shrink-0 cursor-row-resize bg-bg-elevated outline-none"
             onPointerDown={(event) => beginResize('timeline', event)}
             onDoubleClick={() => setLayoutSizes((current) => ({ ...current, timelineHeight: DEFAULT_LAYOUT_SIZES.timelineHeight }))}
@@ -708,32 +782,79 @@ const AppLayout: React.FC = () => {
       {autosavePrompt && (
         <Dialog
           open
-          title="发现自动保存项目"
-          description="上次编辑可能没有正常保存。你可以恢复自动保存的内容，或忽略并从空项目开始。"
+          title={t('发现自动保存项目', 'Autosaved project found')}
+          description={t('上次编辑可能没有正常保存。你可以恢复自动保存的内容，或忽略并从空项目开始。', 'Your last edit may not have saved correctly. Restore the autosave or ignore it and start with an empty project.')}
           closeOnBackdrop={false}
         >
             <div className="flex justify-end gap-2">
               <Button
                 onClick={() => {
-                  clearAutosave().catch(() => {})
-                  setAutosavePrompt(null)
+                  void clearAutosave()
+                    .then(() => setAutosavePrompt(null))
+                    .catch((error) => showToast(
+                      error instanceof Error
+                        ? translate(`忽略自动保存失败：${error.message}`, `Could not ignore autosave: ${error.message}`)
+                        : translate('忽略自动保存失败', 'Could not ignore autosave'),
+                      'error'
+                    ))
                 }}
               >
-                忽略
+                {t('忽略', 'Ignore')}
               </Button>
               <Button
                 variant="primary"
                 onClick={() => {
-                  restoreProjectData(autosavePrompt, null)
-                  clearAutosave().catch(() => {})
-                  setAutosavePrompt(null)
+                  void recoverAutosave(autosavePrompt).then(() => setAutosavePrompt(null))
                 }}
               >
-                恢复
+                {t('恢复', 'Restore')}
               </Button>
             </div>
         </Dialog>
       )}
+
+      <Dialog
+        open={closePrompt}
+        title={t('保存更改后退出？', 'Save changes before exiting?')}
+        description={exporting || merging
+          ? t('当前后台任务会在退出时安全取消。保存项目只保存编辑结构，不会保留未完成的导出文件。', 'The current background task will be canceled safely on exit. Saving preserves the edit structure, not an unfinished export.')
+          : t('项目包含尚未保存的更改。退出前可以保存、放弃这些更改，或继续编辑。', 'This project has unsaved changes. Save or discard them before exiting, or keep editing.')}
+        closeOnBackdrop={false}
+        onClose={() => resolveCloseRequest('cancel')}
+      >
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button disabled={closeSaving} onClick={() => resolveCloseRequest('cancel')}>{t('继续编辑', 'Keep editing')}</Button>
+          <Button
+            disabled={closeSaving}
+            onClick={() => {
+              setCloseSaving(true)
+              void clearAutosave()
+                .then(() => resolveCloseRequest('close'))
+                .catch((error) => {
+                  setCloseSaving(false)
+                  showToast(error instanceof Error
+                    ? translate(`放弃更改失败：${error.message}`, `Could not discard changes: ${error.message}`)
+                    : translate('放弃更改失败', 'Could not discard changes'), 'error')
+                })
+            }}
+          >
+            {t('不保存', "Don't save")}
+          </Button>
+          <Button
+            variant="primary"
+            disabled={closeSaving}
+            onClick={() => {
+              setCloseSaving(true)
+              void saveProject().then((saved) => {
+                if (saved) resolveCloseRequest('close')
+                else setCloseSaving(false)
+              })
+            }}
+          >
+            {closeSaving ? t('正在保存…', 'Saving…') : t('保存并退出', 'Save and exit')}
+          </Button>
+        </div>
+      </Dialog>
 
       {/* ===== Export dialog ===== */}
       <React.Suspense fallback={null}>

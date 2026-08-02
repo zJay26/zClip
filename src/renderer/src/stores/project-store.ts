@@ -46,6 +46,7 @@ import {
 import { getMergeSelectionMeta } from './merge-selection'
 import { resolveClipOverlaps } from './timeline-overlap'
 import { uid } from '../lib/utils'
+import { translate } from '../contexts/preferences'
 
 let mergeOutputSequence = 1
 let pendingHistoryTransaction: ProjectSnapshot | null = null
@@ -61,6 +62,19 @@ async function mapWithConcurrency<T, R>(items: T[], concurrency: number, mapper:
   })
   await Promise.all(workers)
   return results
+}
+
+function applyPlaybackResult(
+  info: MediaInfo,
+  fallbackPath: string,
+  playback: { success: boolean; playbackPath?: string; playbackIsProxy?: boolean }
+): MediaInfo {
+  return {
+    ...info,
+    playbackPath: playback.success && playback.playbackPath ? playback.playbackPath : fallbackPath,
+    playbackIsProxy: Boolean(playback.success && playback.playbackIsProxy),
+    playbackProxyFailed: !playback.success
+  }
 }
 
 function historyPastForEdit(
@@ -153,7 +167,7 @@ function getAudioFadeBounds(
   operationsByClip: Record<string, MediaOperation[]>
 ): { duration: number } | null {
   const target = getClipRangeById(clips, operationsByClip, fade.clipId)
-  if (!target || target.clip.track !== 'audio') return null
+  if (!target || !target.clip.mediaInfo.hasAudio) return null
   return { duration: Math.max(0, target.range.visibleDuration) }
 }
 
@@ -283,6 +297,7 @@ function normalizeProjectSettings(settings?: ProjectSettings): ProjectSettings {
   return {
     ...defaults,
     ...(settings || {}),
+    frameRate: clampNumber(settings?.frameRate ?? defaults.frameRate ?? 30, 1, 240),
     canvas: {
       ...defaults.canvas,
       ...(settings?.canvas || {}),
@@ -306,8 +321,14 @@ function normalizeOperationsForClip(
 }
 
 function normalizeProjectData(data: ProjectData): ProjectData {
+  const videoTrackCount = Math.max(1, Math.min(data.videoTrackCount || 2, 16))
+  const audioTrackCount = Math.max(1, Math.min(data.audioTrackCount || 2, 16))
+  const clips = data.clips.map((clip) => ({
+    ...clip,
+    trackIndex: Math.max(0, Math.min(clip.trackIndex, (clip.track === 'video' ? videoTrackCount : audioTrackCount) - 1))
+  }))
   const operationsByClip: Record<string, MediaOperation[]> = {}
-  data.clips.forEach((clip) => {
+  clips.forEach((clip) => {
     operationsByClip[clip.id] = normalizeOperationsForClip(
       clip,
       data.operationsByClip?.[clip.id]
@@ -316,22 +337,46 @@ function normalizeProjectData(data: ProjectData): ProjectData {
   return {
     ...data,
     operationsByClip,
-    transitions: normalizeTransitions(data.transitions, data.clips, operationsByClip),
-    audioFades: normalizeAudioFades(data.audioFades, data.clips, operationsByClip),
+    clips,
+    transitions: normalizeTransitions(data.transitions, clips, operationsByClip),
+    audioFades: normalizeAudioFades(data.audioFades, clips, operationsByClip),
     linkedGroups: data.linkedGroups || {},
-    videoTrackCount: Math.max(1, Math.min(data.videoTrackCount || 2, 8)),
-    audioTrackCount: Math.max(1, Math.min(data.audioTrackCount || 2, 8)),
+    videoTrackCount,
+    audioTrackCount,
     projectSettings: normalizeProjectSettings(data.projectSettings)
   }
 }
 
 function projectNameFromPath(filePath: string | null): string {
-  if (!filePath) return '未命名项目'
-  const fileName = filePath.split(/[\\/]/).pop() || '未命名项目'
-  return fileName.replace(/\.zclip$/i, '').replace(/\.[^.]+$/, '') || '未命名项目'
+  if (!filePath) return translate('未命名项目', 'Untitled project')
+  const fileName = filePath.split(/[\\/]/).pop() || translate('未命名项目', 'Untitled project')
+  return fileName.replace(/\.zclip$/i, '').replace(/\.[^.]+$/, '') || translate('未命名项目', 'Untitled project')
 }
 
-export const useProjectStore = create<ProjectStore>((set, get) => ({
+const DOCUMENT_STATE_KEYS: ReadonlyArray<keyof ProjectStore> = [
+  'clips', 'operationsByClip', 'transitions', 'audioFades', 'linkedGroups',
+  'videoTrackCount', 'audioTrackCount', 'projectSettings'
+]
+
+export const useProjectStore = create<ProjectStore>((baseSet, get) => {
+  const set = (
+    update: Partial<ProjectStore> | ((state: ProjectStore) => Partial<ProjectStore> | ProjectStore)
+  ): void => {
+    baseSet((state) => {
+      const patch = typeof update === 'function' ? update(state) : update
+      if (!patch || typeof patch !== 'object' || Object.prototype.hasOwnProperty.call(patch, 'projectDirty')) {
+        return patch
+      }
+      const documentChanged = DOCUMENT_STATE_KEYS.some((key) =>
+        Object.prototype.hasOwnProperty.call(patch, key) && patch[key] !== state[key]
+      )
+      return documentChanged
+        ? { ...patch, projectDirty: true, documentRevision: state.documentRevision + 1 }
+        : patch
+    })
+  }
+
+  return ({
   // Initial state
   clips: [],
   selectedClipId: null,
@@ -349,8 +394,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   projectSettings: createDefaultProjectSettings(),
   projectFilePath: null,
   projectDirty: false,
+  documentRevision: 0,
   recentProjects: [],
   autosaveReady: false,
+  missingMediaPaths: [],
   sourceFile: null,
   mediaInfo: null,
   loading: false,
@@ -488,25 +535,24 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
       setDocumentTitle(selectedClip?.filePath ?? null, mergedClips.length)
       if (failures.length > 0) {
-        get().showToast(`已导入素材，但有 ${failures.length} 个文件失败`, 'error')
+        get().showToast(translate(`已导入素材，但有 ${failures.length} 个文件失败`, `Media imported, but ${failures.length} file(s) failed`), 'error')
       }
 
       const importedPaths = Array.from(new Set(newClips.map((clip) => clip.filePath)))
       void Promise.all(importedPaths.map(async (filePath) => {
-        const playback = await window.api.preparePlayback(filePath)
+        const playback = await window.api.preparePlayback(filePath).catch(() => ({ success: false }))
         set((state) => {
-          const patchInfo = (info: MediaInfo): MediaInfo => ({
-            ...info,
-            playbackPath: playback.success && playback.playbackPath ? playback.playbackPath : filePath,
-            playbackIsProxy: Boolean(playback.success && playback.playbackIsProxy),
-            playbackProxyFailed: !playback.success
-          })
           return {
-            clips: state.clips.map((clip) => clip.filePath === filePath ? { ...clip, mediaInfo: patchInfo(clip.mediaInfo) } : clip),
-            mediaInfo: state.mediaInfo?.filePath === filePath ? patchInfo(state.mediaInfo) : state.mediaInfo
+            clips: state.clips.map((clip) => clip.filePath === filePath
+              ? { ...clip, mediaInfo: applyPlaybackResult(clip.mediaInfo, filePath, playback) }
+              : clip),
+            mediaInfo: state.mediaInfo?.filePath === filePath
+              ? applyPlaybackResult(state.mediaInfo, filePath, playback)
+              : state.mediaInfo,
+            projectDirty: state.projectDirty
           }
         })
-      }))
+      })).catch(() => {})
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : 'Failed to load files',
@@ -593,14 +639,15 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       operationsByClip: {
         ...operationsByClip,
         [clipId]: clipOperations
-      }
+      },
+      projectDirty: get().projectDirty
     })
 
     setDocumentTitle(clip.filePath, clips.length)
   },
 
   addVideoTrack: () =>
-    set((state) => ({ videoTrackCount: Math.min(state.videoTrackCount + 1, 8) })),
+    set((state) => ({ videoTrackCount: Math.min(state.videoTrackCount + 1, 16) })),
   removeVideoTrack: () =>
     set((state) => {
       const nextCount = Math.max(state.videoTrackCount - 1, 1)
@@ -613,7 +660,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       return { videoTrackCount: nextCount, clips: updatedClips }
     }),
   addAudioTrack: () =>
-    set((state) => ({ audioTrackCount: Math.min(state.audioTrackCount + 1, 8) })),
+    set((state) => ({ audioTrackCount: Math.min(state.audioTrackCount + 1, 16) })),
   removeAudioTrack: () =>
     set((state) => {
       const nextCount = Math.max(state.audioTrackCount - 1, 1)
@@ -632,7 +679,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       if (!clip) return state
       const shouldRecordHistory = options?.recordHistory !== false
       const historyPast = shouldRecordHistory
-        ? [...state.historyPast, takeSnapshot(state)]
+        ? appendHistory(state.historyPast, takeSnapshot(state))
         : state.historyPast
 
       const nextStartTime = patch.startTime ?? clip.startTime
@@ -696,7 +743,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       if (!clip) return state
       const shouldRecordHistory = options?.recordHistory !== false
       const historyPast = shouldRecordHistory
-        ? [...state.historyPast, takeSnapshot(state)]
+        ? appendHistory(state.historyPast, takeSnapshot(state))
         : state.historyPast
 
       const isLinked = state.linkedGroups[clip.groupId] !== false
@@ -998,7 +1045,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     const state = get()
     const mergeSelection = getMergeSelectionMeta(state.clips, state.selectedClipIds)
     if (!mergeSelection.canMerge) {
-      get().showToast(mergeSelection.disabledReason || '当前选区不可合并', 'info')
+      get().showToast(mergeSelection.disabledReason || translate('当前选区不可合并', 'The current selection cannot be merged'), 'info')
       return
     }
 
@@ -1019,7 +1066,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     const hasVideoSelection = normalizedClips.some((clip) => clip.track === 'video' && clip.mediaInfo.hasVideo)
     const hasAudioSelection = normalizedClips.some((clip) => clip.track === 'audio' && clip.mediaInfo.hasAudio)
     if (!hasVideoSelection && !hasAudioSelection) {
-      get().showToast('所选片段不包含可合并的音视频流', 'error')
+      get().showToast(translate('所选片段不包含可合并的音视频流', 'The selected clips do not contain mergeable audio or video streams'), 'error')
       return
     }
 
@@ -1048,12 +1095,12 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         }
       })
       if (!exportResult.success) {
-        throw new Error(exportResult.error || '合并导出失败')
+        throw new Error(exportResult.error || translate('合并导出失败', 'Merge export failed'))
       }
 
       const infoResult = await window.api.getMediaInfo(outputPath)
       if (!infoResult.success || !infoResult.data) {
-        throw new Error(infoResult.error || '无法读取合并后的媒体信息')
+        throw new Error(infoResult.error || translate('无法读取合并后的媒体信息', 'Could not read the merged media information'))
       }
       const mergedInfo = infoResult.data
 
@@ -1062,7 +1109,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         latest.selectedClipIds.length === state.selectedClipIds.length &&
         latest.selectedClipIds.every((id) => selectedIdSet.has(id))
       if (!unchangedSelection) {
-        get().showToast('合并期间选区已变化，结果文件已生成但未自动替换', 'info')
+        get().showToast(translate('合并期间选区已变化，结果文件已生成但未自动替换', 'The selection changed during the merge. The result was created but not inserted automatically.'), 'info')
         return
       }
 
@@ -1102,7 +1149,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       }
 
       if (createdClips.length === 0) {
-        throw new Error('合并输出未包含可用的音视频流')
+        throw new Error(translate('合并输出未包含可用的音视频流', 'The merged output contains no usable audio or video streams'))
       }
 
       const newOpsByClip = { ...latest.operationsByClip }
@@ -1154,10 +1201,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         historyFuture: []
       })
       setDocumentTitle(selectedClip?.filePath ?? null, resolvedClips.length)
-      get().showToast('合并完成', 'success')
+      get().showToast(translate('合并完成', 'Merge complete'), 'success')
     } catch (error) {
-      const message = error instanceof Error ? error.message : '片段合并失败'
-      get().showToast(`片段合并失败: ${message}`, 'error')
+      const message = error instanceof Error ? error.message : translate('片段合并失败', 'Clip merge failed')
+      get().showToast(translate(`片段合并失败：${message}`, `Clip merge failed: ${message}`), 'error')
     } finally {
       set({ exporting: false, exportProgress: null, merging: false })
     }
@@ -1559,7 +1606,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     const state = get()
     const pair = findTransitionPair(state.clips, state.operationsByClip, time, trackIndex)
     if (!pair) {
-      get().showToast('请将转场拖到同一视频轨上两个相邻画面段之间', 'info')
+      get().showToast(translate('请将转场拖到同一视频轨上两个相邻画面段之间', 'Drop the transition between two adjacent clips on the same video track'), 'info')
       return false
     }
     const nextTransition = makeDefaultTransition(type, pair.left, pair.right, state.operationsByClip)
@@ -1585,7 +1632,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         historyFuture: []
       }
     })
-    get().showToast('转场已添加', 'success')
+    get().showToast(translate('转场已添加', 'Transition added'), 'success')
     return true
   },
 
@@ -1621,7 +1668,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     const clipId = getAudioFadeTargetId(state)
     const clip = clipId ? state.clips.find((item) => item.id === clipId) : null
     if (!clip || clip.track !== 'audio') {
-      get().showToast('请选择一个音频片段添加淡入或淡出', 'info')
+      get().showToast(translate('请选择一个音频片段添加淡入或淡出', 'Select an audio clip to add a fade in or fade out'), 'info')
       return false
     }
     const nextFade = makeDefaultAudioFade(kind, clip, state.operationsByClip)
@@ -1782,62 +1829,93 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   clearToast: () => set({ toast: null }),
 
   saveProject: async () => {
-    const state = get()
-    const filePath =
-      state.projectFilePath ||
-      (await window.api.showProjectSaveDialog(`${projectNameFromPath(state.sourceFile)}.zclip`))
-    if (!filePath) return false
-    const result = await window.api.saveProjectFile(filePath, buildProjectData(state))
-    if (!result.success) {
-      get().showToast(`项目保存失败: ${result.error || '未知错误'}`, 'error')
+    try {
+      const state = get()
+      const filePath =
+        state.projectFilePath ||
+        (await window.api.showProjectSaveDialog(`${projectNameFromPath(state.sourceFile)}.zclip`))
+      if (!filePath) return false
+      const result = await window.api.saveProjectFile(filePath, buildProjectData(state))
+      if (!result.success) throw new Error(result.error || translate('未知错误', 'Unknown error'))
+      set({ projectFilePath: filePath, projectDirty: false })
+      let autosaveCleanupFailed = false
+      await get().clearAutosave().catch(() => { autosaveCleanupFailed = true })
+      await get().refreshRecentProjects().catch(() => {})
+      get().showToast(
+        autosaveCleanupFailed
+          ? translate('项目已保存，但旧自动保存未能清理', 'Project saved, but the previous autosave could not be cleared')
+          : translate('项目已保存', 'Project saved'),
+        autosaveCleanupFailed ? 'info' : 'success'
+      )
+      return true
+    } catch (error) {
+      get().showToast(translate(
+        `项目保存失败：${error instanceof Error ? error.message : '未知错误'}`,
+        `Project save failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+      ), 'error')
       return false
     }
-    set({ projectFilePath: filePath, projectDirty: false })
-    await window.api.clearAutosave()
-    await get().refreshRecentProjects()
-    get().showToast('项目已保存', 'success')
-    return true
   },
 
   saveProjectAs: async () => {
-    const filePath = await window.api.showProjectSaveDialog(`${projectNameFromPath(get().projectFilePath)}.zclip`)
-    if (!filePath) return false
-    const result = await window.api.saveProjectFile(filePath, buildProjectData(get()))
-    if (!result.success) {
-      get().showToast(`项目另存失败: ${result.error || '未知错误'}`, 'error')
+    try {
+      const filePath = await window.api.showProjectSaveDialog(`${projectNameFromPath(get().projectFilePath)}.zclip`)
+      if (!filePath) return false
+      const result = await window.api.saveProjectFile(filePath, buildProjectData(get()))
+      if (!result.success) throw new Error(result.error || translate('未知错误', 'Unknown error'))
+      set({ projectFilePath: filePath, projectDirty: false })
+      let autosaveCleanupFailed = false
+      await get().clearAutosave().catch(() => { autosaveCleanupFailed = true })
+      await get().refreshRecentProjects().catch(() => {})
+      get().showToast(
+        autosaveCleanupFailed
+          ? translate('项目已另存，但旧自动保存未能清理', 'Project saved as a new file, but the previous autosave could not be cleared')
+          : translate('项目已另存', 'Project saved as a new file'),
+        autosaveCleanupFailed ? 'info' : 'success'
+      )
+      return true
+    } catch (error) {
+      get().showToast(translate(
+        `项目另存失败：${error instanceof Error ? error.message : '未知错误'}`,
+        `Save as failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+      ), 'error')
       return false
     }
-    set({ projectFilePath: filePath, projectDirty: false })
-    await window.api.clearAutosave()
-    await get().refreshRecentProjects()
-    get().showToast('项目已另存', 'success')
-    return true
   },
 
   openProject: async () => {
-    const filePath = await window.api.showProjectOpenDialog()
-    if (!filePath) return false
-    return get().openProjectFromPath(filePath)
+    try {
+      const filePath = await window.api.showProjectOpenDialog()
+      if (!filePath) return false
+      return get().openProjectFromPath(filePath)
+    } catch (error) {
+      get().showToast(translate(
+        `项目打开失败：${error instanceof Error ? error.message : '未知错误'}`,
+        `Could not open project: ${error instanceof Error ? error.message : 'Unknown error'}`
+      ), 'error')
+      return false
+    }
   },
 
   openProjectFromPath: async (filePath) => {
-    if (get().projectDirty && !window.confirm('当前项目有未保存的更改，确定要放弃并打开其他项目吗？')) {
-      return false
-    }
-    const result = await window.api.openProjectFile(filePath)
+    try {
+      if (get().projectDirty && !window.confirm(translate('当前项目有未保存的更改，确定要放弃并打开其他项目吗？', 'The current project has unsaved changes. Discard them and open another project?'))) {
+        return false
+      }
+      const result = await window.api.openProjectFile(filePath)
     if (!result.success || !result.data) {
-      get().showToast(`项目打开失败: ${result.error || '未知错误'}`, 'error')
+      get().showToast(translate(`项目打开失败：${result.error || '未知错误'}`, `Could not open project: ${result.error || 'Unknown error'}`), 'error')
       await get().removeRecentProject(filePath)
       return false
     }
     const uniquePaths = Array.from(new Set(result.data.clips.map((clip) => clip.filePath)))
     const refreshed = new Map<string, MediaInfo>()
     const missing: string[] = []
-    await Promise.all(uniquePaths.map(async (mediaPath) => {
+    await mapWithConcurrency(uniquePaths, 3, async (mediaPath) => {
       const mediaResult = await window.api.getMediaInfo(mediaPath)
       if (mediaResult.success && mediaResult.data) refreshed.set(mediaPath, mediaResult.data)
       else missing.push(mediaPath)
-    }))
+    })
     const hydratedData: ProjectData = {
       ...result.data,
       clips: result.data.clips.map((clip) => ({
@@ -1846,40 +1924,57 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       }))
     }
     get().restoreProjectData(hydratedData, filePath)
-    void Promise.all(uniquePaths.map(async (mediaPath) => {
+    void mapWithConcurrency(uniquePaths, 2, async (mediaPath) => {
       if (!refreshed.has(mediaPath)) return
-      const playback = await window.api.preparePlayback(mediaPath)
-      set((state) => ({
-        clips: state.clips.map((clip) => clip.filePath === mediaPath
-          ? {
-              ...clip,
-              mediaInfo: {
-                ...clip.mediaInfo,
-                playbackPath: playback.success && playback.playbackPath ? playback.playbackPath : mediaPath,
-                playbackIsProxy: Boolean(playback.success && playback.playbackIsProxy),
-                playbackProxyFailed: !playback.success
-              }
-            }
+      const playback = await window.api.preparePlayback(mediaPath).catch(() => ({ success: false }))
+      set((state) => {
+        const clips = state.clips.map((clip) => clip.filePath === mediaPath
+          ? { ...clip, mediaInfo: applyPlaybackResult(clip.mediaInfo, mediaPath, playback) }
           : clip)
-      }))
-    }))
-    await window.api.clearAutosave()
-    await get().refreshRecentProjects()
-    get().showToast('项目已打开', 'success')
+        const selected = clips.find((clip) => clip.id === state.selectedClipId)
+        return {
+          clips,
+          mediaInfo: selected?.filePath === mediaPath ? selected.mediaInfo : state.mediaInfo,
+          projectDirty: state.projectDirty
+        }
+      })
+    }).catch(() => {})
+    await get().clearAutosave().catch(() => {})
+    await get().refreshRecentProjects().catch(() => {})
+    get().showToast(translate('项目已打开', 'Project opened'), 'success')
     if (missing.length > 0) {
-      get().showToast(`项目已打开，但有 ${missing.length} 个素材无法访问，请重新定位素材`, 'error')
+      set({ missingMediaPaths: missing, projectDirty: false })
+      get().showToast(translate(
+        `项目已打开，但有 ${missing.length} 个素材无法访问，请重新定位素材`,
+        `Project opened, but ${missing.length} media file(s) are unavailable. Relink them to continue.`
+      ), 'error')
     }
-    return true
+      return true
+    } catch (error) {
+      get().showToast(translate(
+        `项目打开失败：${error instanceof Error ? error.message : '未知错误'}`,
+        `Could not open project: ${error instanceof Error ? error.message : 'Unknown error'}`
+      ), 'error')
+      return false
+    }
   },
 
   refreshRecentProjects: async () => {
-    const recentProjects = await window.api.getRecentProjects()
-    set({ recentProjects })
+    try {
+      const recentProjects = await window.api.getRecentProjects()
+      set({ recentProjects })
+    } catch (error) {
+      console.error('Failed to refresh recent projects:', error)
+    }
   },
 
   removeRecentProject: async (filePath) => {
-    const recentProjects = await window.api.removeRecentProject(filePath)
-    set({ recentProjects })
+    try {
+      const recentProjects = await window.api.removeRecentProject(filePath)
+      set({ recentProjects })
+    } catch (error) {
+      get().showToast(error instanceof Error ? error.message : translate('移除最近项目失败', 'Could not remove recent project'), 'error')
+    }
   },
 
   restoreProjectData: (data, filePath = null) => {
@@ -1905,6 +2000,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       projectSettings: normalized.projectSettings,
       projectFilePath: filePath,
       projectDirty: false,
+      documentRevision: 0,
       sourceFile: selectedClip?.filePath ?? null,
       mediaInfo: selectedClip?.mediaInfo ?? null,
       loading: false,
@@ -1916,9 +2012,137 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       duration: selectedClip?.duration ?? 0,
       exporting: false,
       exportProgress: null,
-      merging: false
+      merging: false,
+      missingMediaPaths: []
     })
     setDocumentTitle(selectedClip?.filePath ?? null, normalized.clips.length)
+  },
+
+  recoverAutosave: async (data) => {
+    const uniquePaths = Array.from(new Set(data.clips.map((clip) => clip.filePath)))
+    const refreshed = new Map<string, MediaInfo>()
+    const missing: string[] = []
+    await mapWithConcurrency(uniquePaths, 3, async (mediaPath) => {
+      const mediaResult = await window.api.getMediaInfo(mediaPath)
+      if (mediaResult.success && mediaResult.data) refreshed.set(mediaPath, mediaResult.data)
+      else missing.push(mediaPath)
+    })
+    const hydratedData: ProjectData = {
+      ...data,
+      clips: data.clips.map((clip) => ({
+        ...clip,
+        mediaInfo: refreshed.get(clip.filePath) || clip.mediaInfo
+      }))
+    }
+    get().restoreProjectData(hydratedData, null)
+    set({ projectDirty: true, documentRevision: 1, autosaveReady: true })
+    void mapWithConcurrency(uniquePaths, 2, async (mediaPath) => {
+      if (!refreshed.has(mediaPath)) return
+      const playback = await window.api.preparePlayback(mediaPath).catch(() => ({ success: false }))
+      set((state) => {
+        const clips = state.clips.map((clip) => clip.filePath === mediaPath
+          ? { ...clip, mediaInfo: applyPlaybackResult(clip.mediaInfo, mediaPath, playback) }
+          : clip)
+        const selected = clips.find((clip) => clip.id === state.selectedClipId)
+        return {
+          clips,
+          mediaInfo: selected?.filePath === mediaPath ? selected.mediaInfo : state.mediaInfo,
+          projectDirty: state.projectDirty
+        }
+      })
+    }).catch(() => {})
+    get().showToast(translate('已恢复自动保存项目', 'Autosaved project restored'), 'success')
+    if (missing.length > 0) {
+      set({ missingMediaPaths: missing, projectDirty: true })
+      get().showToast(translate(
+        `已恢复项目，但有 ${missing.length} 个素材需要重新定位`,
+        `Project restored, but ${missing.length} media file(s) need to be relinked`
+      ), 'error')
+    }
+  },
+
+  relinkMissingMedia: async () => {
+    const currentState = get()
+    const oldPath = currentState.missingMediaPaths[0]
+    if (!oldPath) return false
+    const affectedClips = currentState.clips.filter((clip) => clip.filePath === oldPath)
+    if (affectedClips.length === 0) {
+      set({ missingMediaPaths: currentState.missingMediaPaths.filter((item) => item !== oldPath) })
+      return false
+    }
+    const replacement = await window.api.openFile()
+    if (!replacement) return false
+    const result = await window.api.getMediaInfo(replacement)
+    if (!result.success || !result.data) {
+      get().showToast(translate(`素材重新定位失败：${result.error || '无法读取文件'}`, `Media relink failed: ${result.error || 'Could not read file'}`), 'error')
+      return false
+    }
+    const replacementInfo = result.data
+    if (affectedClips.some((clip) => clip.track === 'video') && !replacementInfo.hasVideo) {
+      get().showToast(translate('所选文件不包含原片段需要的视频流', 'The selected file does not contain the required video stream'), 'error')
+      return false
+    }
+    if (affectedClips.some((clip) => clip.track === 'audio') && !replacementInfo.hasAudio) {
+      get().showToast(translate('所选文件不包含原片段需要的音频流', 'The selected file does not contain the required audio stream'), 'error')
+      return false
+    }
+    const affectedIds = new Set(affectedClips.map((clip) => clip.id))
+    set((state) => {
+      const clips = state.clips.map((clip) => {
+        if (clip.filePath !== oldPath) return clip
+        const duration = replacementInfo.duration
+        return {
+          ...clip,
+          filePath: replacement,
+          duration,
+          trimBoundStart: 0,
+          trimBoundEnd: duration,
+          mediaInfo: replacementInfo
+        }
+      })
+      const operationsByClip = { ...state.operationsByClip }
+      clips.forEach((clip) => {
+        if (!affectedIds.has(clip.id)) return
+        operationsByClip[clip.id] = (operationsByClip[clip.id] || createDefaultOperations(clip.duration)).map((operation) =>
+          operation.type === 'trim'
+            ? {
+                ...operation,
+                enabled: true,
+                params: {
+                  startTime: Math.min((operation.params as TrimParams).startTime, clip.duration),
+                  endTime: Math.min((operation.params as TrimParams).endTime, clip.duration)
+                }
+              }
+            : operation
+        )
+      })
+      return {
+        clips,
+        operationsByClip,
+        missingMediaPaths: state.missingMediaPaths.filter((item) => item !== oldPath),
+        timelineDuration: getTimelineDuration(clips, operationsByClip),
+        sourceFile: state.sourceFile === oldPath ? replacement : state.sourceFile,
+        mediaInfo: state.sourceFile === oldPath ? replacementInfo : state.mediaInfo,
+        operations: state.selectedClipId ? (operationsByClip[state.selectedClipId] || state.operations) : state.operations,
+        historyPast: appendHistory(state.historyPast, takeSnapshot(state)),
+        historyFuture: []
+      }
+    })
+    const playback = await window.api.preparePlayback(replacement).catch(() => ({ success: false }))
+    set((state) => {
+      const clips = state.clips.map((clip) => affectedIds.has(clip.id)
+        ? { ...clip, mediaInfo: applyPlaybackResult(clip.mediaInfo, replacement, playback) }
+        : clip)
+      const selected = clips.find((clip) => clip.id === state.selectedClipId)
+      return {
+        clips,
+        mediaInfo: selected && affectedIds.has(selected.id) ? selected.mediaInfo : state.mediaInfo,
+        projectDirty: state.projectDirty
+      }
+    })
+    if (!playback.success) get().showToast(translate('素材已定位，但兼容代理生成失败', 'Media relinked, but compatible proxy generation failed'), 'error')
+    else get().showToast(translate('素材已重新定位', 'Media relinked'), 'success')
+    return true
   },
 
   buildProjectData: () => buildProjectData(get()),
@@ -1926,12 +2150,14 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   autosaveNow: async () => {
     const state = get()
     if (state.clips.length === 0) return
-    await window.api.saveAutosave(buildProjectData(state))
+    const result = await window.api.saveAutosave(buildProjectData(state))
+    if (!result.success) throw new Error(result.error || translate('自动保存失败', 'Autosave failed'))
     set({ autosaveReady: true })
   },
 
   clearAutosave: async () => {
-    await window.api.clearAutosave()
+    const result = await window.api.clearAutosave()
+    if (!result.success) throw new Error(result.error || translate('清除自动保存失败', 'Could not clear autosave'))
     set({ autosaveReady: false })
   },
 
@@ -1982,6 +2208,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       projectSettings: createDefaultProjectSettings(),
       projectFilePath: null,
       projectDirty: false,
+      documentRevision: 0,
       sourceFile: null,
       mediaInfo: null,
       loading: false,
@@ -1993,8 +2220,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       duration: 0,
       exporting: false,
       exportProgress: null,
-      merging: false
+      merging: false,
+      missingMediaPaths: []
     })
     setDocumentTitle(null, 0)
   }
-}))
+  })
+})

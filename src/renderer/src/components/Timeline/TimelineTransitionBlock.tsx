@@ -3,6 +3,7 @@ import type { MediaOperation, TimelineClip, TimelineTransition } from '../../../
 import { getClipTimelineRange } from '../../../../shared/timeline-utils'
 import { useProjectStore } from '../../stores/project-store'
 import { TRANSITION_EFFECTS } from '../Controls/TransitionControl'
+import { usePreferences } from '../../contexts/preferences'
 
 interface TimelineTransitionBlockProps {
   transition: TimelineTransition
@@ -17,10 +18,6 @@ interface TimelineTransitionBlockProps {
 
 type Edge = 'start' | 'end'
 
-const labelByType = Object.fromEntries(
-  TRANSITION_EFFECTS.map((item) => [item.type, item.label])
-) as Record<TimelineTransition['type'], string>
-
 const TimelineTransitionBlock: React.FC<TimelineTransitionBlockProps> = ({
   transition,
   clips,
@@ -31,6 +28,7 @@ const TimelineTransitionBlock: React.FC<TimelineTransitionBlockProps> = ({
   pixelsPerSecond,
   onDragStateChange
 }) => {
+  const { t } = usePreferences()
   const { updateTransition, deleteTransition, beginHistoryTransaction, commitHistoryTransaction } = useProjectStore()
   const [dragging, setDragging] = useState<Edge | null>(null)
   const dragRef = useRef({ clientX: 0, startOffset: 0, endOffset: 0 })
@@ -89,6 +87,7 @@ const TimelineTransitionBlock: React.FC<TimelineTransitionBlockProps> = ({
   const width = Math.max(16, (timing.end - timing.start) * pixelsPerSecond)
   const boundaryX = timeToX(timing.boundary) - left
   const verticalInset = Math.min(8, Math.max(1, trackHeight * 0.16))
+  const effect = TRANSITION_EFFECTS.find((item) => item.type === transition.type)
 
   const startDrag = (event: React.MouseEvent, edge: Edge): void => {
     event.preventDefault()
@@ -115,7 +114,7 @@ const TimelineTransitionBlock: React.FC<TimelineTransitionBlockProps> = ({
         event.stopPropagation()
         deleteTransition(transition.id)
       }}
-      title="双击删除转场"
+      title={t('双击删除转场', 'Double-click to delete transition')}
     >
       <div
         className="absolute inset-y-0 left-0 z-10 w-2 cursor-ew-resize bg-white/15 hover:bg-white/35"
@@ -130,7 +129,7 @@ const TimelineTransitionBlock: React.FC<TimelineTransitionBlockProps> = ({
         style={{ left: boundaryX }}
       />
       <div className="flex h-full items-center justify-center px-3 font-semibold">
-        {labelByType[transition.type] || '转场'}
+        {effect ? t(effect.label, effect.labelEn) : t('转场', 'Transition')}
       </div>
     </div>
   )

@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'motion/react'
 import { X } from 'lucide-react'
 import { cx } from '../../lib/utils'
 import IconButton from './IconButton'
+import { usePreferences } from '../../contexts/preferences'
 
 interface DialogProps {
   open: boolean
@@ -29,6 +30,7 @@ const Dialog: React.FC<DialogProps> = ({
   closeOnBackdrop = true,
   onExitComplete
 }) => {
+  const { t } = usePreferences()
   const surfaceRef = useRef<HTMLDivElement>(null)
   const titleId = useId()
   const descriptionId = useId()
@@ -101,7 +103,7 @@ const Dialog: React.FC<DialogProps> = ({
                 <h2 id={titleId} className="text-base font-semibold leading-tight tracking-[-0.01em] text-text-primary">{title}</h2>
                 {description && <p id={descriptionId} className="mt-1 text-xs leading-relaxed text-text-secondary">{description}</p>}
               </div>
-              {onClose && <IconButton label="关闭弹窗" icon={<X aria-hidden size={16} />} onClick={onClose} />}
+              {onClose && <IconButton label={t('关闭弹窗', 'Close dialog')} icon={<X aria-hidden size={16} />} onClick={onClose} />}
             </div>
             {children}
           </motion.div>

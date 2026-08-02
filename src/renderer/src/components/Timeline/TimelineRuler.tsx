@@ -75,7 +75,11 @@ const TimelineRuler: React.FC<TimelineRulerProps> = ({
   const major = tickInterval.major
   const majorStepCount = Math.max(1, Math.round(major / minor))
   const totalSteps = Math.ceil((effectiveDuration + minor) / minor)
-  for (let i = 0; i <= totalSteps; i++) {
+  const visibleStart = Math.max(0, scrollLeft / Math.max(1, pixelsPerSecond) - major)
+  const visibleEnd = Math.min(effectiveDuration, (scrollLeft + (containerRect?.width || 1200)) / Math.max(1, pixelsPerSecond) + major)
+  const firstStep = Math.max(0, Math.floor(visibleStart / minor))
+  const lastStep = Math.min(totalSteps, Math.ceil(visibleEnd / minor))
+  for (let i = firstStep; i <= lastStep; i++) {
     const time = i * minor
     const isMajor = i % majorStepCount === 0
     ticks.push({ time, major: isMajor })

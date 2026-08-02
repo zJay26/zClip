@@ -7,12 +7,14 @@ import { useProjectStore } from '../../stores/project-store'
 import { formatTime, parseTime, clamp } from '../../lib/utils'
 import type { TrimParams, SpeedParams } from '../../../../shared/types'
 import { SectionCard } from '../ui'
+import { usePreferences } from '../../contexts/preferences'
 
 interface TrimControlProps {
   hideHeader?: boolean
 }
 
 const TrimControl: React.FC<TrimControlProps> = ({ hideHeader = false }) => {
+  const { t } = usePreferences()
   const { operations, duration, setTrim, clips, selectedClipId } = useProjectStore()
   const selectedClip = selectedClipId ? clips.find((clip) => clip.id === selectedClipId) : null
 
@@ -32,14 +34,14 @@ const TrimControl: React.FC<TrimControlProps> = ({ hideHeader = false }) => {
     <>
       <div className="grid grid-cols-2 gap-2">
         <TimeInput
-          label="入点"
+          label={t('入点', 'In point')}
           value={startTime}
           min={trimBoundStart}
           max={endTime - 0.1}
           onChange={(v) => setTrim({ startTime: v })}
         />
         <TimeInput
-          label="出点"
+          label={t('出点', 'Out point')}
           value={endTime}
           min={startTime + 0.1}
           max={trimBoundEnd}
@@ -48,9 +50,9 @@ const TrimControl: React.FC<TrimControlProps> = ({ hideHeader = false }) => {
       </div>
 
       <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-xs">
-        <span className="text-text-secondary">片段时长</span>
+        <span className="text-text-secondary">{t('片段时长', 'Clip duration')}</span>
         <span className="text-text-primary font-mono">{formatTime(boundedClipDuration)}</span>
-        <span className="text-text-secondary">时间轴时长</span>
+        <span className="text-text-secondary">{t('时间轴时长', 'Timeline duration')}</span>
         <span className="text-text-primary font-mono">{formatTime(visibleDuration)}</span>
       </div>
     </>
@@ -62,7 +64,7 @@ const TrimControl: React.FC<TrimControlProps> = ({ hideHeader = false }) => {
 
   return (
     <SectionCard
-      title="片段范围"
+      title={t('片段范围', 'Clip range')}
       icon={
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <path d="M6 9l6 6 6-6" />

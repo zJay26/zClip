@@ -7,8 +7,10 @@ import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
 import { getMediaInfo } from './media-engine'
-import { ffmpegPath } from './ffmpeg'
 import { runMediaJob } from './media-job-manager'
+import { scheduleCacheEnforcement, touchCacheFile } from './cache-manager'
+
+const previewPromises = new Map<string, Promise<void>>()
 
 export interface PreviewOptions {
   video?: { height: number; frames: number }
@@ -26,6 +28,39 @@ function hashKey(input: string): string {
 
 async function ensureDir(dir: string): Promise<void> {
   await fs.promises.mkdir(dir, { recursive: true })
+}
+
+async function isNonEmptyFile(filePath: string): Promise<boolean> {
+  const stat = await fs.promises.stat(filePath).catch(() => null)
+  return Boolean(stat?.isFile() && stat.size > 0)
+}
+
+async function ensurePreviewFile(filePath: string, args: string[]): Promise<void> {
+  if (await isNonEmptyFile(filePath)) return
+  const existing = previewPromises.get(filePath)
+  if (existing) return existing
+
+  const pending = (async () => {
+    const extension = path.extname(filePath)
+    const tempPath = `${filePath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp${extension}`
+    const actualArgs = [...args]
+    if (actualArgs[actualArgs.length - 1] !== filePath) throw new Error('预览输出路径不一致')
+    actualArgs[actualArgs.length - 1] = tempPath
+    try {
+      await runMediaJob(`preview:${filePath}`, actualArgs)
+      if (!await isNonEmptyFile(tempPath)) throw new Error('生成的时间线预览为空')
+      await fs.promises.rename(tempPath, filePath)
+    } catch (error) {
+      await fs.promises.unlink(tempPath).catch(() => {})
+      throw error
+    }
+  })()
+  previewPromises.set(filePath, pending)
+  try {
+    await pending
+  } finally {
+    if (previewPromises.get(filePath) === pending) previewPromises.delete(filePath)
+  }
 }
 
 export async function getTimelinePreviews(
@@ -51,7 +86,7 @@ export async function getTimelinePreviews(
 
   if (mediaInfo.hasVideo && options.video) {
     const videoPath = path.join(cacheDir, `${baseKey}-strip.png`)
-    if (!fs.existsSync(videoPath)) {
+    if (!await isNonEmptyFile(videoPath)) {
       const frames = Math.max(4, Math.min(options.video.frames, 20))
       const duration = Math.max(0.2, mediaInfo.duration || 0.2)
       const fps = Math.min(frames / duration, 2)
@@ -61,20 +96,23 @@ export async function getTimelinePreviews(
         `tile=${frames}x1`
       ].join(',')
       const args = ['-y', '-i', filePath, '-vf', filter, '-frames:v', '1', videoPath]
-      await runMediaJob(`preview:${videoPath}`, args)
+      await ensurePreviewFile(videoPath, args)
     }
+    await touchCacheFile(videoPath)
     result.videoStripPath = videoPath
   }
 
   if (mediaInfo.hasAudio && options.audio) {
     const audioPath = path.join(cacheDir, `${baseKey}-wave.png`)
-    if (!fs.existsSync(audioPath)) {
+    if (!await isNonEmptyFile(audioPath)) {
       const filter = `[0:a]showwavespic=s=${options.audio.width}x${options.audio.height}:colors=#ffffff@0.6,format=rgba`
       const args = ['-y', '-i', filePath, '-vn', '-filter_complex', filter, '-frames:v', '1', audioPath]
-      await runMediaJob(`preview:${audioPath}`, args)
+      await ensurePreviewFile(audioPath, args)
     }
+    await touchCacheFile(audioPath)
     result.audioWaveformPath = audioPath
   }
 
+  scheduleCacheEnforcement()
   return result
 }

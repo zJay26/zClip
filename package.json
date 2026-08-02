@@ -1,6 +1,7 @@
 {
   "name": "zClip",
   "version": "2.4.0",
+  "private": true,
   "description": "极简 Windows 视频剪辑工具",
   "author": "zJay26",
   "license": "MIT",
@@ -26,22 +27,23 @@
     "typecheck:node": "tsc -p tsconfig.node.json --noEmit",
     "test:ui": "vitest run",
     "test": "npm run typecheck && vitest run",
-    "check": "npm run typecheck && vitest run && npm run build",
+    "prepare:electron": "node ./node_modules/electron/install.js",
+    "prepare:ffmpeg": "node ./scripts/prepare-ffmpeg.mjs",
+    "check:native": "node ./scripts/check-native-tools.mjs",
+    "check:packaged": "node ./scripts/check-packaged-app.mjs",
+    "docs:assets": "node ./scripts/capture-readme-assets.mjs",
+    "audit:prod": "npm audit --audit-level=high",
+    "check": "npm test && npm run audit:prod && npm run check:native && npm run build",
     "test:ui:update": "vitest run -u",
     "readme:generate": "node ./scripts/generate-readme.mjs",
-    "release:prepare": "npm run readme:generate",
-    "postinstall": "electron-builder install-app-deps",
-    "dist": "electron-builder"
+    "release:prepare": "npm run readme:generate && npm run check",
+    "postinstall": "npm run prepare:electron && npm run prepare:ffmpeg && electron-builder install-app-deps",
+    "dist": "electron-builder",
+    "pack:dir": "electron-builder --dir"
   },
-  "dependencies": {
-    "@ffmpeg-installer/ffmpeg": "^1.1.0",
-    "@ffprobe-installer/ffprobe": "^2.1.2",
-    "lucide-react": "^1.24.0",
-    "motion": "^12.42.2",
-    "soundtouchjs": "^0.3.0",
-    "zustand": "^5.0.14"
-  },
+  "dependencies": {},
   "devDependencies": {
+    "7zip-bin": "5.2.0",
     "@axe-core/react": "^4.12.1",
     "@electron-toolkit/preload": "^3.0.1",
     "@electron-toolkit/utils": "^4.0.0",
@@ -56,18 +58,23 @@
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "jsdom": "^29.1.1",
+    "lucide-react": "^1.24.0",
+    "motion": "^12.42.2",
     "postcss": "^8.5.17",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.3",
     "vite": "^7.3.6",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "zustand": "^5.0.14"
   },
   "overrides": {
+    "@electron/fuses": "2.1.3",
     "@babel/core": "^7.29.7",
     "form-data": "^4.0.6",
     "picomatch@2.3.1": "2.3.2",
+    "tmp": "0.2.7",
     "readdirp": {
       "picomatch": "2.3.2"
     },
@@ -76,13 +83,56 @@
   "build": {
     "appId": "com.zClip",
     "productName": "zClip",
+    "electronDist": "node_modules/electron/dist",
+    "asar": true,
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "grantFileProtocolExtraPrivileges": false
+    },
+    "fileAssociations": [
+      {
+        "ext": "zclip",
+        "name": "zClip Project",
+        "description": "zClip project file",
+        "role": "Editor"
+      }
+    ],
     "directories": {
       "output": "release",
       "buildResources": "build"
     },
     "files": [
       "out/**",
-      "package.json"
+      "!out/*.tsbuildinfo",
+      "package.json",
+      "THIRD_PARTY_NOTICES.md"
+    ],
+    "extraResources": [
+      {
+        "from": "build/ffmpeg/ffmpeg.exe",
+        "to": "ffmpeg/ffmpeg.exe"
+      },
+      {
+        "from": "build/ffmpeg/ffprobe.exe",
+        "to": "ffmpeg/ffprobe.exe"
+      },
+      {
+        "from": "build/ffmpeg/LICENSE",
+        "to": "ffmpeg/LICENSE"
+      },
+      {
+        "from": "build/ffmpeg/README.txt",
+        "to": "ffmpeg/README.txt"
+      },
+      {
+        "from": "build/ffmpeg/SOURCE.json",
+        "to": "ffmpeg/SOURCE.json"
+      }
     ],
     "win": {
       "target": [
