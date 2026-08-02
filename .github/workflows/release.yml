@@ -1,0 +1,174 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.12.0
+          cache: npm
+      - run: npm ci
+      - run: npm audit --audit-level=high
+      - name: Verify tag matches package version
+        shell: pwsh
+        run: |
+          $expected = "v$((Get-Content -Raw -LiteralPath package.json | ConvertFrom-Json).version)"
+          if ($env:GITHUB_REF_NAME -ne $expected) { throw "Tag $env:GITHUB_REF_NAME does not match package version $expected" }
+      - run: npm run release:prepare
+      - name: Verify generated documentation is committed
+        run: git diff --exit-code -- README.md README.en.md README.zh.md
+      - name: Resolve Windows signing mode
+        id: signing
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+        run: |
+          $hasLink = -not [string]::IsNullOrWhiteSpace($env:CSC_LINK)
+          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:CSC_KEY_PASSWORD)
+          if ($hasLink -ne $hasPassword) {
+            throw 'WINDOWS_CSC_LINK and WINDOWS_CSC_KEY_PASSWORD must either both be configured or both be omitted'
+          }
+          $signed = if ($hasLink) { 'true' } else { 'false' }
+          "signed=$signed" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          if ($hasLink) {
+            'Release mode: Authenticode signed' | Write-Host
+          } else {
+            'Release mode: explicitly unsigned' | Write-Warning
+          }
+      - name: Build signed Windows installer
+        if: steps.signing.outputs.signed == 'true'
+        run: npm run dist
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+      - name: Build unsigned Windows installer
+        if: steps.signing.outputs.signed == 'false'
+        run: npm run dist
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Verify packaged application
+        run: npm run check:packaged
+      - name: Verify and record Authenticode status
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw -LiteralPath package.json | ConvertFrom-Json).version
+          $expectsSigned = '${{ steps.signing.outputs.signed }}' -eq 'true'
+          $expectedStatus = if ($expectsSigned) { 'Valid' } else { 'NotSigned' }
+          $targets = @(
+            (Resolve-Path -LiteralPath release\win-unpacked\zClip.exe).Path,
+            (Resolve-Path -LiteralPath "release\zClip.Setup.$version.exe").Path
+          )
+          foreach ($target in $targets) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $target
+            if ([string]$signature.Status -ne $expectedStatus) {
+              throw "Unexpected Authenticode status for $target`: $($signature.Status), expected $expectedStatus"
+            }
+          }
+          if ($expectsSigned) {
+            $status = @(
+              'Signing status: SIGNED',
+              'The Windows executable and installer have valid Authenticode signatures.'
+            )
+            '### Signing status: signed' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          } else {
+            $status = @(
+              'Signing status: UNSIGNED',
+              'This release does not have a Windows Authenticode signature.',
+              'Windows SmartScreen may show an Unknown publisher warning.',
+              'Verify the downloaded installer against SHA256SUMS.txt before running it.'
+            )
+            '### Signing status: explicitly unsigned' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+          Set-Content -LiteralPath release\SIGNING_STATUS.txt -Value $status -Encoding utf8NoBOM
+      - name: Generate release provenance files
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw -LiteralPath package.json | ConvertFrom-Json).version
+          $releaseNotes = "docs\releases\v$version.md"
+          if (-not (Test-Path -LiteralPath $releaseNotes)) { throw "Missing release notes: $releaseNotes" }
+          # Vite bundles renderer libraries that are declared as devDependencies, so the
+          # complete dependency graph is required for an honest release SBOM.
+          npm sbom --sbom-format=cyclonedx | Set-Content -LiteralPath release\zClip.sbom.cdx.json -Encoding utf8NoBOM
+          if ($LASTEXITCODE -ne 0) { throw 'SBOM generation failed' }
+          Copy-Item -LiteralPath THIRD_PARTY_NOTICES.md -Destination release\THIRD_PARTY_NOTICES.md
+          Copy-Item -LiteralPath build\ffmpeg\SOURCE.json -Destination release\FFMPEG_SOURCE.json
+          Copy-Item -LiteralPath $releaseNotes -Destination release\RELEASE_NOTES.md
+      - name: Generate SHA-256 checksums
+        shell: pwsh
+        run: |
+          $artifacts = @((Get-ChildItem -LiteralPath release -Filter '*.exe' -File))
+          if ($artifacts.Count -eq 0) { throw 'No installer was produced' }
+          $artifacts += Get-Item -LiteralPath release\zClip.sbom.cdx.json, release\THIRD_PARTY_NOTICES.md, release\FFMPEG_SOURCE.json, release\SIGNING_STATUS.txt
+          $lines = $artifacts | ForEach-Object {
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          }
+          Set-Content -LiteralPath release\SHA256SUMS.txt -Value $lines -Encoding utf8NoBOM
+      - name: Upload verified release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          path: |
+            release/zClip.Setup.*.exe
+            release/zClip.sbom.cdx.json
+            release/THIRD_PARTY_NOTICES.md
+            release/FFMPEG_SOURCE.json
+            release/SIGNING_STATUS.txt
+            release/SHA256SUMS.txt
+            release/RELEASE_NOTES.md
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    needs: windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+          path: release-assets
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          installer="release-assets/zClip.Setup.${version}.exe"
+          if grep -q 'UNSIGNED' release-assets/SIGNING_STATUS.txt; then
+            installer_label='Windows installer (unsigned)'
+          else
+            installer_label='Windows installer (Authenticode signed)'
+          fi
+          notes="$(cat release-assets/RELEASE_NOTES.md)"
+          gh release create "$GITHUB_REF_NAME" \
+            "${installer}#${installer_label}" \
+            release-assets/zClip.sbom.cdx.json \
+            release-assets/THIRD_PARTY_NOTICES.md \
+            release-assets/FFMPEG_SOURCE.json \
+            release-assets/SIGNING_STATUS.txt \
+            release-assets/SHA256SUMS.txt \
+            --verify-tag \
+            --fail-on-no-commits \
+            --generate-notes \
+            --notes "$notes" \
+            --title "zClip $version"

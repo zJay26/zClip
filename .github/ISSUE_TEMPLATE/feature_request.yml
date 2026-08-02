@@ -1,0 +1,42 @@
+name: 功能建议 / Feature request
+description: 说明你希望 zClip 帮你解决的实际麻烦
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        功能名字只是起点。真实使用场景、当前绕路方式和理想结果能帮助我们判断优先级。
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景
+      description: 你在处理什么素材，最终想得到什么？
+    validations:
+      required: true
+  - type: textarea
+    id: pain
+    attributes:
+      label: 现在最麻烦的地方
+      description: 当前使用什么工具或步骤，为什么不够顺手？
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: 理想结果
+      description: 请描述完成后的体验，不必先设计技术方案。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 尝试过的替代办法
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已经搜索过现有 Issue、Discussion 和 Roadmap。
+          required: true

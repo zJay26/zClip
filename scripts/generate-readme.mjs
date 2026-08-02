@@ -34,12 +34,16 @@ async function generateReadmes() {
 
   const jobs = [
     {
-      template: path.join(rootDir, 'docs', 'templates', 'README.en.tpl.md'),
+      template: path.join(rootDir, 'docs', 'templates', 'README.zh.tpl.md'),
       output: path.join(rootDir, 'README.md')
     },
     {
       template: path.join(rootDir, 'docs', 'templates', 'README.zh.tpl.md'),
       output: path.join(rootDir, 'README.zh.md')
+    },
+    {
+      template: path.join(rootDir, 'docs', 'templates', 'README.en.tpl.md'),
+      output: path.join(rootDir, 'README.en.md')
     }
   ]
 

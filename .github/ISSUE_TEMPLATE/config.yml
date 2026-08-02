@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用问题与交流 / Questions and discussions
+    url: https://github.com/zJay26/zClip/discussions
+    about: 不确定是不是 Bug，或者想交流使用方法时，请先来这里。
+  - name: 安全漏洞 / Security vulnerability
+    url: https://github.com/zJay26/zClip/security/advisories/new
+    about: 请通过私密渠道报告安全问题，不要公开提交 Issue。

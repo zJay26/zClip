@@ -1,8 +1,8 @@
 {
   "name": "zClip",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "private": true,
-  "description": "极简 Windows 视频剪辑工具",
+  "description": "本地、离线、无订阅的 Windows 视频剪辑器",
   "author": "zJay26",
   "license": "MIT",
   "repository": {
