@@ -38,7 +38,7 @@
     "readme:generate": "node ./scripts/generate-readme.mjs",
     "release:prepare": "npm run readme:generate && npm run check",
     "postinstall": "npm run prepare:electron && npm run prepare:ffmpeg && electron-builder install-app-deps",
-    "dist": "electron-builder",
+    "dist": "electron-builder --publish never",
     "pack:dir": "electron-builder --dir"
   },
   "dependencies": {},
