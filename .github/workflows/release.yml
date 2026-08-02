@@ -171,4 +171,5 @@ jobs:
             --fail-on-no-commits \
             --generate-notes \
             --notes "$notes" \
+            --repo "$GITHUB_REPOSITORY" \
             --title "zClip $version"
