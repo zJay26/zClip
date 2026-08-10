@@ -23,7 +23,7 @@ import TimelineClipBlock from './TimelineClipBlock'
 import TimelineTransitionBlock from './TimelineTransitionBlock'
 import TimelineAudioFadeBlock from './TimelineAudioFadeBlock'
 import TimelinePlayhead from './TimelinePlayhead'
-import type { TransitionEffectType, TrimParams } from '../../../../shared/types'
+import type { MediaOperation, TransitionEffectType, TrimParams } from '../../../../shared/types'
 import { getClipTimelineRange } from '../../../../shared/timeline-utils'
 import { TRANSITION_DRAG_MIME } from '../Controls/TransitionControl'
 import { Badge, Button, Panel } from '../ui'
@@ -36,6 +36,7 @@ interface TimelineProps {
 const CONTEXT_MENU_MARGIN = 8
 const CONTEXT_MENU_ESTIMATED_WIDTH = 190
 const CONTEXT_MENU_ESTIMATED_HEIGHT = 244
+const EMPTY_OPERATIONS: MediaOperation[] = []
 
 const CurrentTimeBadge: React.FC = () => {
   const currentTime = useProjectStore((state) => state.currentTime)
@@ -76,6 +77,7 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
     videoTrackCount,
     audioTrackCount,
     operationsByClip,
+    linkedGroups,
     transitions,
     audioFades,
     selectClip,
@@ -100,6 +102,7 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
     videoTrackCount: state.videoTrackCount,
     audioTrackCount: state.audioTrackCount,
     operationsByClip: state.operationsByClip,
+    linkedGroups: state.linkedGroups,
     transitions: state.transitions,
     audioFades: state.audioFades,
     selectClip: state.selectClip,
@@ -156,8 +159,13 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
     const el = containerRef.current
     if (!el) return
 
+    let scrollFrame = 0
     const handleScroll = (): void => {
-      setScrollLeft(el.scrollLeft)
+      if (scrollFrame) return
+      scrollFrame = requestAnimationFrame(() => {
+        scrollFrame = 0
+        setScrollLeft(el.scrollLeft)
+      })
     }
     el.addEventListener('scroll', handleScroll, { passive: true })
 
@@ -166,6 +174,7 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
 
     return () => {
       el.removeEventListener('scroll', handleScroll)
+      if (scrollFrame) cancelAnimationFrame(scrollFrame)
       resizeObserver.disconnect()
     }
   }, [updateContainerRect])
@@ -194,6 +203,13 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
   const videoClips = useMemo(() => visibleClips.filter((clip) => clip.track === 'video'), [visibleClips])
   const audioClips = useMemo(() => visibleClips.filter((clip) => clip.track === 'audio'), [visibleClips])
   const visibleClipIds = useMemo(() => new Set(visibleClips.map((clip) => clip.id)), [visibleClips])
+  const selectedClipIdSet = useMemo(() => new Set(selectedClipIds), [selectedClipIds])
+  const clipById = useMemo(() => new Map(clips.map((clip) => [clip.id, clip])), [clips])
+  const groupClipCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    clips.forEach((clip) => counts.set(clip.groupId, (counts.get(clip.groupId) || 0) + 1))
+    return counts
+  }, [clips])
 
   // Click on empty area = seek
   const handleBackgroundClick = useCallback(
@@ -315,6 +331,13 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
     [handleWheel, isDragging]
   )
 
+  const focusTimelineSurface = useCallback((event: React.PointerEvent<HTMLDivElement>): void => {
+    const target = event.target
+    if (!(target instanceof Element)) return
+    if (target.closest('[data-timeline-clip], [data-local-delete], button, input, select, textarea, [role="menuitem"]')) return
+    event.currentTarget.focus({ preventScroll: true })
+  }, [])
+
   if (timelineDuration <= 0) return null
 
   return (
@@ -372,8 +395,12 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
         {/* Right: Scrollable timeline area */}
         <div
           ref={containerRef}
-          className="relative min-h-0 flex-1 overflow-x-auto overflow-y-hidden select-none"
+          tabIndex={-1}
+          data-editor-shortcut-surface
+          aria-label={t('时间线编辑区', 'Timeline editor')}
+          className="relative min-h-0 flex-1 overflow-x-auto overflow-y-hidden select-none outline-none"
           style={{ height: '100%' }}
+          onPointerDown={focusTimelineSurface}
           onWheel={handleWheelWithLock}
           onDragOver={handleDragOver}
           onDragLeave={(event) => {
@@ -451,11 +478,8 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
                 clip={clip}
                 trackTopY={trackAreaTop + clip.trackIndex * (trackHeight + trackGap)}
                 timeToX={timeToX}
-                xToTime={xToTime}
                 pixelsPerSecond={pixelsPerSecond}
-                seekTo={seekTo}
                 snap={snap}
-                scrollLeft={scrollLeft}
                 containerRect={containerRect}
                 trackType="video"
                 trackCount={videoTrackCount}
@@ -464,6 +488,11 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
                 trackGap={trackGap}
                 onDragStateChange={setIsDragging}
                 onClipContextMenu={openContextMenu}
+                clipOperations={operationsByClip[clip.id] || EMPTY_OPERATIONS}
+                isSelected={selectedClipIdSet.has(clip.id)}
+                isPrimary={selectedClipId === clip.id}
+                isLinked={linkedGroups[clip.groupId] !== false}
+                groupClipCount={groupClipCounts.get(clip.groupId) || 1}
               />
             ))}
 
@@ -474,11 +503,8 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
                 clip={clip}
                 trackTopY={audioTrackTop + clip.trackIndex * (trackHeight + trackGap)}
                 timeToX={timeToX}
-                xToTime={xToTime}
                 pixelsPerSecond={pixelsPerSecond}
-                seekTo={seekTo}
                 snap={snap}
-                scrollLeft={scrollLeft}
                 containerRect={containerRect}
                 trackType="audio"
                 trackCount={audioTrackCount}
@@ -487,11 +513,16 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
                 trackGap={trackGap}
                 onDragStateChange={setIsDragging}
                 onClipContextMenu={openContextMenu}
+                clipOperations={operationsByClip[clip.id] || EMPTY_OPERATIONS}
+                isSelected={selectedClipIdSet.has(clip.id)}
+                isPrimary={selectedClipId === clip.id}
+                isLinked={linkedGroups[clip.groupId] !== false}
+                groupClipCount={groupClipCounts.get(clip.groupId) || 1}
               />
             ))}
 
             {transitions.filter((transition) => visibleClipIds.has(transition.leftClipId) || visibleClipIds.has(transition.rightClipId)).map((transition) => {
-              const leftClip = clips.find((clip) => clip.id === transition.leftClipId)
+              const leftClip = clipById.get(transition.leftClipId)
               if (!leftClip) return null
               return (
                 <TimelineTransitionBlock
@@ -509,7 +540,7 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
             })}
 
             {audioFades.filter((fade) => visibleClipIds.has(fade.clipId)).map((fade) => {
-              const audioClip = clips.find((clip) => clip.id === fade.clipId)
+              const audioClip = clipById.get(fade.clipId)
               if (!audioClip) return null
               const fadeTrackTop = audioClip.track === 'audio'
                 ? audioTrackTop + audioClip.trackIndex * (trackHeight + trackGap)

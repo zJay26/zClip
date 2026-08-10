@@ -3,7 +3,9 @@
 </p>
 
 <p align="center">
-  <img src="./docs/icon/zClip.png" alt="zClip icon" width="96" />
+  <a href="https://github.com/zJay26/zClip/releases/latest">
+    <img src="./docs/icon/zClip.png" alt="zClip icon" width="144" />
+  </a>
 </p>
 
 <h1 align="center">zClip</h1>

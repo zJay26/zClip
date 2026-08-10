@@ -4,6 +4,7 @@
 
 import React from 'react'
 import { useProjectStore } from '../../stores/project-store'
+import { useShallow } from 'zustand/react/shallow'
 import ParamSlider from '../common/ParamSlider'
 import { Button, SectionCard } from '../ui'
 import { usePreferences } from '../../contexts/preferences'
@@ -14,9 +15,11 @@ interface PitchControlProps {
 
 const PitchControl: React.FC<PitchControlProps> = ({ hideHeader = false }) => {
   const { t } = usePreferences()
-  const { getAudioOperationsForSelection, setPitch } = useProjectStore()
-  const audioOps = getAudioOperationsForSelection()
-  const pitchOp = audioOps.find((op) => op.type === 'pitch')
+  const { audioOperations, setPitch } = useProjectStore(useShallow((state) => ({
+    audioOperations: state.getAudioOperationsForSelection(),
+    setPitch: state.setPitch
+  })))
+  const pitchOp = audioOperations.find((op) => op.type === 'pitch')
   const percent = pitchOp ? (pitchOp.params as { percent: number }).percent : 100
 
   const content = (

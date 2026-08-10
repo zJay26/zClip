@@ -32,8 +32,9 @@
     "check:native": "node ./scripts/check-native-tools.mjs",
     "check:packaged": "node ./scripts/check-packaged-app.mjs",
     "docs:assets": "node ./scripts/capture-readme-assets.mjs",
-    "audit:prod": "npm audit --audit-level=high",
-    "check": "npm test && npm run audit:prod && npm run check:native && npm run build",
+    "audit:dependencies": "npm audit --audit-level=high",
+    "audit:prod": "npm run audit:dependencies",
+    "check": "npm test && npm run audit:dependencies && npm run check:native && npm run build",
     "test:ui:update": "vitest run -u",
     "readme:generate": "node ./scripts/generate-readme.mjs",
     "release:prepare": "npm run readme:generate && npm run check",
@@ -73,8 +74,14 @@
     "@electron/fuses": "2.1.3",
     "@babel/core": "^7.29.7",
     "form-data": "^4.0.6",
+    "js-yaml": "4.3.1",
+    "nanoid": "3.3.18",
     "picomatch@2.3.1": "2.3.2",
     "tmp": "0.2.7",
+    "undici": "7.29.0",
+    "node-gyp": {
+      "undici": "6.28.0"
+    },
     "readdirp": {
       "picomatch": "2.3.2"
     },
@@ -113,6 +120,10 @@
       "THIRD_PARTY_NOTICES.md"
     ],
     "extraResources": [
+      {
+        "from": "build/zClip.ico",
+        "to": "zClip.ico"
+      },
       {
         "from": "build/ffmpeg/ffmpeg.exe",
         "to": "ffmpeg/ffmpeg.exe"

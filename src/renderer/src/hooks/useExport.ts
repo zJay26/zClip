@@ -4,6 +4,7 @@
 
 import { useEffect, useCallback, useRef } from 'react'
 import { useProjectStore } from '../stores/project-store'
+import { useShallow } from 'zustand/react/shallow'
 import type {
   ExportCustomOptions,
   ExportOptions,
@@ -44,12 +45,27 @@ export function useExport(opts?: UseExportOptions) {
     setExporting,
     setExportProgress,
     showToast
-  } = useProjectStore()
+  } = useProjectStore(useShallow((state) => ({
+    mediaInfo: state.mediaInfo,
+    operations: state.operations,
+    clips: state.clips,
+    selectedClipIds: state.selectedClipIds,
+    operationsByClip: state.operationsByClip,
+    transitions: state.transitions,
+    audioFades: state.audioFades,
+    projectSettings: state.projectSettings,
+    exporting: state.exporting,
+    exportProgress: state.exportProgress,
+    setExporting: state.setExporting,
+    setExportProgress: state.setExportProgress,
+    showToast: state.showToast
+  })))
 
   // Use ref so the IPC listener always sees the latest callback
   const onCompleteRef = useRef(opts?.onComplete)
   onCompleteRef.current = opts?.onComplete
   const errorEventSeenRef = useRef(false)
+  const completionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Listen for export events from main process
   useEffect(() => {
@@ -61,7 +77,9 @@ export function useExport(opts?: UseExportOptions) {
       setExportProgress(null)
       showToast(translate(`导出完成：${outputPath}`, `Export complete: ${outputPath}`), 'success')
       // Auto-close dialog after a short delay so user can see 100%
-      setTimeout(() => {
+      if (completionTimerRef.current) clearTimeout(completionTimerRef.current)
+      completionTimerRef.current = setTimeout(() => {
+        completionTimerRef.current = null
         onCompleteRef.current?.()
       }, 600)
     })
@@ -76,6 +94,10 @@ export function useExport(opts?: UseExportOptions) {
       unsubProgress()
       unsubComplete()
       unsubError()
+      if (completionTimerRef.current) {
+        clearTimeout(completionTimerRef.current)
+        completionTimerRef.current = null
+      }
     }
   }, [setExporting, setExportProgress, showToast])
 
@@ -89,6 +111,10 @@ export function useExport(opts?: UseExportOptions) {
       customOptions?: ExportCustomOptions
     ): Promise<boolean> => {
       if (!mediaInfo && clips.length === 0) return false
+      if (completionTimerRef.current) {
+        clearTimeout(completionTimerRef.current)
+        completionTimerRef.current = null
+      }
 
       let exportClips = clips
       let exportOpsByClip = operationsByClip
@@ -183,6 +209,10 @@ export function useExport(opts?: UseExportOptions) {
   )
 
   const cancelExport = useCallback(() => {
+    if (completionTimerRef.current) {
+      clearTimeout(completionTimerRef.current)
+      completionTimerRef.current = null
+    }
     window.api.cancelExport()
     setExporting(false)
     setExportProgress(null)

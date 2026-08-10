@@ -16,6 +16,8 @@ const resourcesDirectory = path.join(appDirectory, 'resources')
 const nativeDirectory = path.join(resourcesDirectory, 'ffmpeg')
 const appPath = path.join(appDirectory, 'zClip.exe')
 const appAsarPath = path.join(resourcesDirectory, 'app.asar')
+const packagedIconPath = path.join(resourcesDirectory, 'zClip.ico')
+const sourceIconPath = path.join(repoRoot, 'build', 'zClip.ico')
 const ffmpegPath = path.join(nativeDirectory, 'ffmpeg.exe')
 const ffprobePath = path.join(nativeDirectory, 'ffprobe.exe')
 const expectedHashes = new Map([
@@ -47,7 +49,16 @@ async function smokeTestPackagedApp() {
       )
     }
   } finally {
-    await fs.rm(userDataPath, { recursive: true, force: true })
+    // Electron's logging thread can release electron.log a moment after the
+    // smoke-test process exits on Windows. Let fs.rm retry transient EBUSY /
+    // EPERM failures instead of turning a successful launch into a flaky CI
+    // failure.
+    await fs.rm(userDataPath, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 150
+    })
   }
 }
 
@@ -75,6 +86,8 @@ function reportsVersion(binaryPath, tool) {
 for (const filePath of [
   appPath,
   appAsarPath,
+  packagedIconPath,
+  sourceIconPath,
   ffmpegPath,
   ffprobePath,
   path.join(nativeDirectory, 'LICENSE'),
@@ -85,6 +98,10 @@ for (const filePath of [
 for (const [binaryPath, expectedHash] of expectedHashes) {
   const actualHash = await fileSha256(binaryPath)
   if (actualHash !== expectedHash) throw new Error(`Packaged native binary hash mismatch: ${binaryPath}`)
+}
+
+if (await fileSha256(packagedIconPath) !== await fileSha256(sourceIconPath)) {
+  throw new Error('Packaged app icon does not match build/zClip.ico')
 }
 
 const source = JSON.parse(await fs.readFile(path.join(nativeDirectory, 'SOURCE.json'), 'utf8'))
@@ -114,4 +131,4 @@ for (const [fuse, expectedState] of expectedFuses) {
 
 await smokeTestPackagedApp()
 
-console.log('Packaged app verified: startup/shutdown, ASAR, hardened Electron fuses, FFmpeg/FFprobe 8.1.2 hashes, source, and licenses.')
+console.log('Packaged app verified: startup/shutdown, app icon, ASAR, hardened Electron fuses, FFmpeg/FFprobe 8.1.2 hashes, source, and licenses.')

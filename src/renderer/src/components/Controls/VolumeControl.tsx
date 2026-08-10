@@ -4,6 +4,7 @@
 
 import React from 'react'
 import { useProjectStore } from '../../stores/project-store'
+import { useShallow } from 'zustand/react/shallow'
 import ParamSlider from '../common/ParamSlider'
 import { Button, SectionCard } from '../ui'
 import { usePreferences } from '../../contexts/preferences'
@@ -14,9 +15,11 @@ interface VolumeControlProps {
 
 const VolumeControl: React.FC<VolumeControlProps> = ({ hideHeader = false }) => {
   const { t } = usePreferences()
-  const { getAudioOperationsForSelection, setVolume } = useProjectStore()
-  const audioOps = getAudioOperationsForSelection()
-  const volumeOp = audioOps.find((op) => op.type === 'volume')
+  const { audioOperations, setVolume } = useProjectStore(useShallow((state) => ({
+    audioOperations: state.getAudioOperationsForSelection(),
+    setVolume: state.setVolume
+  })))
+  const volumeOp = audioOperations.find((op) => op.type === 'volume')
   const percent = volumeOp ? (volumeOp.params as { percent: number }).percent : 100
 
   const content = (

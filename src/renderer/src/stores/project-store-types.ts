@@ -146,6 +146,7 @@ export interface ProjectStore {
 
   showToast: (message: string, type?: 'info' | 'success' | 'error') => void
   clearToast: () => void
+  clearError: () => void
 
   saveProject: () => Promise<boolean>
   saveProjectAs: () => Promise<boolean>

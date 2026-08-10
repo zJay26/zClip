@@ -25,6 +25,7 @@ describe('renderer asset protocol', () => {
       expect(html.status).toBe(200)
       expect(html.headers.get('cache-control')).toBe('no-store')
       expect(html.headers.get('content-security-policy')).toContain("script-src 'self'")
+      expect(html.headers.get('content-security-policy')).toContain("frame-ancestors 'none'")
       expect(html.headers.get('x-content-type-options')).toBe('nosniff')
       expect(await html.text()).toBe('<!doctype html>')
 

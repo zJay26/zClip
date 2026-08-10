@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import type { AudioFadeSegment, MediaOperation, TimelineClip } from '../../../../shared/types'
 import { getClipTimelineRange } from '../../../../shared/timeline-utils'
 import { useProjectStore } from '../../stores/project-store'
+import { useShallow } from 'zustand/react/shallow'
 import { usePreferences } from '../../contexts/preferences'
 
 interface TimelineAudioFadeBlockProps {
@@ -28,7 +29,12 @@ const TimelineAudioFadeBlock: React.FC<TimelineAudioFadeBlockProps> = ({
   onDragStateChange
 }) => {
   const { t } = usePreferences()
-  const { updateAudioFade, deleteAudioFade, beginHistoryTransaction, commitHistoryTransaction } = useProjectStore()
+  const { updateAudioFade, deleteAudioFade, beginHistoryTransaction, commitHistoryTransaction } = useProjectStore(useShallow((state) => ({
+    updateAudioFade: state.updateAudioFade,
+    deleteAudioFade: state.deleteAudioFade,
+    beginHistoryTransaction: state.beginHistoryTransaction,
+    commitHistoryTransaction: state.commitHistoryTransaction
+  })))
   const [dragging, setDragging] = useState<Edge | null>(null)
   const dragRef = useRef({ clientX: 0, startOffset: 0, endOffset: 0 })
 
@@ -91,7 +97,11 @@ const TimelineAudioFadeBlock: React.FC<TimelineAudioFadeBlockProps> = ({
 
   return (
     <div
-      className="absolute z-30 overflow-hidden rounded-sm border border-cyan-200/80 bg-cyan-500/35 text-[10px] font-semibold text-white shadow-[0_0_8px_rgba(34,211,238,0.25)]"
+      role="group"
+      tabIndex={0}
+      data-local-delete
+      aria-label={t(`${label}，按 Delete 删除`, `${label}; press Delete to remove`)}
+      className="absolute z-30 overflow-hidden rounded-sm border border-cyan-200/80 bg-cyan-500/35 text-[10px] font-semibold text-white shadow-[0_0_8px_rgba(34,211,238,0.25)] outline-none focus-visible:ring-2 focus-visible:ring-white"
       style={{
         top: trackTopY + verticalInset,
         left,
@@ -100,6 +110,11 @@ const TimelineAudioFadeBlock: React.FC<TimelineAudioFadeBlockProps> = ({
       }}
       onDoubleClick={(event) => {
         event.stopPropagation()
+        deleteAudioFade(fade.id)
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== 'Delete' && event.key !== 'Backspace') return
+        event.preventDefault()
         deleteAudioFade(fade.id)
       }}
       title={t('双击删除音频淡化', 'Double-click to delete audio fade')}
@@ -126,4 +141,4 @@ const TimelineAudioFadeBlock: React.FC<TimelineAudioFadeBlockProps> = ({
   )
 }
 
-export default TimelineAudioFadeBlock
+export default React.memo(TimelineAudioFadeBlock)

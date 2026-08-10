@@ -1,5 +1,6 @@
 import React from 'react'
 import { useProjectStore } from '../../stores/project-store'
+import { useShallow } from 'zustand/react/shallow'
 import type { TransformParams } from '../../../../shared/types'
 import ParamSlider from '../common/ParamSlider'
 import { Button } from '../ui'
@@ -18,7 +19,12 @@ const DEFAULT_TRANSFORM: TransformParams = {
 
 const TransformControl: React.FC = () => {
   const { t } = usePreferences()
-  const { operations, clips, selectedClipId, setTransform } = useProjectStore()
+  const { operations, clips, selectedClipId, setTransform } = useProjectStore(useShallow((state) => ({
+    operations: state.operations,
+    clips: state.clips,
+    selectedClipId: state.selectedClipId,
+    setTransform: state.setTransform
+  })))
   const selectedClip = selectedClipId ? clips.find((clip) => clip.id === selectedClipId) : null
   if (!selectedClip || selectedClip.track !== 'video') {
     return <p className="text-xs text-text-muted">{t('请选择视频片段调整构图。', 'Select a video clip to adjust its framing.')}</p>

@@ -1,5 +1,6 @@
 import React from 'react'
 import { useProjectStore } from '../../stores/project-store'
+import { useShallow } from 'zustand/react/shallow'
 import type { CanvasPreset, CanvasSettings } from '../../../../shared/types'
 import { Button } from '../ui'
 import { usePreferences } from '../../contexts/preferences'
@@ -15,7 +16,10 @@ const FRAME_RATES = [24, 25, 30, 50, 60] as const
 
 const CanvasControl: React.FC = () => {
   const { t } = usePreferences()
-  const { projectSettings, setProjectSettings } = useProjectStore()
+  const { projectSettings, setProjectSettings } = useProjectStore(useShallow((state) => ({
+    projectSettings: state.projectSettings,
+    setProjectSettings: state.setProjectSettings
+  })))
   const canvas = projectSettings.canvas
 
   const updateCanvas = (patch: Partial<CanvasSettings>): void => {

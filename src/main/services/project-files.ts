@@ -84,49 +84,65 @@ export async function getRecentProjects(): Promise<RecentProject[]> {
 }
 
 export async function addRecentProject(filePath: string): Promise<RecentProject[]> {
-  await ensureProjectStateDir()
-  const recents = await getRecentProjects()
-  const normalized = path.normalize(filePath)
-  const next: RecentProject[] = [
-    {
-      filePath: normalized,
-      name: path.basename(normalized, path.extname(normalized)) || '未命名项目',
-      updatedAt: new Date().toISOString()
-    },
-    ...recents.filter((item) => pathKey(item.filePath) !== pathKey(normalized))
-  ].slice(0, RECENT_LIMIT)
-  await queuedAtomicWrite(getRecentProjectsPath(), `${JSON.stringify(next, null, 2)}\n`)
-  return next
+  const recentProjectsPath = getRecentProjectsPath()
+  return queuedFileOperation(recentProjectsPath, async () => {
+    await ensureProjectStateDir()
+    const recents = await getRecentProjects()
+    const normalized = path.normalize(filePath)
+    const next: RecentProject[] = [
+      {
+        filePath: normalized,
+        name: path.basename(normalized, path.extname(normalized)) || '未命名项目',
+        updatedAt: new Date().toISOString()
+      },
+      ...recents.filter((item) => pathKey(item.filePath) !== pathKey(normalized))
+    ].slice(0, RECENT_LIMIT)
+    await atomicWrite(recentProjectsPath, `${JSON.stringify(next, null, 2)}\n`)
+    return next
+  })
 }
 
 export async function removeRecentProject(filePath: string): Promise<RecentProject[]> {
-  await ensureProjectStateDir()
-  const normalized = path.normalize(filePath)
-  const next = (await getRecentProjects()).filter(
-    (item) => pathKey(item.filePath) !== pathKey(normalized)
-  )
-  await queuedAtomicWrite(getRecentProjectsPath(), `${JSON.stringify(next, null, 2)}\n`)
-  return next
+  const recentProjectsPath = getRecentProjectsPath()
+  return queuedFileOperation(recentProjectsPath, async () => {
+    await ensureProjectStateDir()
+    const normalized = path.normalize(filePath)
+    const next = (await getRecentProjects()).filter(
+      (item) => pathKey(item.filePath) !== pathKey(normalized)
+    )
+    await atomicWrite(recentProjectsPath, `${JSON.stringify(next, null, 2)}\n`)
+    return next
+  })
 }
 
 export async function writeAutosave(data: ProjectData): Promise<void> {
-  await ensureProjectStateDir()
   const autosaveData: ProjectData = {
     ...sanitizeProjectForPersistence(data),
     schemaVersion: PROJECT_SCHEMA_VERSION,
     savedAt: new Date().toISOString()
   }
   if (!isProjectData(autosaveData)) throw new Error('自动保存数据校验失败')
-  await queuedAtomicWrite(getAutosavePath(), `${JSON.stringify(autosaveData, null, 2)}\n`)
+  const autosavePath = getAutosavePath()
+  await queuedFileOperation(autosavePath, async () => {
+    await atomicWrite(autosavePath, `${JSON.stringify(autosaveData, null, 2)}\n`)
+  })
 }
 
 async function queuedAtomicWrite(filePath: string, contents: string, keepBackup = false): Promise<void> {
+  await queuedFileOperation(filePath, () => atomicWrite(filePath, contents, keepBackup))
+}
+
+async function queuedFileOperation<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
   const queueKey = pathKey(filePath)
   const previous = writeQueues.get(queueKey) ?? Promise.resolve()
-  const next = previous.catch(() => undefined).then(() => atomicWrite(filePath, contents, keepBackup))
+  let result!: T
+  const next = previous.catch(() => undefined).then(async () => {
+    result = await operation()
+  })
   writeQueues.set(queueKey, next)
   try {
     await next
+    return result
   } finally {
     if (writeQueues.get(queueKey) === next) writeQueues.delete(queueKey)
   }
@@ -163,9 +179,12 @@ export async function readAutosave(): Promise<ProjectData | null> {
 }
 
 export async function clearAutosave(): Promise<void> {
-  try {
-    await fs.unlink(getAutosavePath())
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-  }
+  const autosavePath = getAutosavePath()
+  await queuedFileOperation(autosavePath, async () => {
+    try {
+      await fs.unlink(autosavePath)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+  })
 }

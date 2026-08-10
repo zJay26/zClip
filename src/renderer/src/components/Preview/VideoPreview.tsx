@@ -584,13 +584,30 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
   if (clips.length === 0) {
     return (
       <div className="relative flex flex-1 items-center justify-center overflow-hidden rounded-lg border border-border-subtle bg-bg-canvas">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_42%,rgb(var(--accent)/0.08),transparent_36%)]" />
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 opacity-40"
+          style={{
+            backgroundImage: 'linear-gradient(rgb(var(--border-subtle) / 0.18) 1px, transparent 1px), linear-gradient(90deg, rgb(var(--border-subtle) / 0.18) 1px, transparent 1px)',
+            backgroundSize: '32px 32px'
+          }}
+        />
         <div className="relative max-w-md px-8 text-center">
-          <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-xl border border-border-subtle bg-panel/80 text-accent-soft shadow-panel">
-            <Film aria-hidden size={28} strokeWidth={1.45} />
+          <div aria-hidden className="mx-auto mb-6 w-72 overflow-hidden rounded-lg border border-border bg-panel/90 shadow-panel">
+            <div className="relative flex h-24 items-center justify-center bg-bg-canvas">
+              <Film size={24} strokeWidth={1.35} className="text-text-muted" />
+              <span className="absolute bottom-2 right-3 font-mono text-[9px] tabular-nums text-text-muted">00:00:00</span>
+            </div>
+            <div className="relative h-16 border-t border-border-subtle bg-panel-muted/75">
+              <div className="absolute left-3 right-3 top-3 h-3 rounded-xs border border-timeline-video/35 bg-timeline-video/20" />
+              <div className="absolute left-3 right-12 top-9 h-2.5 rounded-xs border border-timeline-audio/35 bg-timeline-audio/20" />
+              <div className="absolute bottom-0 left-[38%] top-0 w-px bg-danger shadow-[0_0_5px_rgb(var(--danger)/0.45)]">
+                <span className="absolute -left-[4px] top-0 h-0 w-0 border-x-[4px] border-t-[6px] border-x-transparent border-t-danger" />
+              </div>
+            </div>
           </div>
-          <h1 className="text-xl font-semibold tracking-[-0.025em] text-text-primary">{t('开始创作', 'Start creating')}</h1>
-          <p className="mt-2 text-sm leading-relaxed text-text-secondary">{t('导入视频或音频，把素材拖到窗口中的任意位置也可以。', 'Import video or audio, or drag media anywhere into the window.')}</p>
+          <h1 className="text-xl font-semibold tracking-[-0.025em] text-text-primary">{t('把第一段素材放上时间线', 'Put your first clip on the timeline')}</h1>
+          <p className="mt-2 text-sm leading-relaxed text-text-secondary">{t('选择视频或音频，或直接从资源管理器拖到窗口中。', 'Choose video or audio, or drag it here from File Explorer.')}</p>
           <Button className="mt-5" size="lg" variant="primary" leadingIcon={<Upload aria-hidden size={17} strokeWidth={1.75} />} onClick={onOpenFiles}>
             {t('导入媒体', 'Import media')}
           </Button>
