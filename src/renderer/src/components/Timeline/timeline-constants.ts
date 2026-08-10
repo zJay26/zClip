@@ -7,11 +7,20 @@ export const TRACK_HEIGHT = 48
 export const TRACK_GAP = 4
 export const GROUP_GAP = 8
 export const HANDLE_WIDTH = 8
+export const DRAG_THRESHOLD_PX = 8
 export const MIN_ZOOM = 0.5
 export const MAX_ZOOM = 80
 export const SNAP_THRESHOLD_PX = 10
 export const HEADER_WIDTH = 72
 export const TIMELINE_TAIL_PX = 220
+
+export function hasPassedDragThreshold(
+  deltaX: number,
+  deltaY: number,
+  threshold = DRAG_THRESHOLD_PX
+): boolean {
+  return Math.hypot(deltaX, deltaY) >= threshold
+}
 
 export interface AdaptiveTrackLayout {
   trackHeight: number

@@ -1,5 +1,6 @@
 import React from 'react'
 import { useProjectStore } from '../../stores/project-store'
+import { useShallow } from 'zustand/react/shallow'
 import { getClipTimelineRange } from '../../../../shared/timeline-utils'
 import { formatTime } from '../../lib/utils'
 import { Button } from '../ui'
@@ -15,7 +16,15 @@ const FadeControl: React.FC = () => {
     audioFades,
     addAudioFade,
     deleteAudioFade
-  } = useProjectStore()
+  } = useProjectStore(useShallow((state) => ({
+    clips: state.clips,
+    operationsByClip: state.operationsByClip,
+    selectedClipId: state.selectedClipId,
+    linkedGroups: state.linkedGroups,
+    audioFades: state.audioFades,
+    addAudioFade: state.addAudioFade,
+    deleteAudioFade: state.deleteAudioFade
+  })))
 
   const selectedClip = selectedClipId ? clips.find((clip) => clip.id === selectedClipId) : null
   const targetAudioClip =

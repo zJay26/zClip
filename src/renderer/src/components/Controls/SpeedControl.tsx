@@ -4,6 +4,7 @@
 
 import React from 'react'
 import { useProjectStore } from '../../stores/project-store'
+import { useShallow } from 'zustand/react/shallow'
 import ParamSlider from '../common/ParamSlider'
 import { Button, SectionCard } from '../ui'
 import { usePreferences } from '../../contexts/preferences'
@@ -14,7 +15,10 @@ interface SpeedControlProps {
 
 const SpeedControl: React.FC<SpeedControlProps> = ({ hideHeader = false }) => {
   const { t } = usePreferences()
-  const { operations, setSpeed } = useProjectStore()
+  const { operations, setSpeed } = useProjectStore(useShallow((state) => ({
+    operations: state.operations,
+    setSpeed: state.setSpeed
+  })))
   const speedOp = operations.find((op) => op.type === 'speed')
   const rate = speedOp ? (speedOp.params as { rate: number }).rate : 1.0
 

@@ -6,6 +6,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useExport, type ExportScope } from '../../hooks/useExport'
 import { useProjectStore } from '../../stores/project-store'
+import { useShallow } from 'zustand/react/shallow'
 import type {
   ExportCustomOptions,
   ExportFormat,
@@ -203,7 +204,12 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
   const configureScrollRef = useRef<HTMLDivElement>(null)
   const prevFormatRef = useRef<ExportFormat>(format)
   const etaEstimatorRef = useRef<{ percent: number; ts: number; etaSec: number | null } | null>(null)
-  const { mediaInfo, clips, selectedClipIds, timelineDuration } = useProjectStore()
+  const { mediaInfo, clips, selectedClipIds, timelineDuration } = useProjectStore(useShallow((state) => ({
+    mediaInfo: state.mediaInfo,
+    clips: state.clips,
+    selectedClipIds: state.selectedClipIds,
+    timelineDuration: state.timelineDuration
+  })))
   const hasAnyVideo = clips.some((clip) => clip.track === 'video' && clip.mediaInfo.hasVideo)
   const isAudioOnly = clips.length > 0 ? !hasAnyVideo : mediaInfo ? !mediaInfo.hasVideo : false
   const selectedClips = clips.filter((clip) => selectedClipIds.includes(clip.id))

@@ -50,7 +50,7 @@ src/shared/        # 共享类型与纯工具函数（两端共用）
 
 - **布局**：`AppLayout.tsx` — 主框架（键盘快捷键、拖拽导入、自动保存、工具栏 + 预览 + 时间轴）
 - **组件**：`Timeline/*`、`Controls/*`（Trim、Speed、Volume、Pitch、Transform、Fade、Canvas）、`Preview/VideoPreview`、`Export/ExportDialog`
-- **Hooks**：`useVideoPlayer.ts` — requestAnimationFrame 驱动的时间轴播放头及音频同步；`useAudioPlaybackEngine.ts` — Web Audio API + soundtouchjs 实现变速不变调播放；`useExport.ts` — 导出生命周期（对话框、IPC 事件、进度）
+- **Hooks**：`useVideoPlayer.ts` — requestAnimationFrame 驱动的时间轴播放头及音频同步；`useAudioPlaybackEngine.ts` — Web Audio API 混音，并按需使用 FFmpeg 音调代理；`useExport.ts` — 导出生命周期（对话框、IPC 事件、进度）
 - **Store 辅助**：`project-store-helpers.ts` — 快照/恢复、裁剪边界、轨道管理；`timeline-overlap.ts` — 片段重叠碰撞解决；`merge-selection.ts` — 片段合并校验逻辑
 - **UI 基础组件**位于 `components/ui/`：Button、Badge、Dialog、Panel、SectionCard、ProgressBar
 
@@ -66,6 +66,6 @@ src/shared/        # 共享类型与纯工具函数（两端共用）
 - **撤销/重做**使用基于快照的历史记录（`ProjectSnapshot`），存储在 `historyPast[]` / `historyFuture[]` 中
 - **链接组**在移动、裁剪、删除、变速等操作中保持视频+音频配对同步
 - **时间轴重叠解决**（`resolveClipOverlaps`）自动将重叠片段向右推；活动片段（正在拖拽/裁剪的）拥有优先权
-- **音频播放**正常播放使用 `<audio>` 元素，变调片段使用 soundtouchjs `PitchShifter`，两者均通过 Web Audio API 路由以实现增益控制
+- **音频播放**使用受数量上限约束的 `<audio>` 控制器与 Web Audio API 完成多轨混音、音量和淡化；变调片段按需生成并复用 FFmpeg 音调代理
 - **导出进度**从 FFmpeg stderr 解析（`time=` 和 `speed=` 正则），ETA 通过最近样本中位数平滑
 - **路径别名**：`@shared` → `src/shared`，`@renderer` → `src/renderer/src`

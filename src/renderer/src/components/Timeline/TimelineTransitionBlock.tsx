@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import type { MediaOperation, TimelineClip, TimelineTransition } from '../../../../shared/types'
 import { getClipTimelineRange } from '../../../../shared/timeline-utils'
 import { useProjectStore } from '../../stores/project-store'
+import { useShallow } from 'zustand/react/shallow'
 import { TRANSITION_EFFECTS } from '../Controls/TransitionControl'
 import { usePreferences } from '../../contexts/preferences'
 
@@ -29,7 +30,12 @@ const TimelineTransitionBlock: React.FC<TimelineTransitionBlockProps> = ({
   onDragStateChange
 }) => {
   const { t } = usePreferences()
-  const { updateTransition, deleteTransition, beginHistoryTransaction, commitHistoryTransaction } = useProjectStore()
+  const { updateTransition, deleteTransition, beginHistoryTransaction, commitHistoryTransaction } = useProjectStore(useShallow((state) => ({
+    updateTransition: state.updateTransition,
+    deleteTransition: state.deleteTransition,
+    beginHistoryTransaction: state.beginHistoryTransaction,
+    commitHistoryTransaction: state.commitHistoryTransaction
+  })))
   const [dragging, setDragging] = useState<Edge | null>(null)
   const dragRef = useRef({ clientX: 0, startOffset: 0, endOffset: 0 })
 
@@ -88,6 +94,7 @@ const TimelineTransitionBlock: React.FC<TimelineTransitionBlockProps> = ({
   const boundaryX = timeToX(timing.boundary) - left
   const verticalInset = Math.min(8, Math.max(1, trackHeight * 0.16))
   const effect = TRANSITION_EFFECTS.find((item) => item.type === transition.type)
+  const label = effect ? t(effect.label, effect.labelEn) : t('转场', 'Transition')
 
   const startDrag = (event: React.MouseEvent, edge: Edge): void => {
     event.preventDefault()
@@ -103,7 +110,11 @@ const TimelineTransitionBlock: React.FC<TimelineTransitionBlockProps> = ({
 
   return (
     <div
-      className="absolute z-30 overflow-hidden rounded-sm border border-violet-300/80 bg-violet-500/45 text-[10px] text-white shadow-[0_0_10px_rgba(139,92,246,0.35)]"
+      role="group"
+      tabIndex={0}
+      data-local-delete
+      aria-label={t(`${label}，按 Delete 删除`, `${label}; press Delete to remove`)}
+      className="absolute z-30 overflow-hidden rounded-sm border border-violet-300/80 bg-violet-500/45 text-[10px] text-white shadow-[0_0_10px_rgba(139,92,246,0.35)] outline-none focus-visible:ring-2 focus-visible:ring-white"
       style={{
         top: trackTopY + verticalInset,
         left,
@@ -112,6 +123,11 @@ const TimelineTransitionBlock: React.FC<TimelineTransitionBlockProps> = ({
       }}
       onDoubleClick={(event) => {
         event.stopPropagation()
+        deleteTransition(transition.id)
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== 'Delete' && event.key !== 'Backspace') return
+        event.preventDefault()
         deleteTransition(transition.id)
       }}
       title={t('双击删除转场', 'Double-click to delete transition')}
@@ -129,10 +145,10 @@ const TimelineTransitionBlock: React.FC<TimelineTransitionBlockProps> = ({
         style={{ left: boundaryX }}
       />
       <div className="flex h-full items-center justify-center px-3 font-semibold">
-        {effect ? t(effect.label, effect.labelEn) : t('转场', 'Transition')}
+        {label}
       </div>
     </div>
   )
 }
 
-export default TimelineTransitionBlock
+export default React.memo(TimelineTransitionBlock)

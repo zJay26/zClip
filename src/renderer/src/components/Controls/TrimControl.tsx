@@ -4,6 +4,7 @@
 
 import React, { useState, useCallback } from 'react'
 import { useProjectStore } from '../../stores/project-store'
+import { useShallow } from 'zustand/react/shallow'
 import { formatTime, parseTime, clamp } from '../../lib/utils'
 import type { TrimParams, SpeedParams } from '../../../../shared/types'
 import { SectionCard } from '../ui'
@@ -15,7 +16,13 @@ interface TrimControlProps {
 
 const TrimControl: React.FC<TrimControlProps> = ({ hideHeader = false }) => {
   const { t } = usePreferences()
-  const { operations, duration, setTrim, clips, selectedClipId } = useProjectStore()
+  const { operations, duration, setTrim, clips, selectedClipId } = useProjectStore(useShallow((state) => ({
+    operations: state.operations,
+    duration: state.duration,
+    setTrim: state.setTrim,
+    clips: state.clips,
+    selectedClipId: state.selectedClipId
+  })))
   const selectedClip = selectedClipId ? clips.find((clip) => clip.id === selectedClipId) : null
 
   const trimOp = operations.find((op) => op.type === 'trim')

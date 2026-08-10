@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'vitest'
-import { RULER_HEIGHT, getAdaptiveTrackLayout } from '../components/Timeline/timeline-constants'
+import {
+  RULER_HEIGHT,
+  getAdaptiveTrackLayout,
+  hasPassedDragThreshold
+} from '../components/Timeline/timeline-constants'
 
 describe('adaptive timeline track layout', () => {
   test('fills the available track area exactly', () => {
@@ -19,5 +23,11 @@ describe('adaptive timeline track layout', () => {
     expect(compact.trackHeight).toBeLessThan(roomy.trackHeight)
     expect(compact.videoAreaHeight + compact.groupGap + compact.audioAreaHeight)
       .toBeCloseTo(viewportHeight - RULER_HEIGHT, 8)
+  })
+
+  test('starts a drag from vertical movement as well as horizontal movement', () => {
+    expect(hasPassedDragThreshold(0, 9)).toBe(true)
+    expect(hasPassedDragThreshold(9, 0)).toBe(true)
+    expect(hasPassedDragThreshold(5, 5)).toBe(false)
   })
 })

@@ -13,6 +13,13 @@ import InspectorPanel from './InspectorPanel'
 import OverlayStack from './OverlayStack'
 import { Button, Dialog } from '../ui'
 import { clamp } from '../../lib/utils'
+import {
+  hasBlockingKeyboardLayer,
+  isTextEditingTarget,
+  shouldPreserveDeleteKeys,
+  shouldPreserveDirectionalKeys,
+  shouldPreserveNativeSpace
+} from '../../lib/keyboard-shortcuts'
 import { translate, usePreferences } from '../../contexts/preferences'
 import type { AppCloseDecision, CacheStats, ProjectData } from '../../../../shared/types'
 
@@ -117,6 +124,7 @@ const AppLayout: React.FC = () => {
     missingMediaPaths,
     recentProjects,
     clearToast,
+    clearError,
     showToast,
     openFiles,
     loadFiles,
@@ -156,6 +164,7 @@ const AppLayout: React.FC = () => {
     missingMediaPaths: state.missingMediaPaths,
     recentProjects: state.recentProjects,
     clearToast: state.clearToast,
+    clearError: state.clearError,
     showToast: state.showToast,
     openFiles: state.openFiles,
     loadFiles: state.loadFiles,
@@ -190,6 +199,7 @@ const AppLayout: React.FC = () => {
   const resizeCleanupRef = useRef<(() => void) | null>(null)
   const exportButtonRef = useRef<HTMLButtonElement>(null)
   const closeResolverRef = useRef<((decision: AppCloseDecision) => void) | null>(null)
+  const spaceShortcutActiveRef = useRef(false)
 
   const {
     videoRef,
@@ -298,13 +308,14 @@ const AppLayout: React.FC = () => {
 
   // ---- Keyboard shortcuts ----
   useEffect(() => {
-    const isTextEditableTarget = (target: EventTarget | null): boolean => {
-      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return true
-      if (target instanceof HTMLElement && target.isContentEditable) return true
-      return false
-    }
     const handler = (e: KeyboardEvent): void => {
+      if (hasBlockingKeyboardLayer()) return
       if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+        if ((loading || merging) && (e.code === 'KeyS' || e.code === 'KeyO' || e.code === 'KeyN')) {
+          e.preventDefault()
+          e.stopPropagation()
+          return
+        }
         if (e.code === 'KeyS') {
           e.preventDefault()
           if (clips.length > 0) void (e.shiftKey ? saveProjectAs() : saveProject())
@@ -322,20 +333,16 @@ const AppLayout: React.FC = () => {
         }
       }
       if (e.code === 'Space') {
-        if (isTextEditableTarget(e.target)) return
-        // Capture and override browser/button default "Space triggers click".
+        if (shouldPreserveNativeSpace(e.target)) return
         e.preventDefault()
         e.stopPropagation()
-        const activeEl = document.activeElement
-        if (activeEl instanceof HTMLButtonElement) {
-          activeEl.blur()
-        }
-        if (!e.repeat && !merging) {
+        if (!e.repeat && !loading && !merging) {
+          spaceShortcutActiveRef.current = true
           togglePlay()
         }
         return
       }
-      if (merging) {
+      if (loading || merging) {
         e.preventDefault()
         e.stopPropagation()
         return
@@ -358,86 +365,60 @@ const AppLayout: React.FC = () => {
           }
           break
         case 'KeyJ':
-          if (
-            e.target instanceof HTMLInputElement ||
-            e.target instanceof HTMLTextAreaElement
-          )
-            return
+          if (isTextEditingTarget(e.target)) return
           step(-5)
           break
         case 'KeyK':
-          if (
-            e.target instanceof HTMLInputElement ||
-            e.target instanceof HTMLTextAreaElement
-          )
-            return
+          if (isTextEditingTarget(e.target)) return
           togglePlay()
           break
         case 'KeyL':
-          if (
-            e.target instanceof HTMLInputElement ||
-            e.target instanceof HTMLTextAreaElement
-          )
-            return
+          if (isTextEditingTarget(e.target)) return
           step(5)
           break
         case 'KeyC':
           if (e.ctrlKey || e.metaKey) {
-            if (isTextEditableTarget(e.target)) return
+            if (isTextEditingTarget(e.target)) return
             e.preventDefault()
             copySelectedClips()
             return
           }
           // Razor tool: split at playhead
-          if (isTextEditableTarget(e.target)) return
+          if (isTextEditingTarget(e.target)) return
           splitClipAtPlayhead()
           break
         case 'KeyX':
           if (!(e.ctrlKey || e.metaKey)) break
-          if (isTextEditableTarget(e.target)) return
+          if (isTextEditingTarget(e.target)) return
           e.preventDefault()
           cutSelectedClips()
           break
         case 'KeyV':
           if (!(e.ctrlKey || e.metaKey)) break
-          if (isTextEditableTarget(e.target)) return
+          if (isTextEditingTarget(e.target)) return
           e.preventDefault()
           pasteCopiedClips()
           break
         case 'Delete':
         case 'Backspace':
-          if (isTextEditableTarget(e.target)) return
+          if (shouldPreserveDeleteKeys(e.target)) return
           deleteSelectedClips()
           break
         case 'ArrowLeft':
-          if (e.target instanceof HTMLElement && e.target.closest('[data-preview-transform-handle]')) return
-          if (
-            e.target instanceof HTMLInputElement ||
-            e.target instanceof HTMLTextAreaElement
-          )
-            return
+          if (shouldPreserveDirectionalKeys(e.target)) return
           step(e.shiftKey ? -1 : -frameStep)
           break
         case 'ArrowRight':
-          if (e.target instanceof HTMLElement && e.target.closest('[data-preview-transform-handle]')) return
-          if (
-            e.target instanceof HTMLInputElement ||
-            e.target instanceof HTMLTextAreaElement
-          )
-            return
+          if (shouldPreserveDirectionalKeys(e.target)) return
           step(e.shiftKey ? 1 : frameStep)
           break
       }
     }
     const keyupHandler = (e: KeyboardEvent): void => {
-      if (e.code === 'Space') {
-        e.preventDefault()
-        e.stopPropagation()
-        const activeEl = document.activeElement
-        if (activeEl instanceof HTMLElement) {
-          activeEl.blur()
-        }
-      }
+      if (e.code !== 'Space' || !spaceShortcutActiveRef.current) return
+      spaceShortcutActiveRef.current = false
+      e.preventDefault()
+      e.stopPropagation()
     }
     window.addEventListener('keydown', handler, true)
     window.addEventListener('keyup', keyupHandler, true)
@@ -456,6 +437,7 @@ const AppLayout: React.FC = () => {
     selectedClipIds,
     undo,
     redo,
+    loading,
     merging,
     frameStep,
     clips.length,
@@ -777,6 +759,7 @@ const AppLayout: React.FC = () => {
         error={error}
         toast={toast}
         clearToast={clearToast}
+        clearError={clearError}
       />
 
       {autosavePrompt && (

@@ -10,6 +10,7 @@ import FadeControl from '../Controls/FadeControl'
 import TransitionControl from '../Controls/TransitionControl'
 import { InspectorSection, SegmentedControl } from '../ui'
 import { useProjectStore } from '../../stores/project-store'
+import { useShallow } from 'zustand/react/shallow'
 import { clamp, formatTime } from '../../lib/utils'
 import { usePreferences } from '../../contexts/preferences'
 import type { SpeedParams, VolumeParams, PitchParams } from '../../../../shared/types'
@@ -75,16 +76,24 @@ function readInitialTab(): InspectorTab {
 const InspectorPanel: React.FC = () => {
   const { t } = usePreferences()
   const {
-    operations, getAudioOperationsForSelection, setSpeed, setVolume, setPitch,
+    operations, audioOperations, setSpeed, setVolume, setPitch,
     selectedClipId, selectedClipIds, clips
-  } = useProjectStore()
+  } = useProjectStore(useShallow((state) => ({
+    operations: state.operations,
+    audioOperations: state.getAudioOperationsForSelection(),
+    setSpeed: state.setSpeed,
+    setVolume: state.setVolume,
+    setPitch: state.setPitch,
+    selectedClipId: state.selectedClipId,
+    selectedClipIds: state.selectedClipIds,
+    clips: state.clips
+  })))
   const [tab, setTab] = useState<InspectorTab>(readInitialTab)
   const selectedClip = selectedClipId ? clips.find((clip) => clip.id === selectedClipId) ?? null : null
   const speedOp = operations.find((op) => op.type === 'speed')
   const speedRate = speedOp ? (speedOp.params as SpeedParams).rate : 1
-  const audioOps = getAudioOperationsForSelection()
-  const volumeOp = audioOps.find((op) => op.type === 'volume')
-  const pitchOp = audioOps.find((op) => op.type === 'pitch')
+  const volumeOp = audioOperations.find((op) => op.type === 'volume')
+  const pitchOp = audioOperations.find((op) => op.type === 'pitch')
   const volumePercent = volumeOp ? (volumeOp.params as VolumeParams).percent : 100
   const pitchPercent = pitchOp ? (pitchOp.params as PitchParams).percent : 100
   const hasAudio = Boolean(selectedClip?.mediaInfo.hasAudio)

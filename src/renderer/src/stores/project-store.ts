@@ -50,6 +50,14 @@ import { translate } from '../contexts/preferences'
 
 let mergeOutputSequence = 1
 let pendingHistoryTransaction: ProjectSnapshot | null = null
+let toastTimer: ReturnType<typeof setTimeout> | null = null
+let importQueue: Promise<void> = Promise.resolve()
+
+function cancelToastTimer(): void {
+  if (!toastTimer) return
+  clearTimeout(toastTimer)
+  toastTimer = null
+}
 
 async function mapWithConcurrency<T, R>(items: T[], concurrency: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(items.length)
@@ -425,140 +433,145 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
     }
   },
 
-  loadFiles: async (filePaths: string[]) => {
-    const stateBeforeImport = get()
-    set({ loading: true, error: null })
-    try {
-      const existingClips = stateBeforeImport.clips
-      let timelineEnd = getTimelineDuration(existingClips, stateBeforeImport.operationsByClip)
-      const { videoTrackCount, audioTrackCount } = stateBeforeImport
-      let videoClipCounter = existingClips.filter((clip) => clip.track === 'video').length
-      let audioClipCounter = existingClips.filter((clip) => clip.track === 'audio').length
-      const newClips: TimelineClip[] = []
-      const newOperationsByClip: Record<string, MediaOperation[]> = {}
-      const newLinkedGroups: Record<string, boolean> = {}
+  loadFiles: (filePaths: string[]) => {
+    const requestedPaths = [...filePaths]
+    const task = importQueue.catch(() => undefined).then(async () => {
+      const stateBeforeImport = get()
+      set({ loading: true, error: null })
+      try {
+        const existingClips = stateBeforeImport.clips
+        let timelineEnd = getTimelineDuration(existingClips, stateBeforeImport.operationsByClip)
+        const { videoTrackCount, audioTrackCount } = stateBeforeImport
+        let videoClipCounter = existingClips.filter((clip) => clip.track === 'video').length
+        let audioClipCounter = existingClips.filter((clip) => clip.track === 'audio').length
+        const newClips: TimelineClip[] = []
+        const newOperationsByClip: Record<string, MediaOperation[]> = {}
+        const newLinkedGroups: Record<string, boolean> = {}
 
-      const probed = await mapWithConcurrency(filePaths, 3, async (filePath) => ({
-        filePath,
-        result: await window.api.getMediaInfo(filePath)
-      }))
-      const failures = probed.filter(({ result }) => !result.success || !result.data)
+        const probed = await mapWithConcurrency(requestedPaths, 3, async (filePath) => ({
+          filePath,
+          result: await window.api.getMediaInfo(filePath)
+        }))
+        const failures = probed.filter(({ result }) => !result.success || !result.data)
 
-      for (const { filePath, result } of probed) {
-        if (!result.success || !result.data) continue
-        const info = result.data
-        const groupId = uid()
-        newLinkedGroups[groupId] = true
-        const startTime = timelineEnd
-        const duration = info.duration
+        for (const { filePath, result } of probed) {
+          if (!result.success || !result.data) continue
+          const info = result.data
+          const groupId = uid()
+          newLinkedGroups[groupId] = true
+          const startTime = timelineEnd
+          const duration = info.duration
 
-        if (info.hasVideo) {
-          const trackIndex = videoTrackCount > 0 ? videoClipCounter % videoTrackCount : 0
-          const clip: TimelineClip = {
-            id: uid(),
-            groupId,
-            filePath,
-            startTime,
-            duration,
-            trimBoundStart: 0,
-            trimBoundEnd: duration,
-            track: 'video',
-            trackIndex,
-            mediaInfo: info
+          if (info.hasVideo) {
+            const trackIndex = videoTrackCount > 0 ? videoClipCounter % videoTrackCount : 0
+            const clip: TimelineClip = {
+              id: uid(),
+              groupId,
+              filePath,
+              startTime,
+              duration,
+              trimBoundStart: 0,
+              trimBoundEnd: duration,
+              track: 'video',
+              trackIndex,
+              mediaInfo: info
+            }
+            newClips.push(clip)
+            newOperationsByClip[clip.id] = createDefaultOperations(duration)
+            videoClipCounter += 1
           }
-          newClips.push(clip)
-          newOperationsByClip[clip.id] = createDefaultOperations(duration)
-          videoClipCounter += 1
+          if (info.hasAudio) {
+            const trackIndex = audioTrackCount > 0 ? audioClipCounter % audioTrackCount : 0
+            const clip: TimelineClip = {
+              id: uid(),
+              groupId,
+              filePath,
+              startTime,
+              duration,
+              trimBoundStart: 0,
+              trimBoundEnd: duration,
+              track: 'audio',
+              trackIndex,
+              mediaInfo: info
+            }
+            newClips.push(clip)
+            newOperationsByClip[clip.id] = createDefaultOperations(duration)
+            audioClipCounter += 1
+          }
+
+          timelineEnd = Math.max(timelineEnd, startTime + duration)
         }
-        if (info.hasAudio) {
-          const trackIndex = audioTrackCount > 0 ? audioClipCounter % audioTrackCount : 0
-          const clip: TimelineClip = {
-            id: uid(),
-            groupId,
-            filePath,
-            startTime,
-            duration,
-            trimBoundStart: 0,
-            trimBoundEnd: duration,
-            track: 'audio',
-            trackIndex,
-            mediaInfo: info
-          }
-          newClips.push(clip)
-          newOperationsByClip[clip.id] = createDefaultOperations(duration)
-          audioClipCounter += 1
+
+        const mergedClips = [...existingClips, ...newClips]
+        if (newClips.length === 0) {
+          set({ loading: false, error: null })
+          return
         }
 
-        timelineEnd = Math.max(timelineEnd, startTime + duration)
-      }
+        const combinedOps = { ...stateBeforeImport.operationsByClip, ...newOperationsByClip }
+        const resolvedClips = resolveClipOverlaps(
+          mergedClips,
+          combinedOps,
+          new Set(newClips.map((clip) => clip.id)),
+          { ...stateBeforeImport.linkedGroups, ...newLinkedGroups }
+        )
+        const nextSelectedClipId =
+          stateBeforeImport.selectedClipId ||
+          newClips.find((clip) => clip.track === 'video')?.id ||
+          newClips[0]?.id ||
+          null
+        const selectedClip = getSelectedClip(resolvedClips, nextSelectedClipId)
+        const historyPast = appendHistory(stateBeforeImport.historyPast, takeSnapshot(stateBeforeImport))
 
-      const mergedClips = [...existingClips, ...newClips]
-      if (newClips.length === 0) {
-        set({ loading: false, error: null })
-        return
-      }
-
-      const combinedOps = { ...stateBeforeImport.operationsByClip, ...newOperationsByClip }
-      const resolvedClips = resolveClipOverlaps(
-        mergedClips,
-        combinedOps,
-        new Set(newClips.map((clip) => clip.id)),
-        { ...stateBeforeImport.linkedGroups, ...newLinkedGroups }
-      )
-      const nextSelectedClipId =
-        stateBeforeImport.selectedClipId ||
-        newClips.find((clip) => clip.track === 'video')?.id ||
-        newClips[0]?.id ||
-        null
-      const selectedClip = getSelectedClip(resolvedClips, nextSelectedClipId)
-      const historyPast = appendHistory(stateBeforeImport.historyPast, takeSnapshot(stateBeforeImport))
-
-      set({
-        clips: resolvedClips,
-        selectedClipId: nextSelectedClipId,
-        selectedClipIds: nextSelectedClipId ? [nextSelectedClipId] : [],
-        lastSelectedClipId: nextSelectedClipId,
-        timelineDuration: getTimelineDuration(resolvedClips, combinedOps),
-        operationsByClip: combinedOps,
-        linkedGroups: { ...stateBeforeImport.linkedGroups, ...newLinkedGroups },
-        historyPast,
-        historyFuture: [],
-        operations: selectedClip ? (combinedOps[selectedClip.id] || []) : [],
-        sourceFile: selectedClip?.filePath ?? null,
-        mediaInfo: selectedClip?.mediaInfo ?? null,
-        duration: selectedClip?.duration ?? 0,
-        currentTime: selectedClip ? selectedClip.startTime : stateBeforeImport.currentTime,
-        playing: false,
-        loading: false,
-        error: null
-      })
-
-      setDocumentTitle(selectedClip?.filePath ?? null, mergedClips.length)
-      if (failures.length > 0) {
-        get().showToast(translate(`已导入素材，但有 ${failures.length} 个文件失败`, `Media imported, but ${failures.length} file(s) failed`), 'error')
-      }
-
-      const importedPaths = Array.from(new Set(newClips.map((clip) => clip.filePath)))
-      void Promise.all(importedPaths.map(async (filePath) => {
-        const playback = await window.api.preparePlayback(filePath).catch(() => ({ success: false }))
-        set((state) => {
-          return {
-            clips: state.clips.map((clip) => clip.filePath === filePath
-              ? { ...clip, mediaInfo: applyPlaybackResult(clip.mediaInfo, filePath, playback) }
-              : clip),
-            mediaInfo: state.mediaInfo?.filePath === filePath
-              ? applyPlaybackResult(state.mediaInfo, filePath, playback)
-              : state.mediaInfo,
-            projectDirty: state.projectDirty
-          }
+        set({
+          clips: resolvedClips,
+          selectedClipId: nextSelectedClipId,
+          selectedClipIds: nextSelectedClipId ? [nextSelectedClipId] : [],
+          lastSelectedClipId: nextSelectedClipId,
+          timelineDuration: getTimelineDuration(resolvedClips, combinedOps),
+          operationsByClip: combinedOps,
+          linkedGroups: { ...stateBeforeImport.linkedGroups, ...newLinkedGroups },
+          historyPast,
+          historyFuture: [],
+          operations: selectedClip ? (combinedOps[selectedClip.id] || []) : [],
+          sourceFile: selectedClip?.filePath ?? null,
+          mediaInfo: selectedClip?.mediaInfo ?? null,
+          duration: selectedClip?.duration ?? 0,
+          currentTime: selectedClip ? selectedClip.startTime : stateBeforeImport.currentTime,
+          playing: false,
+          loading: false,
+          error: null
         })
-      })).catch(() => {})
-    } catch (err) {
-      set({
-        error: err instanceof Error ? err.message : 'Failed to load files',
-        loading: false
-      })
-    }
+
+        setDocumentTitle(selectedClip?.filePath ?? null, mergedClips.length)
+        if (failures.length > 0) {
+          get().showToast(translate(`已导入素材，但有 ${failures.length} 个文件失败`, `Media imported, but ${failures.length} file(s) failed`), 'error')
+        }
+
+        const importedPaths = Array.from(new Set(newClips.map((clip) => clip.filePath)))
+        void Promise.all(importedPaths.map(async (filePath) => {
+          const playback = await window.api.preparePlayback(filePath).catch(() => ({ success: false }))
+          set((state) => {
+            return {
+              clips: state.clips.map((clip) => clip.filePath === filePath
+                ? { ...clip, mediaInfo: applyPlaybackResult(clip.mediaInfo, filePath, playback) }
+                : clip),
+              mediaInfo: state.mediaInfo?.filePath === filePath
+                ? applyPlaybackResult(state.mediaInfo, filePath, playback)
+                : state.mediaInfo,
+              projectDirty: state.projectDirty
+            }
+          })
+        })).catch(() => {})
+      } catch (err) {
+        set({
+          error: err instanceof Error ? err.message : 'Failed to load files',
+          loading: false
+        })
+      }
+    })
+    importQueue = task
+    return task
   },
 
   openFile: async () => {
@@ -675,7 +688,14 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
 
   moveClip: (clipId, patch, options) =>
     set((state) => {
-      const clip = state.clips.find((c) => c.id === clipId)
+      const clipsById = new Map(state.clips.map((item) => [item.id, item]))
+      const clipsByGroup = new Map<string, TimelineClip[]>()
+      state.clips.forEach((item) => {
+        const group = clipsByGroup.get(item.groupId)
+        if (group) group.push(item)
+        else clipsByGroup.set(item.groupId, [item])
+      })
+      const clip = clipsById.get(clipId)
       if (!clip) return state
       const shouldRecordHistory = options?.recordHistory !== false
       const historyPast = shouldRecordHistory
@@ -690,15 +710,13 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
       const addLinkedGroup = (baseClip: TimelineClip): void => {
         const isLinked = state.linkedGroups[baseClip.groupId] !== false
         if (!isLinked) return
-        state.clips.forEach((c) => {
-          if (c.groupId === baseClip.groupId) affectedIds.add(c.id)
-        })
+        clipsByGroup.get(baseClip.groupId)?.forEach((item) => affectedIds.add(item.id))
       }
 
       if (isMulti && delta !== 0) {
         state.selectedClipIds.forEach((id) => affectedIds.add(id))
         state.selectedClipIds.forEach((id) => {
-          const base = state.clips.find((c) => c.id === id)
+          const base = clipsById.get(id)
           if (base) addLinkedGroup(base)
         })
       } else {
@@ -1358,11 +1376,32 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
   toggleGroupLink: (groupId) =>
     set((state) => {
       const historyPast = appendHistory(state.historyPast, takeSnapshot(state))
+      const nextLinked = !(state.linkedGroups[groupId] !== false)
+      const primaryClip = state.selectedClipId
+        ? state.clips.find((clip) => clip.id === state.selectedClipId)
+        : undefined
+      let selectedClipIds = state.selectedClipIds
+
+      if (primaryClip?.groupId === groupId) {
+        if (nextLinked) {
+          selectedClipIds = Array.from(new Set([
+            ...state.selectedClipIds,
+            ...state.clips.filter((clip) => clip.groupId === groupId).map((clip) => clip.id)
+          ]))
+        } else {
+          selectedClipIds = state.selectedClipIds.filter((id) => {
+            if (id === state.selectedClipId) return true
+            return state.clips.find((clip) => clip.id === id)?.groupId !== groupId
+          })
+        }
+      }
+
       return {
         linkedGroups: {
           ...state.linkedGroups,
-          [groupId]: !(state.linkedGroups[groupId] !== false)
+          [groupId]: nextLinked
         },
+        selectedClipIds,
         historyPast,
         historyFuture: []
       }
@@ -1821,31 +1860,49 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
   setExportProgress: (exportProgress) => set({ exportProgress }),
 
   showToast: (message, type = 'info') => {
+    cancelToastTimer()
     set({ toast: { message, type } })
-    setTimeout(() => {
-      set((state) => (state.toast?.message === message ? { toast: null } : state))
+    toastTimer = setTimeout(() => {
+      toastTimer = null
+      set({ toast: null })
     }, 3500)
   },
-  clearToast: () => set({ toast: null }),
+  clearToast: () => {
+    cancelToastTimer()
+    set({ toast: null })
+  },
+  clearError: () => set({ error: null }),
 
   saveProject: async () => {
     try {
       const state = get()
+      const savedRevision = state.documentRevision
       const filePath =
         state.projectFilePath ||
         (await window.api.showProjectSaveDialog(`${projectNameFromPath(state.sourceFile)}.zclip`))
       if (!filePath) return false
       const result = await window.api.saveProjectFile(filePath, buildProjectData(state))
       if (!result.success) throw new Error(result.error || translate('未知错误', 'Unknown error'))
-      set({ projectFilePath: filePath, projectDirty: false })
+      let savedLatestRevision = false
+      set((current) => {
+        savedLatestRevision = current.documentRevision === savedRevision
+        return {
+          projectFilePath: filePath,
+          projectDirty: savedLatestRevision ? false : current.projectDirty
+        }
+      })
       let autosaveCleanupFailed = false
-      await get().clearAutosave().catch(() => { autosaveCleanupFailed = true })
+      if (savedLatestRevision) {
+        await get().clearAutosave().catch(() => { autosaveCleanupFailed = true })
+      }
       await get().refreshRecentProjects().catch(() => {})
       get().showToast(
-        autosaveCleanupFailed
+        !savedLatestRevision
+          ? translate('项目已保存，但保存期间产生了新改动', 'Project saved, but newer changes still need saving')
+          : autosaveCleanupFailed
           ? translate('项目已保存，但旧自动保存未能清理', 'Project saved, but the previous autosave could not be cleared')
           : translate('项目已保存', 'Project saved'),
-        autosaveCleanupFailed ? 'info' : 'success'
+        !savedLatestRevision || autosaveCleanupFailed ? 'info' : 'success'
       )
       return true
     } catch (error) {
@@ -1859,19 +1916,32 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
 
   saveProjectAs: async () => {
     try {
+      const state = get()
+      const savedRevision = state.documentRevision
       const filePath = await window.api.showProjectSaveDialog(`${projectNameFromPath(get().projectFilePath)}.zclip`)
       if (!filePath) return false
-      const result = await window.api.saveProjectFile(filePath, buildProjectData(get()))
+      const result = await window.api.saveProjectFile(filePath, buildProjectData(state))
       if (!result.success) throw new Error(result.error || translate('未知错误', 'Unknown error'))
-      set({ projectFilePath: filePath, projectDirty: false })
+      let savedLatestRevision = false
+      set((current) => {
+        savedLatestRevision = current.documentRevision === savedRevision
+        return {
+          projectFilePath: filePath,
+          projectDirty: savedLatestRevision ? false : current.projectDirty
+        }
+      })
       let autosaveCleanupFailed = false
-      await get().clearAutosave().catch(() => { autosaveCleanupFailed = true })
+      if (savedLatestRevision) {
+        await get().clearAutosave().catch(() => { autosaveCleanupFailed = true })
+      }
       await get().refreshRecentProjects().catch(() => {})
       get().showToast(
-        autosaveCleanupFailed
+        !savedLatestRevision
+          ? translate('项目已另存，但保存期间产生了新改动', 'Project saved as a new file, but newer changes still need saving')
+          : autosaveCleanupFailed
           ? translate('项目已另存，但旧自动保存未能清理', 'Project saved as a new file, but the previous autosave could not be cleared')
           : translate('项目已另存', 'Project saved as a new file'),
-        autosaveCleanupFailed ? 'info' : 'success'
+        !savedLatestRevision || autosaveCleanupFailed ? 'info' : 'success'
       )
       return true
     } catch (error) {
@@ -2191,6 +2261,7 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
 
   reset: () => {
     pendingHistoryTransaction = null
+    cancelToastTimer()
     set({
       clips: [],
       transitions: [],
@@ -2221,6 +2292,7 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
       exporting: false,
       exportProgress: null,
       merging: false,
+      toast: null,
       missingMediaPaths: []
     })
     setDocumentTitle(null, 0)

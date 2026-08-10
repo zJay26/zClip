@@ -302,8 +302,8 @@ export function useVideoPlayer() {
       lastTickRef.current = now
 
       const timelineTime = currentTimeRef.current
-      if (timelineTime >= timelineDuration) {
-        const endTime = timelineDuration > 0 ? Math.max(0, timelineDuration - 0.0001) : 0
+      const endTime = timelineDuration > 0 ? Math.max(0, timelineDuration - 0.0001) : 0
+      if (timelineDuration <= 0 || timelineTime >= endTime) {
         commitTimelineTime(endTime)
         setPlaying(false)
         playingRef.current = false

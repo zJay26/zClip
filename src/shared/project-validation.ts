@@ -116,8 +116,11 @@ export function isProjectData(value: unknown): value is ProjectData {
   if (!object(value.operationsByClip) || !object(value.linkedGroups)) return false
   const clipIds = new Set(value.clips.map((item) => item.id))
   if (clipIds.size !== value.clips.length) return false
+  const clipsById = new Map(value.clips.map((item) => [item.id, item]))
   const operationIds = new Set<string>()
-  for (const [clipId, operations] of Object.entries(value.operationsByClip)) {
+  const operationEntries = Object.entries(value.operationsByClip)
+  if (operationEntries.length > value.clips.length) return false
+  for (const [clipId, operations] of operationEntries) {
     if (!clipIds.has(clipId) || !Array.isArray(operations) || operations.length > 100 || !operations.every(isMediaOperation)) return false
     const operationTypes = new Set<string>()
     for (const operation of operations) {
@@ -125,7 +128,7 @@ export function isProjectData(value: unknown): value is ProjectData {
       operationIds.add(operation.id)
       operationTypes.add(operation.type)
     }
-    const clip = value.clips.find((item) => item.id === clipId)
+    const clip = clipsById.get(clipId)
     const trim = operations.find((item) => item.type === 'trim')
     if (clip && trim) {
       const params = trim.params as { startTime: number; endTime: number }
@@ -134,8 +137,9 @@ export function isProjectData(value: unknown): value is ProjectData {
       if (params.startTime < min || params.endTime > max) return false
     }
   }
-  if (Object.entries(value.linkedGroups).some(([groupId, linked]) =>
-    groupId.length === 0 || groupId.length > 256 || typeof linked !== 'boolean'
+  const linkedGroupEntries = Object.entries(value.linkedGroups)
+  if (linkedGroupEntries.length > 20_000 || linkedGroupEntries.some(([groupId, linked]) =>
+    !validId(groupId) || typeof linked !== 'boolean'
   )) return false
   const transitions = value.transitions ?? []
   const fades = value.audioFades ?? []
@@ -146,8 +150,8 @@ export function isProjectData(value: unknown): value is ProjectData {
   const transitionIds = new Set<string>()
   const transitionPairs = new Set<string>()
   for (const transition of transitions) {
-    const left = value.clips.find((item) => item.id === transition.leftClipId)
-    const right = value.clips.find((item) => item.id === transition.rightClipId)
+    const left = clipsById.get(transition.leftClipId)
+    const right = clipsById.get(transition.rightClipId)
     const pair = `${transition.leftClipId}\0${transition.rightClipId}`
     if (!left || !right || left.track !== 'video' || right.track !== 'video' ||
         left.trackIndex !== right.trackIndex || left.startTime > right.startTime ||
@@ -158,7 +162,7 @@ export function isProjectData(value: unknown): value is ProjectData {
   const fadeIds = new Set<string>()
   const fadeTargets = new Set<string>()
   for (const fade of fades) {
-    const clip = value.clips.find((item) => item.id === fade.clipId)
+    const clip = clipsById.get(fade.clipId)
     const target = `${fade.clipId}\0${fade.kind}`
     if (!clip?.mediaInfo.hasAudio || fadeIds.has(fade.id) || fadeTargets.has(target)) return false
     const visibleDuration = getClipTimelineRange(clip, value.operationsByClip as Record<string, MediaOperation[]>).visibleDuration

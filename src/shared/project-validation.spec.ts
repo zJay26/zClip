@@ -81,4 +81,16 @@ describe('project validation', () => {
     value.currentTime = 6
     expect(isProjectData(value)).toBe(false)
   })
+
+  it('bounds and validates linked-group metadata', () => {
+    const invalidId = project()
+    invalidId.linkedGroups['bad\u0000group'] = true
+    expect(isProjectData(invalidId)).toBe(false)
+
+    const oversized = project()
+    oversized.linkedGroups = Object.fromEntries(
+      Array.from({ length: 20_001 }, (_, index) => [`group-${index}`, true])
+    )
+    expect(isProjectData(oversized)).toBe(false)
+  })
 })

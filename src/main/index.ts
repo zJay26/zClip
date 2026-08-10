@@ -202,6 +202,9 @@ protocol.registerSchemesAsPrivileged([
 
 function createWindow(): void {
   rendererReady = false
+  const appIconPath = app.isPackaged
+    ? join(process.resourcesPath, 'zClip.ico')
+    : join(__dirname, '../../build/zClip.ico')
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -210,6 +213,7 @@ function createWindow(): void {
     show: false,
     backgroundColor: '#0a0c10',
     titleBarStyle: 'default',
+    icon: appIconPath,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: true,
