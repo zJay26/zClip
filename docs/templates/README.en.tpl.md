@@ -92,11 +92,11 @@ Projects can be saved as `.zclip` files and reopened by double-clicking. Autosav
 
 ### What is new in {{TAG}}
 
-- Dark/light themes and Chinese/English switching, persisted locally
-- Systematic hardening of project files, media paths, IPC, and export handling
-- Verified temporary export files that preserve an existing destination after failure or cancellation
-- Lower memory pressure for long timelines, audio preview, and media caches
-- More reliable `.zclip` double-click opening, project FPS, media relinking, and save-before-exit behavior
+- Smoother cross-track timeline dragging with clearer selected-clip feedback
+- More reliable Space-to-play and Delete shortcuts after interacting with the timeline
+- Correct `LINKED` / `UNLINKED` states with reliable unlinking for imported media pairs
+- Automatic pause and play-button reset at the end of audio-only timelines
+- One refreshed zClip icon across the app, installer, and documentation
 
 ## What it does not try to replace
 

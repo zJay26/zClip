@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.5.0/zClip.Setup.2.5.0.exe"><strong>下载 Windows 安装包</strong></a>
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.5.1/zClip.Setup.2.5.1.exe"><strong>下载 Windows 安装包</strong></a>
   ·
   <a href="#先看效果">先看效果</a>
   ·
@@ -30,7 +30,7 @@
 </p>
 
 > [!WARNING]
-> `v2.5.0` 的 Windows 安装包尚未进行商业代码签名，Windows 可能显示“未知发布者”或 SmartScreen 提示。请只从本仓库 Releases 下载，并用同一页面的 `SHA256SUMS.txt` 核对文件；详情见[首次运行说明](#windows-首次运行提示)。
+> `v2.5.1` 的 Windows 安装包尚未进行商业代码签名，Windows 可能显示“未知发布者”或 SmartScreen 提示。请只从本仓库 Releases 下载，并用同一页面的 `SHA256SUMS.txt` 核对文件；详情见[首次运行说明](#windows-首次运行提示)。
 
 ## zClip 解决什么麻烦
 
@@ -61,17 +61,17 @@
 
 ## 下载
 
-当前版本：`2.5.0`，支持 Windows 10/11 x64。
+当前版本：`2.5.1`，支持 Windows 10/11 x64。
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.5.0/zClip.Setup.2.5.0.exe">
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.5.1/zClip.Setup.2.5.1.exe">
     <img src="https://img.shields.io/badge/下载_Windows_安装包-6D5DFB?style=for-the-badge&logo=windows&logoColor=white" alt="下载 Windows 安装包" />
   </a>
 </p>
 
-- [查看本版本说明](https://github.com/zJay26/zClip/releases/tag/v2.5.0)
-- [下载 SHA-256 校验和](https://github.com/zJay26/zClip/releases/download/v2.5.0/SHA256SUMS.txt)
-- [查看签名状态](https://github.com/zJay26/zClip/releases/download/v2.5.0/SIGNING_STATUS.txt)
+- [查看本版本说明](https://github.com/zJay26/zClip/releases/tag/v2.5.1)
+- [下载 SHA-256 校验和](https://github.com/zJay26/zClip/releases/download/v2.5.1/SHA256SUMS.txt)
+- [查看签名状态](https://github.com/zJay26/zClip/releases/download/v2.5.1/SIGNING_STATUS.txt)
 
 ## 三步开始剪辑
 
@@ -90,13 +90,13 @@
 - 使用七种转场，并直接在预览画面中拖动定位
 - 导出整条时间线、选中片段或自定义范围，显示进度、速度与预计剩余时间
 
-### v2.5.0 有什么新变化
+### v2.5.1 有什么新变化
 
-- 工具栏新增深色/浅色模式和中文/English 切换，选择会保存在本机
-- 项目读写、媒体路径和导出流程经过系统性安全加固
-- 导出采用临时文件验证后再替换目标，失败或取消不会破坏已有成品
-- 优化长时间线、音频预览和媒体缓存，减少大项目中的卡顿与内存占用
-- `.zclip` 双击打开、项目 FPS、素材重新定位和退出前保存流程更可靠
+- 时间轴片段跨轨拖动更流畅，选中反馈更醒目
+- 修复时间轴与功能区争夺键盘焦点，空格播放和 Delete 删除更可靠
+- `LINKED` / `UNLINKED` 状态与实际链接关系一致，并可正常取消链接
+- 纯音频时间线播放到结尾后会自动暂停并复位播放按钮
+- 应用、安装包和文档统一使用新的 zClip 图标
 
 ## 它不打算替代什么
 

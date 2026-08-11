@@ -4,6 +4,26 @@ All notable changes to zClip are documented in this file.
 
 ## [Unreleased]
 
+## [2.5.1] - 2026-08-11
+
+### Changed
+
+- Make timeline clip dragging smoother by coalescing pointer updates and reducing unnecessary store subscriptions and history pressure.
+- Strengthen the selected-clip treatment and route timeline keyboard actions consistently after timeline interaction.
+- Refresh the zClip brand icon across the Windows application, packaged resources, documentation, demos, and repository preview assets.
+- Enlarge and center the README icon while linking it directly to the latest release.
+
+### Fixed
+
+- Show `LINKED` for linked clips and `UNLINKED` for unlinked clips, and allow imported linked video/audio pairs to be unlinked reliably.
+- Pause playback and reset the play control when an audio-only timeline reaches its end.
+- Prevent inspector controls from retaining Space/Delete handling after a clip is selected on the timeline.
+- Harden project-file replacement and cache cleanup behavior around missing, stale, or locked paths.
+
+### Tests
+
+- Add regression coverage for audio-only playback completion, timeline keyboard routing, linked-clip interactions, control subscriptions, store notifications, project files, and cache cleanup.
+
 ## [2.5.0] - 2026-08-02
 
 ### Added
@@ -94,4 +114,5 @@ All notable changes to zClip are documented in this file.
 [2.3.0]: https://github.com/zJay26/zClip/compare/v2.2.1...v2.3.0
 [2.4.0]: https://github.com/zJay26/zClip/compare/v2.3.0...v2.4.0
 [2.5.0]: https://github.com/zJay26/zClip/compare/v2.4.0...v2.5.0
-[Unreleased]: https://github.com/zJay26/zClip/compare/v2.5.0...HEAD
+[2.5.1]: https://github.com/zJay26/zClip/compare/v2.5.0...v2.5.1
+[Unreleased]: https://github.com/zJay26/zClip/compare/v2.5.1...HEAD

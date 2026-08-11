@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.5.0/zClip.Setup.2.5.0.exe"><strong>Download for Windows</strong></a>
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.5.1/zClip.Setup.2.5.1.exe"><strong>Download for Windows</strong></a>
   ·
   <a href="#see-it-in-action">See the app</a>
   ·
@@ -30,7 +30,7 @@
 </p>
 
 > [!WARNING]
-> The Windows installer for `v2.5.0` is not commercially code-signed. Windows may show an “Unknown publisher” or SmartScreen warning. Download only from this repository and verify it with `SHA256SUMS.txt`; see [First launch on Windows](#first-launch-on-windows).
+> The Windows installer for `v2.5.1` is not commercially code-signed. Windows may show an “Unknown publisher” or SmartScreen warning. Download only from this repository and verify it with `SHA256SUMS.txt`; see [First launch on Windows](#first-launch-on-windows).
 
 ## The problems zClip is built for
 
@@ -61,17 +61,17 @@
 
 ## Download
 
-Current version: `2.5.0`. Supported platform: Windows 10/11 x64.
+Current version: `2.5.1`. Supported platform: Windows 10/11 x64.
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.5.0/zClip.Setup.2.5.0.exe">
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.5.1/zClip.Setup.2.5.1.exe">
     <img src="https://img.shields.io/badge/Download_for_Windows-6D5DFB?style=for-the-badge&logo=windows&logoColor=white" alt="Download for Windows" />
   </a>
 </p>
 
-- [Read the release notes](https://github.com/zJay26/zClip/releases/tag/v2.5.0)
-- [Download SHA-256 checksums](https://github.com/zJay26/zClip/releases/download/v2.5.0/SHA256SUMS.txt)
-- [Check the signing status](https://github.com/zJay26/zClip/releases/download/v2.5.0/SIGNING_STATUS.txt)
+- [Read the release notes](https://github.com/zJay26/zClip/releases/tag/v2.5.1)
+- [Download SHA-256 checksums](https://github.com/zJay26/zClip/releases/download/v2.5.1/SHA256SUMS.txt)
+- [Check the signing status](https://github.com/zJay26/zClip/releases/download/v2.5.1/SIGNING_STATUS.txt)
 
 ## Start editing in three steps
 
@@ -90,13 +90,13 @@ Projects can be saved as `.zclip` files and reopened by double-clicking. Autosav
 - Apply seven transitions and position footage directly in the preview
 - Export the full timeline, selected clips, or a custom range with progress, speed, and ETA
 
-### What is new in v2.5.0
+### What is new in v2.5.1
 
-- Dark/light themes and Chinese/English switching, persisted locally
-- Systematic hardening of project files, media paths, IPC, and export handling
-- Verified temporary export files that preserve an existing destination after failure or cancellation
-- Lower memory pressure for long timelines, audio preview, and media caches
-- More reliable `.zclip` double-click opening, project FPS, media relinking, and save-before-exit behavior
+- Smoother cross-track timeline dragging with clearer selected-clip feedback
+- More reliable Space-to-play and Delete shortcuts after interacting with the timeline
+- Correct `LINKED` / `UNLINKED` states with reliable unlinking for imported media pairs
+- Automatic pause and play-button reset at the end of audio-only timelines
+- One refreshed zClip icon across the app, installer, and documentation
 
 ## What it does not try to replace
 
