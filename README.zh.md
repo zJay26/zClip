@@ -11,7 +11,7 @@
 <h1 align="center">zClip</h1>
 
 <p align="center"><em>A local-first, offline Windows video editor without subscriptions.</em></p>
-<p align="center"><strong>偶尔只想剪一段视频，不必启动一整套专业软件，也不该在导出时才撞上会员墙。</strong></p>
+<p align="center"><strong>只想简单剪一段视频，不必启动一整套专业软件，也不该在导出时才被要求开通会员。</strong></p>
 <p align="center">zClip 是一款面向 Windows 的免费开源本地视频剪辑器：素材不上传，常用剪辑和导出在自己的电脑上完成。</p>
 
 <p align="center">
@@ -22,15 +22,15 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.5.1/zClip.Setup.2.5.1.exe"><strong>下载 Windows 安装包</strong></a>
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.6.0/zClip.Setup.2.6.0.exe"><strong>下载 Windows 安装包</strong></a>
   ·
-  <a href="#先看效果">先看效果</a>
+  <a href="#demo">Demo</a>
   ·
   <a href="#三步开始剪辑">三步上手</a>
 </p>
 
 > [!WARNING]
-> `v2.5.1` 的 Windows 安装包尚未进行商业代码签名，Windows 可能显示“未知发布者”或 SmartScreen 提示。请只从本仓库 Releases 下载，并用同一页面的 `SHA256SUMS.txt` 核对文件；详情见[首次运行说明](#windows-首次运行提示)。
+> `v2.6.0` 的 Windows 安装包尚未进行商业代码签名，Windows 可能显示“未知发布者”或 SmartScreen 提示。请只从本仓库 Releases 下载，并用同一页面的 `SHA256SUMS.txt` 核对文件；详情见[首次运行说明](#windows-首次运行提示)。
 
 ## zClip 解决什么麻烦
 
@@ -46,32 +46,25 @@
 - 在意隐私，希望素材留在本机的人
 - 想研究或二次开发一个完整 Electron + FFmpeg 桌面项目的开发者
 
-## 先看效果
-
-![zClip 深浅色界面与中英文切换](./docs/demo/overview.png)
-
-<details>
-<summary>查看导入、剪辑与导出的短演示</summary>
+## Demo
 
 <p align="center">
   <img src="./docs/demo/demo.webp" alt="zClip 操作演示" />
 </p>
 
-</details>
-
 ## 下载
 
-当前版本：`2.5.1`，支持 Windows 10/11 x64。
+当前版本：`2.6.0`，支持 Windows 10/11 x64。
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.5.1/zClip.Setup.2.5.1.exe">
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.6.0/zClip.Setup.2.6.0.exe">
     <img src="https://img.shields.io/badge/下载_Windows_安装包-6D5DFB?style=for-the-badge&logo=windows&logoColor=white" alt="下载 Windows 安装包" />
   </a>
 </p>
 
-- [查看本版本说明](https://github.com/zJay26/zClip/releases/tag/v2.5.1)
-- [下载 SHA-256 校验和](https://github.com/zJay26/zClip/releases/download/v2.5.1/SHA256SUMS.txt)
-- [查看签名状态](https://github.com/zJay26/zClip/releases/download/v2.5.1/SIGNING_STATUS.txt)
+- [查看本版本说明](https://github.com/zJay26/zClip/releases/tag/v2.6.0)
+- [下载 SHA-256 校验和](https://github.com/zJay26/zClip/releases/download/v2.6.0/SHA256SUMS.txt)
+- [查看签名状态](https://github.com/zJay26/zClip/releases/download/v2.6.0/SIGNING_STATUS.txt)
 
 ## 三步开始剪辑
 
@@ -90,13 +83,13 @@
 - 使用七种转场，并直接在预览画面中拖动定位
 - 导出整条时间线、选中片段或自定义范围，显示进度、速度与预计剩余时间
 
-### v2.5.1 有什么新变化
+### v2.6.0 有什么新变化
 
-- 时间轴片段跨轨拖动更流畅，选中反馈更醒目
-- 修复时间轴与功能区争夺键盘焦点，空格播放和 Delete 删除更可靠
-- `LINKED` / `UNLINKED` 状态与实际链接关系一致，并可正常取消链接
-- 纯音频时间线播放到结尾后会自动暂停并复位播放按钮
-- 应用、安装包和文档统一使用新的 zClip 图标
+- 重做转场播放衔接，消除剪辑点黑帧、跳变和音画卡顿
+- 转场拖放范围更直观，选中反馈与参数面板更明确，替换效果时保留时长
+- 修复取消链接并删除音频后仍播放原音频的问题
+- 大幅优化高倍速片段、普通顺序片段、GIF、WebP、VP9 和擦除转场的导出速度
+- 自动探测可用的 NVENC、QSV、AMF 硬件编码器，失败时安全回退软件编码
 
 ## 它不打算替代什么
 

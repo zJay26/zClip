@@ -197,7 +197,12 @@ export function runFFmpeg(
       if (code === 0) {
         finish(resolve)
       } else {
-        finish(() => reject(new Error(`FFmpeg 退出代码 ${code}：${stderr.slice(-1200)}`)))
+        // Windows may surface a negative FFmpeg AVERROR as an unsigned
+        // 32-bit process code (for example ENOMEM -12 as 4294967284).
+        const normalizedCode = typeof code === 'number' && code > 0x7fff_ffff
+          ? code - 0x1_0000_0000
+          : code
+        finish(() => reject(new Error(`FFmpeg 退出代码 ${normalizedCode}：${stderr.slice(-1200)}`)))
       }
     })
 

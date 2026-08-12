@@ -11,6 +11,7 @@ import {
   timelineTimeToMediaTime,
   type ClipTimelineRange
 } from '../../../shared/timeline-utils'
+import { getEffectiveTimelineAudioClips } from '../../../shared/audio-utils'
 import { toMediaUrl } from '../lib/utils'
 import { translate } from '../contexts/preferences'
 
@@ -131,11 +132,10 @@ export function useAudioPlaybackEngine({
     return result
   }, [audioFades])
 
-  const explicitAudioGroupIds = useMemo(() => new Set(
-    clips
-      .filter((clip) => clip.track === 'audio' && clip.mediaInfo.hasAudio)
-      .map((clip) => clip.groupId)
-  ), [clips])
+  const effectiveAudioIds = useMemo(
+    () => new Set(getEffectiveTimelineAudioClips(clips).map((clip) => clip.id)),
+    [clips]
+  )
 
   const getAudioContext = useCallback((): AudioContext => {
     if (!audioContextRef.current) {
@@ -289,10 +289,7 @@ export function useAudioPlaybackEngine({
     const activeIds = new Set<string>()
 
     clips.forEach((clip) => {
-      if (
-        !clip.mediaInfo.hasAudio ||
-        (clip.track === 'video' && explicitAudioGroupIds.has(clip.groupId))
-      ) return
+      if (!effectiveAudioIds.has(clip.id)) return
       const range = getClipRange(clip)
       if (
         !range ||
@@ -376,7 +373,7 @@ export function useAudioPlaybackEngine({
     clips,
     ensureController,
     ensurePitchProxy,
-    explicitAudioGroupIds,
+    effectiveAudioIds,
     getAudioContext,
     getClipRange,
     getFadeMultiplier,

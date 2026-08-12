@@ -738,39 +738,52 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
             </div>
 
             {isAnimatedImageFormat(format) && (
-              <div>
-                <label className="text-xs font-medium text-text-secondary uppercase tracking-wider block mb-2">{t('动图循环', 'Animation loop')}</label>
-                <div className="space-y-1">
-                  <label
-                    className={`flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer border transition-colors ${
-                      gifLoop === 'infinite' ? 'border-accent bg-accent/10' : 'border-transparent hover:bg-panel-hover'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="gif-loop"
-                      value="infinite"
-                      checked={gifLoop === 'infinite'}
-                      onChange={() => setGifLoop('infinite')}
-                      className="accent-accent"
-                    />
-                    <span className="text-sm text-text-primary">{t('无限循环', 'Loop forever')}</span>
-                  </label>
-                  <label
-                    className={`flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer border transition-colors ${
-                      gifLoop === 'once' ? 'border-accent bg-accent/10' : 'border-transparent hover:bg-panel-hover'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="gif-loop"
-                      value="once"
-                      checked={gifLoop === 'once'}
-                      onChange={() => setGifLoop('once')}
-                      className="accent-accent"
-                    />
-                    <span className="text-sm text-text-primary">{t('仅播放一次', 'Play once')}</span>
-                  </label>
+              <div className="space-y-3">
+                <div className="rounded-md border border-warning/35 bg-warning/10 px-3 py-2.5">
+                  <div className="mb-1">
+                    <Badge tone="warning">{t('适合短动图', 'Best for short animations')}</Badge>
+                  </div>
+                  <p className="text-xs leading-relaxed text-text-secondary">
+                    {t(
+                      '较长内容建议使用 MP4 或 WebM。继续导出动图时，降低分辨率或帧率可显著减少内存占用。',
+                      'For longer content, use MP4 or WebM. Lower the resolution or frame rate to reduce memory use.'
+                    )}
+                  </p>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-text-secondary uppercase tracking-wider block mb-2">{t('动图循环', 'Animation loop')}</label>
+                  <div className="space-y-1">
+                    <label
+                      className={`flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer border transition-colors ${
+                        gifLoop === 'infinite' ? 'border-accent bg-accent/10' : 'border-transparent hover:bg-panel-hover'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="gif-loop"
+                        value="infinite"
+                        checked={gifLoop === 'infinite'}
+                        onChange={() => setGifLoop('infinite')}
+                        className="accent-accent"
+                      />
+                      <span className="text-sm text-text-primary">{t('无限循环', 'Loop forever')}</span>
+                    </label>
+                    <label
+                      className={`flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer border transition-colors ${
+                        gifLoop === 'once' ? 'border-accent bg-accent/10' : 'border-transparent hover:bg-panel-hover'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="gif-loop"
+                        value="once"
+                        checked={gifLoop === 'once'}
+                        onChange={() => setGifLoop('once')}
+                        className="accent-accent"
+                      />
+                      <span className="text-sm text-text-primary">{t('仅播放一次', 'Play once')}</span>
+                    </label>
+                  </div>
                 </div>
               </div>
             )}

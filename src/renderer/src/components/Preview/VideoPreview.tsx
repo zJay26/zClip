@@ -15,7 +15,10 @@ import {
   timelineTimeToMediaTime
 } from '../../../../shared/timeline-utils'
 import { Badge, Button, IconButton } from '../ui'
-import type { ClipTimelineRange } from '../../../../shared/timeline-utils'
+import {
+  getTimelineTransitionTiming
+} from '../../../../shared/transition-utils'
+import type { TimelineTransitionTiming } from '../../../../shared/transition-utils'
 import type {
   MediaOperation,
   TimelineClip,
@@ -24,11 +27,23 @@ import type {
   TransitionEffectType
 } from '../../../../shared/types'
 import { translate, usePreferences } from '../../contexts/preferences'
+import type {
+  VideoBufferClipIds,
+  TransitionVideoBufferAssignment,
+  VideoBufferIndex
+} from '../../hooks/useVideoPlayer'
 
 interface VideoPreviewProps {
-  videoRef: React.RefObject<HTMLVideoElement>
-  onLoadedMetadata: () => void
-  onEnded: () => void
+  videoBufferRefs: readonly [
+    React.RefObject<HTMLVideoElement>,
+    React.RefObject<HTMLVideoElement>,
+    React.RefObject<HTMLVideoElement>
+  ]
+  activeVideoBuffer: VideoBufferIndex
+  videoBufferClipIds: VideoBufferClipIds
+  transitionVideoBuffers: TransitionVideoBufferAssignment | null
+  onLoadedMetadata: (index: VideoBufferIndex) => void
+  onEnded: (index: VideoBufferIndex) => void
   togglePlay: () => void
   step: (seconds: number) => void
   onOpenFiles: () => void
@@ -63,15 +78,7 @@ function getSourceFrameRect(
 
 type TransitionSide = 'left' | 'right'
 
-interface ActiveTransitionPreview {
-  transition: TimelineTransition
-  leftClip: TimelineClip
-  rightClip: TimelineClip
-  leftRange: ClipTimelineRange
-  rightRange: ClipTimelineRange
-  start: number
-  end: number
-  boundary: number
+interface ActiveTransitionPreview extends TimelineTransitionTiming {
   progress: number
 }
 
@@ -139,31 +146,16 @@ function findActiveTransitionPreview(
 ): ActiveTransitionPreview | null {
   let active: ActiveTransitionPreview | null = null
   transitions.forEach((transition) => {
-    const leftClip = clips.find((clip) => clip.id === transition.leftClipId)
-    const rightClip = clips.find((clip) => clip.id === transition.rightClipId)
-    if (!leftClip || !rightClip) return
-    if (leftClip.track !== 'video' || rightClip.track !== 'video') return
-    if (!leftClip.mediaInfo.hasVideo || !rightClip.mediaInfo.hasVideo) return
-
-    const leftRange = getClipTimelineRange(leftClip, operationsByClip)
-    const rightRange = getClipTimelineRange(rightClip, operationsByClip)
-    const boundary = (leftRange.end + rightRange.start) / 2
-    const start = boundary + transition.startOffset
-    const end = boundary + transition.endOffset
-    if (end <= start + 0.001) return
-    if (currentTime < start || currentTime > end) return
-
-    const progress = clamp01((currentTime - start) / (end - start))
-    if (!active || start > active.start) {
+    const timing = getTimelineTransitionTiming(transition, clips, operationsByClip)
+    if (!timing || currentTime < timing.start || currentTime > timing.end) return
+    const progress = clamp01((currentTime - timing.start) / timing.duration)
+    if (
+      !active ||
+      timing.trackIndex > active.trackIndex ||
+      (timing.trackIndex === active.trackIndex && timing.start > active.start)
+    ) {
       active = {
-        transition,
-        leftClip,
-        rightClip,
-        leftRange,
-        rightRange,
-        start,
-        end,
-        boundary,
+        ...timing,
         progress
       }
     }
@@ -174,28 +166,36 @@ function findActiveTransitionPreview(
 function getTransitionLayerOpacity(
   type: TransitionEffectType,
   side: TransitionSide,
-  progress: number
+  progress: number,
+  boundaryProgress: number
 ): number {
   if (type === 'fadeblack' || type === 'fadewhite') {
-    if (side === 'left') {
-      return progress < 0.5 ? 1 - progress * 2 : 0
-    }
-    return progress > 0.5 ? (progress - 0.5) * 2 : 0
+    // The matte itself performs the fade. Swap the held edge frames while it
+    // is fully opaque instead of fading both video layers a second time.
+    return side === 'left'
+      ? (progress < boundaryProgress ? 1 : 0)
+      : (progress >= boundaryProgress ? 1 : 0)
   }
   if (type === 'crossfade') {
-    return side === 'left' ? 1 - progress : progress
+    // The right layer is composited above the left layer. Keeping the left
+    // opaque while the right fades in produces a true linear crossfade;
+    // fading both layers would leak the canvas background and darken the mix.
+    return side === 'left' ? 1 : progress
   }
   return 1
 }
 
 function getTransitionMatteStyle(
   type: TransitionEffectType,
-  progress: number
+  progress: number,
+  boundaryProgress: number
 ): React.CSSProperties | null {
   if (type !== 'fadeblack' && type !== 'fadewhite') return null
   return {
     backgroundColor: type === 'fadewhite' ? '#fff' : '#000',
-    opacity: 1 - Math.abs(progress * 2 - 1)
+    opacity: progress <= boundaryProgress
+      ? progress / Math.max(0.001, boundaryProgress)
+      : (1 - progress) / Math.max(0.001, 1 - boundaryProgress)
   }
 }
 
@@ -222,19 +222,6 @@ function getTransitionLayerEffect(
   return {}
 }
 
-function getTransitionMediaTime(
-  preview: ActiveTransitionPreview,
-  side: TransitionSide
-): number {
-  const duration = preview.end - preview.start
-  if (side === 'left') {
-    const raw = preview.leftRange.trimEnd - (1 - preview.progress) * duration * preview.leftRange.speedRate
-    return clampValue(raw, preview.leftRange.trimStart, preview.leftRange.trimEnd)
-  }
-  const raw = preview.rightRange.trimStart + preview.progress * duration * preview.rightRange.speedRate
-  return clampValue(raw, preview.rightRange.trimStart, preview.rightRange.trimEnd)
-}
-
 function getClipPlaybackPath(clip: TimelineClip): string {
   return clip.mediaInfo.playbackPath || clip.filePath
 }
@@ -256,13 +243,15 @@ function syncTransitionVideo(
   mediaTime: number,
   speedRate: number,
   shouldPlay: boolean,
-  cleanup: Array<() => void>
+  cleanup: Array<() => void>,
+  seekThreshold?: number
 ): void {
   if (!video) return
 
   const expectedSrc = toMediaUrl(getClipPlaybackPath(clip))
   const currentSrc = video.currentSrc || video.src || ''
-  if (!isSameMediaSource(currentSrc, expectedSrc)) {
+  const sourceChanged = !isSameMediaSource(currentSrc, expectedSrc)
+  if (sourceChanged) {
     video.pause()
     video.src = expectedSrc
     video.load()
@@ -276,7 +265,7 @@ function syncTransitionVideo(
 
   const seek = (): void => {
     if (!Number.isFinite(mediaTime)) return
-    const threshold = shouldPlay ? 0.12 : 0.01
+    const threshold = seekThreshold ?? (shouldPlay ? 0.12 : 0.01)
     if (Math.abs(video.currentTime - mediaTime) > threshold) {
       try {
         video.currentTime = mediaTime
@@ -286,18 +275,18 @@ function syncTransitionVideo(
     }
   }
 
-  if (video.readyState >= 1) {
+  const updatePlayback = (): void => {
     seek()
-  } else {
-    const handleLoaded = (): void => seek()
-    video.addEventListener('loadedmetadata', handleLoaded, { once: true })
-    cleanup.push(() => video.removeEventListener('loadedmetadata', handleLoaded))
+    if (shouldPlay) video.play().catch(() => undefined)
+    else video.pause()
   }
 
-  if (shouldPlay) {
-    video.play().catch(() => undefined)
+  if (video.readyState >= 1 && !sourceChanged) {
+    updatePlayback()
   } else {
-    video.pause()
+    const handleLoaded = (): void => updatePlayback()
+    video.addEventListener('loadedmetadata', handleLoaded, { once: true })
+    cleanup.push(() => video.removeEventListener('loadedmetadata', handleLoaded))
   }
 }
 
@@ -326,7 +315,10 @@ const PreviewVideoLayer: React.FC<{
 }
 
 const VideoPreview: React.FC<VideoPreviewProps> = ({
-  videoRef,
+  videoBufferRefs,
+  activeVideoBuffer,
+  videoBufferClipIds,
+  transitionVideoBuffers,
   onLoadedMetadata,
   onEnded,
   togglePlay,
@@ -365,8 +357,6 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
   })))
 
   const canvasRef = useRef<HTMLDivElement>(null)
-  const transitionLeftVideoRef = useRef<HTMLVideoElement>(null)
-  const transitionRightVideoRef = useRef<HTMLVideoElement>(null)
   const transformDragRef = useRef<{
     pointerId: number
     startX: number
@@ -381,7 +371,7 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
     [clips, currentTime, operationsByClip, transitions]
   )
 
-  const previewSourceClip = activeVideoClip ?? activeTransitionPreview?.leftClip ?? null
+  const previewSourceClip = activeVideoClip ?? activeTransitionPreview?.left ?? null
   const sourceFile = previewSourceClip?.filePath ?? null
   const mediaInfo = previewSourceClip?.mediaInfo ?? null
   const pixelFormat = mediaInfo?.pixelFormat || ''
@@ -413,6 +403,16 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
 
   const hasActiveVideoClip = !!activeVideoClip
   const hasTransitionPreview = !!activeTransitionPreview
+  const videoLayerZ = (clip: TimelineClip | null): number => {
+    if (!clip) return 1
+    return Math.max(1, (activeVideoLayers.findIndex((item) => item.id === clip.id) + 1) * 3)
+  }
+  const transitionLayerClip = activeTransitionPreview
+    ? (currentTime < activeTransitionPreview.boundary
+        ? activeTransitionPreview.left
+        : activeTransitionPreview.right)
+    : null
+  const transitionLayerZ = videoLayerZ(transitionLayerClip)
   const transform = getClipTransform(activeVideoClip, operationsByClip)
   const finishTransformDrag = useCallback(() => {
     if (!transformDragRef.current) return
@@ -451,12 +451,11 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
   const mainVideoStyle = buildVideoLayerStyle(
     transform,
     canvasWidth,
-    canvasHeight,
-    hasTransitionPreview ? 0 : 1
+    canvasHeight
   )
-  mainVideoStyle.zIndex = Math.max(1, activeVideoLayers.findIndex((clip) => clip.id === activeVideoClip?.id) + 1)
-  const transitionLeftTransform = getClipTransform(activeTransitionPreview?.leftClip ?? null, operationsByClip)
-  const transitionRightTransform = getClipTransform(activeTransitionPreview?.rightClip ?? null, operationsByClip)
+  mainVideoStyle.zIndex = videoLayerZ(activeVideoClip)
+  const transitionLeftTransform = getClipTransform(activeTransitionPreview?.left ?? null, operationsByClip)
+  const transitionRightTransform = getClipTransform(activeTransitionPreview?.right ?? null, operationsByClip)
   const rightTransitionEffect = activeTransitionPreview
     ? getTransitionLayerEffect(
         activeTransitionPreview.transition.type,
@@ -473,10 +472,12 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
           getTransitionLayerOpacity(
             activeTransitionPreview.transition.type,
             'left',
-            activeTransitionPreview.progress
+            activeTransitionPreview.progress,
+            activeTransitionPreview.boundaryProgress
           )
         ),
-        zIndex: 101
+        zIndex: transitionLayerZ,
+        willChange: 'opacity, transform'
       }
     : undefined
   const transitionRightVideoStyle: React.CSSProperties | undefined = activeTransitionPreview
@@ -488,47 +489,59 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
           getTransitionLayerOpacity(
             activeTransitionPreview.transition.type,
             'right',
-            activeTransitionPreview.progress
+            activeTransitionPreview.progress,
+            activeTransitionPreview.boundaryProgress
           ),
           rightTransitionEffect.transformPrefix
         ),
         clipPath: rightTransitionEffect.clipPath,
-        zIndex: 102
+        zIndex: transitionLayerZ + 1,
+        willChange: 'opacity, transform, clip-path'
       }
     : undefined
   const transitionMatteStyle = activeTransitionPreview
-    ? getTransitionMatteStyle(activeTransitionPreview.transition.type, activeTransitionPreview.progress)
+    ? getTransitionMatteStyle(
+        activeTransitionPreview.transition.type,
+        activeTransitionPreview.progress,
+        activeTransitionPreview.boundaryProgress
+      )
     : null
-
-  useEffect(() => {
-    if (!activeTransitionPreview) {
-      transitionLeftVideoRef.current?.pause()
-      transitionRightVideoRef.current?.pause()
-      return
+  const activeTransitionBuffers = activeTransitionPreview &&
+    transitionVideoBuffers?.transitionId === activeTransitionPreview.transition.id
+    ? transitionVideoBuffers
+    : null
+  const mappedMainBufferIndex = activeVideoClip
+    ? videoBufferClipIds.findIndex((clipId) => clipId === activeVideoClip.id)
+    : -1
+  const visualMainBuffer = mappedMainBufferIndex >= 0
+    ? mappedMainBufferIndex as VideoBufferIndex
+    : activeVideoBuffer
+  const hiddenVideoStyle: React.CSSProperties = {
+    ...mainVideoStyle,
+    opacity: 0,
+    pointerEvents: 'none',
+    // Opacity keeps the standby buffer in Chromium's compositor/decode path.
+    // visibility:hidden can defer its first painted frame until it becomes a
+    // transition layer, which looks like the incoming clip suddenly appears
+    // halfway through a crossfade.
+    willChange: 'opacity, transform'
+  }
+  const getVideoBufferPresentation = (index: VideoBufferIndex): {
+    role: 'main' | 'transition-left' | 'transition-right' | 'standby'
+    style: React.CSSProperties
+  } => {
+    if (activeTransitionBuffers?.leftIndex === index && transitionLeftVideoStyle) {
+      return { role: 'transition-left', style: transitionLeftVideoStyle }
     }
-
-    const cleanup: Array<() => void> = []
-    syncTransitionVideo(
-      transitionLeftVideoRef.current,
-      activeTransitionPreview.leftClip,
-      getTransitionMediaTime(activeTransitionPreview, 'left'),
-      activeTransitionPreview.leftRange.speedRate,
-      playing,
-      cleanup
-    )
-    syncTransitionVideo(
-      transitionRightVideoRef.current,
-      activeTransitionPreview.rightClip,
-      getTransitionMediaTime(activeTransitionPreview, 'right'),
-      activeTransitionPreview.rightRange.speedRate,
-      playing,
-      cleanup
-    )
-    return () => {
-      cleanup.forEach((dispose) => dispose())
+    if (activeTransitionBuffers?.rightIndex === index && transitionRightVideoStyle) {
+      return { role: 'transition-right', style: transitionRightVideoStyle }
     }
-  }, [activeTransitionPreview, playing])
-
+    if (index === visualMainBuffer && activeVideoClip) {
+      return { role: 'main', style: mainVideoStyle }
+    }
+    return { role: 'standby', style: hiddenVideoStyle }
+  }
+  const hasVideoBuffers = clips.some((clip) => clip.track === 'video' && clip.mediaInfo.hasVideo)
   const canvasStyle: React.CSSProperties = {
     aspectRatio: `${canvasWidth} / ${canvasHeight}`,
     backgroundColor: projectSettings.canvas.backgroundColor,
@@ -637,15 +650,21 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
         className="flex-1 flex items-center justify-center rounded-lg overflow-hidden min-h-0 relative"
         style={previewStageStyle}
       >
-        <div ref={canvasRef} className="relative overflow-hidden" style={canvasStyle}>
+        <div
+          ref={canvasRef}
+          className="relative overflow-hidden"
+          style={canvasStyle}
+          data-preview-timeline-time={currentTime.toFixed(4)}
+          data-active-transition-id={activeTransitionPreview?.transition.id || ''}
+        >
         {!hasActiveVideoClip && !hasTransitionPreview && (
           <div className="absolute inset-0 bg-black" />
         )}
         {supportingVideoLayers
           .filter((clip) => !activeTransitionPreview || (
-            clip.id !== activeTransitionPreview.leftClip.id && clip.id !== activeTransitionPreview.rightClip.id
+            clip.id !== activeTransitionPreview.left.id && clip.id !== activeTransitionPreview.right.id
           ))
-          .map((clip, index) => (
+          .map((clip) => (
             <PreviewVideoLayer
               key={clip.id}
               clip={clip}
@@ -654,65 +673,51 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
               playing={playing}
               style={{
                 ...buildVideoLayerStyle(getClipTransform(clip, operationsByClip), canvasWidth, canvasHeight),
-                zIndex: index + 1
+                zIndex: videoLayerZ(clip)
               }}
             />
           ))}
-        {hasActiveVideoClip && (
-          /* Video: normal <video> element */
-          <video
-            ref={videoRef}
-            className="absolute inset-0"
-            style={mainVideoStyle}
-            onLoadedMetadata={onLoadedMetadata}
-            onEnded={onEnded}
-            loop={false}
-            onError={(e) => {
-              const error = e.currentTarget.error
-              console.error('Video playback error:', error)
-              // An unsupported source can fail once while its compatible proxy
-              // is still being generated. The media path update will retry with
-              // that proxy, so avoid presenting the expected transient failure
-              // as a terminal codec error.
-              if (isLikelyUnsupported && !playbackProxyFailed) return
-              showToast(
-                playbackProxyFailed
-                  ? translate('视频兼容代理生成失败，请检查素材文件', 'Compatible video proxy generation failed. Check the media file.')
-                  : translate(
-                      `视频预览加载失败${error?.code ? `（错误码 ${error.code}）` : ''}`,
-                      `Video preview failed to load${error?.code ? ` (error code ${error.code})` : ''}`
-                    ),
-                'error'
-              )
-            }}
-            playsInline
+        {hasVideoBuffers && videoBufferRefs.map((ref, rawIndex) => {
+          const index = rawIndex as VideoBufferIndex
+          const presentation = getVideoBufferPresentation(index)
+          return (
+            <video
+              key={index}
+              ref={ref}
+              data-preview-video={presentation.role}
+              data-preview-buffer-index={index}
+              data-preview-clip-id={videoBufferClipIds[index] || ''}
+              className="pointer-events-none absolute inset-0"
+              style={presentation.style}
+              onLoadedMetadata={() => onLoadedMetadata(index)}
+              onEnded={() => onEnded(index)}
+              loop={false}
+              muted
+              preload="auto"
+              onError={(event) => {
+                const error = event.currentTarget.error
+                console.error('Video playback error:', error)
+                if (presentation.role === 'standby' || (isLikelyUnsupported && !playbackProxyFailed)) return
+                showToast(
+                  playbackProxyFailed
+                    ? translate('视频兼容代理生成失败，请检查素材文件', 'Compatible video proxy generation failed. Check the media file.')
+                    : translate(
+                        `视频预览加载失败${error?.code ? `（错误码 ${error.code}）` : ''}`,
+                        `Video preview failed to load${error?.code ? ` (error code ${error.code})` : ''}`
+                      ),
+                  'error'
+                )
+              }}
+              playsInline
+              aria-hidden="true"
+            />
+          )
+        })}
+        {transitionMatteStyle && (
+          <div
+            className="pointer-events-none absolute inset-0"
+            style={{ ...transitionMatteStyle, zIndex: transitionLayerZ + 2 }}
           />
-        )}
-        {activeTransitionPreview && transitionLeftVideoStyle && transitionRightVideoStyle && (
-          <>
-            <video
-              ref={transitionLeftVideoRef}
-              className="absolute inset-0 pointer-events-none"
-              style={transitionLeftVideoStyle}
-              muted
-              playsInline
-              aria-hidden="true"
-            />
-            <video
-              ref={transitionRightVideoRef}
-              className="absolute inset-0 pointer-events-none"
-              style={transitionRightVideoStyle}
-              muted
-              playsInline
-              aria-hidden="true"
-            />
-            {transitionMatteStyle && (
-              <div
-                className="absolute inset-0 pointer-events-none"
-                style={{ ...transitionMatteStyle, zIndex: 4 }}
-              />
-            )}
-          </>
         )}
         {hasActiveVideoClip && (
           <div

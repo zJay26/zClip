@@ -124,6 +124,8 @@ export interface TimelineClip {
   trimBoundEnd?: number
   track: ClipTrack
   trackIndex: number
+  /** Whether a video clip may use the source file's embedded audio stream. */
+  embeddedAudioEnabled?: boolean
   mediaInfo: MediaInfo
 }
 

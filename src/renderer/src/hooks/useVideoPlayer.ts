@@ -2,7 +2,7 @@
 // useVideoPlayer — 封装 <video> 元素播放状态同步
 // ============================================================
 
-import { useRef, useEffect, useCallback } from 'react'
+import { useRef, useEffect, useCallback, useState } from 'react'
 import { useProjectStore } from '../stores/project-store'
 import { useShallow } from 'zustand/react/shallow'
 import type { TimelineClip } from '../../../shared/types'
@@ -13,14 +13,47 @@ import {
   mediaTimeToTimelineTime,
   timelineTimeToMediaTime
 } from '../../../shared/timeline-utils'
+import {
+  getEligibleTransitionCuts,
+  getTimelineTransitionTiming,
+  transitionTimelineTimeToMediaTime,
+  type TransitionCut,
+  type TimelineTransitionTiming
+} from '../../../shared/transition-utils'
 import { mediaUrlToPath, toMediaUrl } from '../lib/utils'
 import { useAudioPlaybackEngine } from './useAudioPlaybackEngine'
 
+export type VideoBufferIndex = 0 | 1 | 2
+export type VideoBufferClipIds = readonly [string | null, string | null, string | null]
+
+export interface TransitionVideoBufferAssignment {
+  transitionId: string
+  leftIndex: VideoBufferIndex
+  rightIndex: VideoBufferIndex
+}
+
+interface PendingVideoSeek {
+  clipId: string
+  mediaTime: number
+  autoPlay: boolean
+}
+
+const VIDEO_BUFFER_INDICES: VideoBufferIndex[] = [0, 1, 2]
+
 export function useVideoPlayer() {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const videoBuffer1Ref = useRef<HTMLVideoElement>(null)
+  const videoBuffer2Ref = useRef<HTMLVideoElement>(null)
   const animFrameRef = useRef<number>(0)
-  const pendingSeekRef = useRef<number | null>(null)
-  const pendingAutoPlayRef = useRef(false)
+  const pendingVideoSeeksRef = useRef<Map<VideoBufferIndex, PendingVideoSeek>>(new Map())
+  const bufferClipIdsRef = useRef<Array<string | null>>([null, null, null])
+  const activeVideoBufferRef = useRef<VideoBufferIndex>(0)
+  const [activeVideoBuffer, setActiveVideoBuffer] = useState<VideoBufferIndex>(0)
+  const [videoBufferClipIds, setVideoBufferClipIds] =
+    useState<VideoBufferClipIds>([null, null, null])
+  const [transitionVideoBuffers, setTransitionVideoBuffers] =
+    useState<TransitionVideoBufferAssignment | null>(null)
+  const transitionVideoBuffersRef = useRef<TransitionVideoBufferAssignment | null>(null)
   const syncAudioRef = useRef<((time: number, shouldPlay: boolean) => void) | null>(null)
   const seekVideoRef = useRef<
     ((clip: NonNullable<typeof selectedClip>, timelineTime: number, autoPlay: boolean) => void) | null
@@ -30,6 +63,10 @@ export function useVideoPlayer() {
   const currentTimeRef = useRef(0)
   const lastTickRef = useRef<number>(0)
   const playingRef = useRef(false)
+  const activeTransitionClockRef = useRef<{
+    id: string
+    phase: 'before' | 'after'
+  } | null>(null)
 
   const {
     clips,
@@ -37,6 +74,7 @@ export function useVideoPlayer() {
     timelineDuration,
     playing,
     operationsByClip,
+    transitions,
     audioFades,
     setCurrentTime,
     setPlaying,
@@ -47,6 +85,7 @@ export function useVideoPlayer() {
     timelineDuration: state.timelineDuration,
     playing: state.playing,
     operationsByClip: state.operationsByClip,
+    transitions: state.transitions,
     audioFades: state.audioFades,
     setCurrentTime: state.setCurrentTime,
     setPlaying: state.setPlaying,
@@ -54,6 +93,48 @@ export function useVideoPlayer() {
   })))
 
   const selectedClip = clips.find((clip) => clip.id === selectedClipId) || null
+
+  const getVideoBuffer = useCallback((index: VideoBufferIndex): HTMLVideoElement | null => {
+    if (index === 0) return videoRef.current
+    if (index === 1) return videoBuffer1Ref.current
+    return videoBuffer2Ref.current
+  }, [])
+
+  const getActiveVideo = useCallback(
+    (): HTMLVideoElement | null => getVideoBuffer(activeVideoBufferRef.current),
+    [getVideoBuffer]
+  )
+
+  const activateVideoBuffer = useCallback((index: VideoBufferIndex): void => {
+    activeVideoBufferRef.current = index
+    setActiveVideoBuffer((current) => current === index ? current : index)
+  }, [])
+
+  const commitVideoBufferClipId = useCallback((
+    index: VideoBufferIndex,
+    clipId: string | null
+  ): void => {
+    bufferClipIdsRef.current[index] = clipId
+    setVideoBufferClipIds((current) => {
+      if (current[index] === clipId) return current
+      const next: [string | null, string | null, string | null] = [...current]
+      next[index] = clipId
+      return next
+    })
+  }, [])
+
+  const commitTransitionVideoBuffers = useCallback((assignment: TransitionVideoBufferAssignment | null): void => {
+    transitionVideoBuffersRef.current = assignment
+    setTransitionVideoBuffers((current) => {
+      if (!assignment) return current ? null : current
+      if (
+        current?.transitionId === assignment.transitionId &&
+        current.leftIndex === assignment.leftIndex &&
+        current.rightIndex === assignment.rightIndex
+      ) return current
+      return assignment
+    })
+  }, [])
 
   const getClipRange = useCallback(
     (clip: TimelineClip | null) => {
@@ -130,6 +211,68 @@ export function useVideoPlayer() {
     [clips, operationsByClip, getClipRange]
   )
 
+  const findActiveTransitionAtTime = useCallback((time: number) => {
+    let active: ReturnType<typeof getTimelineTransitionTiming> = null
+    for (const transition of transitions) {
+      const timing = getTimelineTransitionTiming(transition, clips, operationsByClip)
+      if (!timing || time < timing.start || time >= timing.end) continue
+      if (
+        !active ||
+        timing.trackIndex > active.trackIndex ||
+        (timing.trackIndex === active.trackIndex && timing.start > active.start)
+      ) active = timing
+    }
+    return active
+  }, [clips, operationsByClip, transitions])
+
+  const findPreparedTransitionAtTime = useCallback((time: number, lead = 1.25) => {
+    let prepared: TimelineTransitionTiming | null = null
+    for (const transition of transitions) {
+      const timing = getTimelineTransitionTiming(transition, clips, operationsByClip)
+      if (!timing || time < timing.start - lead || time > timing.end) continue
+      if (!prepared || timing.start < prepared.start) prepared = timing
+    }
+    return prepared
+  }, [clips, operationsByClip, transitions])
+
+  const findNextTransitionAtTime = useCallback((time: number) => {
+    let next: TimelineTransitionTiming | null = null
+    for (const transition of transitions) {
+      const timing = getTimelineTransitionTiming(transition, clips, operationsByClip)
+      if (!timing || timing.end < time) continue
+      if (!next || timing.start < next.start) next = timing
+    }
+    return next
+  }, [clips, operationsByClip, transitions])
+
+  const findUpcomingVideoCutAtTime = useCallback((
+    time: number,
+    lead = 1.25
+  ): TransitionCut | null => {
+    const EPS = 0.0005
+    let upcoming: TransitionCut | null = null
+    for (const cut of getEligibleTransitionCuts(clips, operationsByClip)) {
+      if (time < cut.leftRange.start - EPS || time > cut.boundary + EPS) continue
+      if (cut.boundary - time > lead) continue
+      if (transitions.some((transition) =>
+        transition.leftClipId === cut.left.id && transition.rightClipId === cut.right.id
+      )) continue
+
+      // Only prime a cut that really owns the visible top layer on both sides.
+      // A same-track edit hidden underneath another video must not steal the
+      // main decoder when the playhead reaches its boundary.
+      const beforeProbe = Math.max(
+        cut.leftRange.start,
+        Math.min(time, cut.boundary - EPS)
+      )
+      const visibleBefore = getTopmostVideoClipAtTime(clips, operationsByClip, beforeProbe)
+      const visibleAfter = getTopmostVideoClipAtTime(clips, operationsByClip, cut.boundary + EPS)
+      if (visibleBefore?.id !== cut.left.id || visibleAfter?.id !== cut.right.id) continue
+      if (!upcoming || cut.boundary < upcoming.boundary) upcoming = cut
+    }
+    return upcoming
+  }, [clips, operationsByClip, transitions])
+
   const getPlaybackPath = useCallback((clip: TimelineClip): string => {
     return clip.mediaInfo.playbackPath || clip.filePath
   }, [])
@@ -143,54 +286,260 @@ export function useVideoPlayer() {
     videoRef
   })
 
+  const setVideoBufferPlaybackRate = useCallback((index: VideoBufferIndex, rate: number): void => {
+    const video = getVideoBuffer(index)
+    if (!video) return
+    video.muted = true
+    if (!Number.isFinite(rate) || rate <= 0) return
+    const safeRate = Math.max(0.0625, Math.min(16, rate))
+    if (Math.abs(video.playbackRate - safeRate) > 0.0001) video.playbackRate = safeRate
+  }, [getVideoBuffer])
+
+  const syncVideoBufferPlaybackRate = useCallback((index: VideoBufferIndex, clipId: string | null): void => {
+    if (!clipId) return
+    setVideoBufferPlaybackRate(index, getSpeedRateForClip(clipId))
+  }, [getSpeedRateForClip, setVideoBufferPlaybackRate])
+
+  const syncVideoPlaybackRate = useCallback((clipId: string | null): void => {
+    syncVideoBufferPlaybackRate(activeVideoBufferRef.current, clipId)
+  }, [syncVideoBufferPlaybackRate])
+
+  const seekVideoBuffer = useCallback((
+    index: VideoBufferIndex,
+    clip: TimelineClip,
+    timelineTime: number,
+    autoPlay: boolean,
+    mediaTimeOverride?: number
+  ): void => {
+    const ordinaryMediaTime = timelineTimeToMediaTime(clip, operationsByClip, timelineTime)
+    const localTime = Number.isFinite(mediaTimeOverride)
+      ? Math.max(0, Math.min(clip.duration, mediaTimeOverride as number))
+      : ordinaryMediaTime
+    const video = getVideoBuffer(index)
+    const pending: PendingVideoSeek = { clipId: clip.id, mediaTime: localTime, autoPlay }
+    commitVideoBufferClipId(index, clip.id)
+    pendingVideoSeeksRef.current.set(index, pending)
+    if (!video) return
+
+    syncVideoBufferPlaybackRate(index, clip.id)
+    const expectedSrc = toMediaUrl(getPlaybackPath(clip))
+    const currentSrc = video.currentSrc || video.src || ''
+    const normalizeUrl = (url: string): string => mediaUrlToPath(url).replace(/\\/g, '/')
+    const normalizedExpected = normalizeUrl(expectedSrc)
+    const normalizedCurrent = normalizeUrl(currentSrc)
+    const isSameSource = normalizedCurrent === normalizedExpected || normalizedCurrent.endsWith(normalizedExpected)
+
+    if (!isSameSource) {
+      video.pause()
+      video.src = expectedSrc
+      video.load()
+      if (index === activeVideoBufferRef.current) lastVideoClockRef.current = null
+      return
+    }
+    if (video.readyState < HTMLMediaElement.HAVE_METADATA) return
+
+    if (Math.abs(video.currentTime - localTime) > 0.002) video.currentTime = localTime
+    pendingVideoSeeksRef.current.delete(index)
+    if (index === activeVideoBufferRef.current) {
+      lastVideoClockRef.current = { clipId: clip.id, mediaTime: localTime }
+    }
+    if (autoPlay) {
+      void video.play().catch(() => pendingVideoSeeksRef.current.set(index, pending))
+    } else {
+      video.pause()
+    }
+  }, [commitVideoBufferClipId, getPlaybackPath, getVideoBuffer, operationsByClip, syncVideoBufferPlaybackRate])
+
   const seekVideoForTime = useCallback(
     (clip: NonNullable<typeof selectedClip>, timelineTime: number, autoPlay: boolean) => {
       const range = getClipRange(clip)
       if (!range) return
-      const localTime = timelineTimeToMediaTime(clip, operationsByClip, timelineTime)
-
-      const video = videoRef.current
-      if (video) {
-        syncVideoPlaybackRate(clip.id)
-        const expectedSrc = toMediaUrl(getPlaybackPath(clip))
-        const currentSrc = video.currentSrc || ''
-        const normalizeUrl = (url: string): string => mediaUrlToPath(url).replace(/\\/g, '/')
-        const normalizedExpected = normalizeUrl(expectedSrc)
-        const normalizedCurrent = normalizeUrl(currentSrc)
-        const isSameSource =
-          normalizedCurrent === normalizedExpected || normalizedCurrent.endsWith(normalizedExpected)
-
-        if (!isSameSource) {
-          video.pause()
-          video.src = expectedSrc
-          video.load()
-          lastVideoClockRef.current = null
-          pendingSeekRef.current = localTime
-          pendingAutoPlayRef.current = autoPlay
-          return
-        }
-
-        if ((selectedClipId === clip.id || isSameSource) && video.readyState >= 1) {
-          video.currentTime = localTime
-          lastVideoClockRef.current = { clipId: clip.id, mediaTime: localTime }
-          if (autoPlay) {
-            video.play().catch(() => {
-              pendingSeekRef.current = localTime
-              pendingAutoPlayRef.current = true
-            })
-          }
-          return
-        }
-        // Source is already set but metadata is not ready yet.
-        // Avoid calling load() every frame, which can cause decode thrash/flicker.
-      }
-
-      pendingSeekRef.current = localTime
-      pendingAutoPlayRef.current = autoPlay
-      lastVideoClockRef.current = { clipId: clip.id, mediaTime: localTime }
+      const existingIndex = VIDEO_BUFFER_INDICES.find(
+        (index) => bufferClipIdsRef.current[index] === clip.id
+      )
+      const targetIndex = existingIndex ?? activeVideoBufferRef.current
+      activateVideoBuffer(targetIndex)
+      seekVideoBuffer(targetIndex, clip, timelineTime, autoPlay)
     },
-    [getClipRange, selectedClipId, operationsByClip, syncVideoPlaybackRate, getPlaybackPath]
+    [activateVideoBuffer, getClipRange, seekVideoBuffer]
   )
+
+  const prepareTransitionVideoBuffers = useCallback((
+    timing: TimelineTransitionTiming,
+    timelineTime: number,
+    transitionOwnsActiveVideo: boolean
+  ): TransitionVideoBufferAssignment | null => {
+    const current = transitionVideoBuffersRef.current
+    const preparedTime = Math.max(timing.start, Math.min(timelineTime, timing.end))
+    if (
+      current?.transitionId === timing.transition.id &&
+      bufferClipIdsRef.current[current.leftIndex] === timing.left.id &&
+      bufferClipIdsRef.current[current.rightIndex] === timing.right.id
+    ) {
+      if (!playingRef.current && timelineTime >= timing.start && timelineTime <= timing.end) {
+        seekVideoBuffer(
+          current.leftIndex,
+          timing.left,
+          preparedTime,
+          false,
+          transitionTimelineTimeToMediaTime(timing, 'left', preparedTime)
+        )
+        seekVideoBuffer(
+          current.rightIndex,
+          timing.right,
+          preparedTime,
+          false,
+          transitionTimelineTimeToMediaTime(timing, 'right', preparedTime)
+        )
+      } else if (timelineTime < timing.start) {
+        const rightVideo = getVideoBuffer(current.rightIndex)
+        const expectedRight = transitionTimelineTimeToMediaTime(
+          timing,
+          'right',
+          timing.start
+        )
+        const pending = pendingVideoSeeksRef.current.get(current.rightIndex)
+        const hasMatchingPending = pending?.clipId === timing.right.id &&
+          Math.abs(pending.mediaTime - expectedRight) <= 0.002 &&
+          !pending.autoPlay
+        const needsPrime = (!rightVideo || rightVideo.readyState < HTMLMediaElement.HAVE_METADATA)
+          ? !hasMatchingPending
+          : !rightVideo.paused || Math.abs(rightVideo.currentTime - expectedRight) > 0.01
+        if (needsPrime) {
+          seekVideoBuffer(
+            current.rightIndex,
+            timing.right,
+            preparedTime,
+            false,
+            expectedRight
+          )
+        }
+      }
+      return current
+    }
+
+    const activeIndex = activeVideoBufferRef.current
+    const findClipBuffer = (clipId: string): VideoBufferIndex | undefined =>
+      VIDEO_BUFFER_INDICES.find((index) => bufferClipIdsRef.current[index] === clipId)
+    const chooseBuffer = (excluded: Set<VideoBufferIndex>): VideoBufferIndex | undefined =>
+      VIDEO_BUFFER_INDICES.find((index) => !excluded.has(index))
+
+    let leftIndex = findClipBuffer(timing.left.id)
+    if (leftIndex === undefined) {
+      leftIndex = transitionOwnsActiveVideo
+        ? activeIndex
+        : chooseBuffer(new Set([activeIndex]))
+    }
+    if (leftIndex === undefined) return null
+
+    let rightIndex = findClipBuffer(timing.right.id)
+    if (rightIndex === leftIndex) rightIndex = undefined
+    if (rightIndex === undefined) {
+      const excluded = new Set<VideoBufferIndex>([leftIndex])
+      if (!transitionOwnsActiveVideo) excluded.add(activeIndex)
+      rightIndex = chooseBuffer(excluded)
+    }
+    if (rightIndex === undefined) return null
+
+    const assignment = {
+      transitionId: timing.transition.id,
+      leftIndex,
+      rightIndex
+    }
+    if (leftIndex !== activeIndex || !transitionOwnsActiveVideo) {
+      seekVideoBuffer(
+        leftIndex,
+        timing.left,
+        preparedTime,
+        false,
+        transitionTimelineTimeToMediaTime(timing, 'left', preparedTime)
+      )
+    }
+    seekVideoBuffer(
+      rightIndex,
+      timing.right,
+      preparedTime,
+      false,
+      transitionTimelineTimeToMediaTime(timing, 'right', preparedTime)
+    )
+    commitTransitionVideoBuffers(assignment)
+    return assignment
+  }, [commitTransitionVideoBuffers, getVideoBuffer, seekVideoBuffer])
+
+  const prepareUpcomingVideoCut = useCallback((time: number): VideoBufferIndex | null => {
+    const cut = findUpcomingVideoCutAtTime(time)
+    if (!cut) return null
+    const existingIndex = VIDEO_BUFFER_INDICES.find(
+      (index) => bufferClipIdsRef.current[index] === cut.right.id
+    )
+    if (existingIndex !== undefined) return existingIndex
+
+    const activeIndex = activeVideoBufferRef.current
+    const candidates = VIDEO_BUFFER_INDICES.filter((index) => index !== activeIndex)
+    const transitionAssignment = transitionVideoBuffersRef.current
+    const targetIndex = candidates.find((index) => bufferClipIdsRef.current[index] === null) ??
+      candidates.find((index) =>
+        index !== transitionAssignment?.leftIndex && index !== transitionAssignment?.rightIndex
+      ) ??
+      candidates[0]
+    if (targetIndex === undefined) return null
+
+    // Decode the incoming clip's first visible frame off-screen. At the cut we
+    // only rotate buffer identity; the visible decoder is never repointed.
+    seekVideoBuffer(targetIndex, cut.right, cut.boundary + 0.0005, false)
+    return targetIndex
+  }, [findUpcomingVideoCutAtTime, seekVideoBuffer])
+
+  const syncTransitionVideoBuffers = useCallback((
+    timing: TimelineTransitionTiming,
+    timelineTime: number,
+    transitionOwnsActiveVideo: boolean
+  ): TransitionVideoBufferAssignment | null => {
+    const assignment = prepareTransitionVideoBuffers(
+      timing,
+      timelineTime,
+      transitionOwnsActiveVideo
+    )
+    if (!assignment) return null
+
+    const syncSide = (side: 'left' | 'right', index: VideoBufferIndex): void => {
+      const video = getVideoBuffer(index)
+      if (!video) return
+      const expectedMediaTime = transitionTimelineTimeToMediaTime(timing, side, timelineTime)
+      const startMediaTime = transitionTimelineTimeToMediaTime(timing, side, timing.start)
+      const endMediaTime = transitionTimelineTimeToMediaTime(timing, side, timing.end)
+      const transitionRate = (endMediaTime - startMediaTime) / timing.duration
+
+      if (video.readyState >= HTMLMediaElement.HAVE_METADATA &&
+        Math.abs(video.currentTime - expectedMediaTime) > 0.075) {
+        video.currentTime = expectedMediaTime
+      }
+      if (transitionRate <= 0.0001) {
+        video.pause()
+        return
+      }
+      setVideoBufferPlaybackRate(index, transitionRate)
+      const holdingSourceEnd = video.ended || (
+        Number.isFinite(video.duration) &&
+        expectedMediaTime >= video.duration - 0.003 &&
+        timelineTime >= timing.end - 0.01
+      )
+      if (
+        !holdingSourceEnd &&
+        video.paused &&
+        video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+      ) {
+        void video.play().catch(() => undefined)
+      }
+    }
+
+    // Both decoders run for the whole effect. Their rates are derived from the
+    // continuous entry/exit mapping, so crossing the edit point does not stop
+    // one stream and cold-start the other.
+    syncSide('left', assignment.leftIndex)
+    syncSide('right', assignment.rightIndex)
+    return assignment
+  }, [getVideoBuffer, prepareTransitionVideoBuffers, setVideoBufferPlaybackRate])
 
   useEffect(() => {
     if (!clips.length) return
@@ -203,17 +552,6 @@ export function useVideoPlayer() {
       animFrameRef.current = 0
     }
   }, [])
-
-  function syncVideoPlaybackRate(clipId: string | null): void {
-    const video = videoRef.current
-    if (!video) return
-    video.muted = true
-    if (!clipId) return
-    const rate = getSpeedRateForClip(clipId)
-    if (video.playbackRate !== rate) {
-      video.playbackRate = rate
-    }
-  }
 
   useEffect(() => useProjectStore.subscribe((state, previous) => {
     if (state.currentTime === previous.currentTime) return
@@ -241,9 +579,14 @@ export function useVideoPlayer() {
 
   useEffect(() => {
     const normalizeUrl = (url: string): string => mediaUrlToPath(url).replace(/\\/g, '/')
-
-    const video = videoRef.current
-    if (video) {
+    VIDEO_BUFFER_INDICES.forEach((index) => {
+      const video = getVideoBuffer(index)
+      if (!video) return
+      const assignedClipId = bufferClipIdsRef.current[index]
+      if (assignedClipId && !clips.some((clip) => clip.id === assignedClipId)) {
+        commitVideoBufferClipId(index, null)
+        pendingVideoSeeksRef.current.delete(index)
+      }
       const currentSrc = video.currentSrc || video.src || ''
       if (currentSrc) {
         const normalizedCurrent = normalizeUrl(currentSrc)
@@ -255,8 +598,15 @@ export function useVideoPlayer() {
           video.pause()
           video.removeAttribute('src')
           video.load()
+          commitVideoBufferClipId(index, null)
+          pendingVideoSeeksRef.current.delete(index)
         }
       }
+    })
+
+    const activeAssignment = transitionVideoBuffersRef.current
+    if (activeAssignment && !transitions.some((transition) => transition.id === activeAssignment.transitionId)) {
+      commitTransitionVideoBuffers(null)
     }
 
     const safeEnd = timelineDuration > 0 ? Math.max(0, timelineDuration - 0.0001) : 0
@@ -267,13 +617,13 @@ export function useVideoPlayer() {
 
     const activeNow = findClipAtTime(currentTimeRef.current)
     if (!activeNow && playingRef.current) {
-      video?.pause()
+      getActiveVideo()?.pause()
       stopAllAudio()
       stopTimeLoop()
       playingRef.current = false
       setPlaying(false)
     }
-  }, [clips, timelineDuration, setCurrentTime, findClipAtTime, stopAllAudio, stopTimeLoop, setPlaying, getPlaybackPath])
+  }, [clips, transitions, timelineDuration, setCurrentTime, findClipAtTime, stopAllAudio, stopTimeLoop, setPlaying, getPlaybackPath, getActiveVideo, getVideoBuffer, commitTransitionVideoBuffers, commitVideoBufferClipId])
 
   const commitTimelineTime = useCallback(
     (time: number) => {
@@ -295,7 +645,7 @@ export function useVideoPlayer() {
       const syncAudio = syncAudioRef.current || syncAudioForTime
       const seekVideo = seekVideoRef.current || seekVideoForTime
       const syncVideoRate = syncVideoRateRef.current || syncVideoPlaybackRate
-      const video = videoRef.current
+      const video = getActiveVideo()
       const now = performance.now()
       if (!lastTickRef.current) lastTickRef.current = now
       const delta = (now - lastTickRef.current) / 1000
@@ -313,6 +663,79 @@ export function useVideoPlayer() {
       }
 
       const active = findClipAtTime(timelineTime)
+      const activeTransition = findActiveTransitionAtTime(timelineTime)
+      const transitionOwnsMainVideo = !!activeTransition && !!active && (
+        active.id === activeTransition.left.id || active.id === activeTransition.right.id
+      )
+      prepareUpcomingVideoCut(timelineTime)
+      const preparedTransition = activeTransition ?? findPreparedTransitionAtTime(timelineTime)
+      if (preparedTransition) {
+        const preparedOwnsMainVideo = !!active && (
+          active.id === preparedTransition.left.id || active.id === preparedTransition.right.id
+        )
+        if (activeTransition) {
+          syncTransitionVideoBuffers(activeTransition, timelineTime, preparedOwnsMainVideo)
+        } else {
+          prepareTransitionVideoBuffers(preparedTransition, timelineTime, preparedOwnsMainVideo)
+        }
+      }
+      if (activeTransition && transitionOwnsMainVideo) {
+        const phase = timelineTime < activeTransition.boundary ? 'before' : 'after'
+        const transitionClock = activeTransitionClockRef.current
+        if (transitionClock?.id !== activeTransition.transition.id) {
+          activeTransitionClockRef.current = {
+            id: activeTransition.transition.id,
+            phase
+          }
+        } else if (transitionClock.phase !== phase) {
+          activeTransitionClockRef.current = {
+            id: activeTransition.transition.id,
+            phase
+          }
+          const assignment = transitionVideoBuffersRef.current
+          if (assignment?.transitionId === activeTransition.transition.id) {
+            // Keep the ordinary main-buffer identity unchanged until the whole
+            // transition has finished. Promoting the incoming buffer at the
+            // edit point can briefly classify it as a normal full-opacity
+            // layer while React is committing the transition styles.
+            syncTransitionVideoBuffers(activeTransition, timelineTime, true)
+          }
+        }
+
+        const nextTime = Math.min(
+          timelineTime + Math.max(0, delta),
+          activeTransition.end + 0.0005
+        )
+        commitTimelineTime(nextTime)
+        syncAudio(nextTime, true)
+        if (nextTime >= activeTransition.end - 0.0001) {
+          activeTransitionClockRef.current = null
+          const assignment = transitionVideoBuffersRef.current
+          if (assignment?.transitionId === activeTransition.transition.id) {
+            getVideoBuffer(assignment.leftIndex)?.pause()
+            activateVideoBuffer(assignment.rightIndex)
+            syncVideoBufferPlaybackRate(assignment.rightIndex, activeTransition.right.id)
+            const incomingVideo = getVideoBuffer(assignment.rightIndex)
+            if (incomingVideo) {
+              lastVideoClockRef.current = {
+                clipId: activeTransition.right.id,
+                mediaTime: incomingVideo.currentTime
+              }
+            }
+            const nextTransition = findNextTransitionAtTime(activeTransition.end + 0.001)
+            if (nextTransition) {
+              const nextActive = findClipAtTime(activeTransition.end + 0.001)
+              const nextOwnsMainVideo = !!nextActive && (
+                nextActive.id === nextTransition.left.id || nextActive.id === nextTransition.right.id
+              )
+              prepareTransitionVideoBuffers(nextTransition, activeTransition.end + 0.001, nextOwnsMainVideo)
+            }
+          }
+        }
+        animFrameRef.current = requestAnimationFrame(tick)
+        return
+      }
+      activeTransitionClockRef.current = null
       if (active && active.track === 'video') {
         if (video && video.paused) {
           seekVideo(active, timelineTime, true)
@@ -393,14 +816,24 @@ export function useVideoPlayer() {
     animFrameRef.current = requestAnimationFrame(tick)
   }, [
     commitTimelineTime,
+    activateVideoBuffer,
     findClipAtTime,
+    findActiveTransitionAtTime,
+    findNextTransitionAtTime,
+    findPreparedTransitionAtTime,
+    getActiveVideo,
+    getVideoBuffer,
     getClipRange,
+    prepareUpcomingVideoCut,
+    prepareTransitionVideoBuffers,
     seekVideoForTime,
     setCurrentTime,
     setPlaying,
     stopAllAudio,
     stopTimeLoop,
     syncAudioForTime,
+    syncVideoBufferPlaybackRate,
+    syncTransitionVideoBuffers,
     timelineDuration,
     operationsByClip
   ])
@@ -419,8 +852,27 @@ export function useVideoPlayer() {
         setCurrentTime(startTime)
       }
       const active = findClipAtTime(startTime)
-      if (active && active.track === 'video') {
-        const video = videoRef.current
+      prepareUpcomingVideoCut(startTime)
+      const activeTransition = findActiveTransitionAtTime(startTime)
+      const transitionOwnsMainVideo = !!activeTransition && !!active && (
+        active.id === activeTransition.left.id || active.id === activeTransition.right.id
+      )
+      if (activeTransition) {
+        const phase = startTime < activeTransition.boundary ? 'before' : 'after'
+        activeTransitionClockRef.current = {
+          id: activeTransition.transition.id,
+          phase
+        }
+        const assignment = syncTransitionVideoBuffers(
+          activeTransition,
+          startTime,
+          transitionOwnsMainVideo
+        )
+        if (transitionOwnsMainVideo && phase === 'after' && assignment) {
+          activateVideoBuffer(assignment.rightIndex)
+        }
+      } else if (active && active.track === 'video') {
+        const video = getActiveVideo()
         if (!video) {
           setPlaying(true)
           startTimeLoop()
@@ -428,12 +880,18 @@ export function useVideoPlayer() {
         }
         seekVideoForTime(active, startTime, true)
       }
+      const preparedTransition = findPreparedTransitionAtTime(startTime)
+      if (preparedTransition && !activeTransition) {
+        const ownsPreparedVideo = !!active && (
+          active.id === preparedTransition.left.id || active.id === preparedTransition.right.id
+        )
+        prepareTransitionVideoBuffers(preparedTransition, startTime, ownsPreparedVideo)
+      }
       syncAudioForTime(startTime, true)
       setPlaying(true)
       startTimeLoop()
     } else {
-      const video = videoRef.current
-      video?.pause()
+      VIDEO_BUFFER_INDICES.forEach((index) => getVideoBuffer(index)?.pause())
       setPlaying(false)
       playingRef.current = false
       stopAllAudio()
@@ -441,7 +899,14 @@ export function useVideoPlayer() {
       stopTimeLoop()
     }
   }, [
+    activateVideoBuffer,
     findClipAtTime,
+    findActiveTransitionAtTime,
+    findPreparedTransitionAtTime,
+    getActiveVideo,
+    getVideoBuffer,
+    prepareUpcomingVideoCut,
+    prepareTransitionVideoBuffers,
     seekVideoForTime,
     setPlaying,
     setCurrentTime,
@@ -449,6 +914,7 @@ export function useVideoPlayer() {
     startTimeLoop,
     stopTimeLoop,
     syncAudioForTime,
+    syncTransitionVideoBuffers,
     resumeAudioContext,
     timelineDuration
   ])
@@ -459,8 +925,48 @@ export function useVideoPlayer() {
       const safeEnd = timelineDuration > 0 ? Math.max(0, timelineDuration - 0.0001) : 0
       const clampedTime = Math.max(0, Math.min(time, safeEnd))
       const target = findClipAtTime(clampedTime)
-      if (target && target.track === 'video') {
+      prepareUpcomingVideoCut(clampedTime)
+      const activeTransition = findActiveTransitionAtTime(clampedTime)
+      const transitionOwnsMainVideo = !!activeTransition && !!target && (
+        target.id === activeTransition.left.id || target.id === activeTransition.right.id
+      )
+      if (activeTransition) {
+        const phase = clampedTime < activeTransition.boundary ? 'before' : 'after'
+        activeTransitionClockRef.current = { id: activeTransition.transition.id, phase }
+        const assignment = prepareTransitionVideoBuffers(
+          activeTransition,
+          clampedTime,
+          transitionOwnsMainVideo
+        )
+        if (assignment) {
+          seekVideoBuffer(
+            assignment.leftIndex,
+            activeTransition.left,
+            clampedTime,
+            playing,
+            transitionTimelineTimeToMediaTime(activeTransition, 'left', clampedTime)
+          )
+          seekVideoBuffer(
+            assignment.rightIndex,
+            activeTransition.right,
+            clampedTime,
+            playing,
+            transitionTimelineTimeToMediaTime(activeTransition, 'right', clampedTime)
+          )
+          if (transitionOwnsMainVideo) {
+            activateVideoBuffer(phase === 'before' ? assignment.leftIndex : assignment.rightIndex)
+          }
+        }
+      } else if (target && target.track === 'video') {
+        activeTransitionClockRef.current = null
         seekVideoForTime(target, clampedTime, playing)
+      }
+      const preparedTransition = findPreparedTransitionAtTime(clampedTime)
+      if (preparedTransition && !activeTransition) {
+        const ownsPreparedVideo = !!target && (
+          target.id === preparedTransition.left.id || target.id === preparedTransition.right.id
+        )
+        prepareTransitionVideoBuffers(preparedTransition, clampedTime, ownsPreparedVideo)
       }
       syncAudioForTime(clampedTime, playing)
       if (playing) {
@@ -469,8 +975,14 @@ export function useVideoPlayer() {
       setCurrentTime(clampedTime)
     },
     [
+      activateVideoBuffer,
       findClipAtTime,
+      findActiveTransitionAtTime,
+      findPreparedTransitionAtTime,
       playing,
+      prepareUpcomingVideoCut,
+      prepareTransitionVideoBuffers,
+      seekVideoBuffer,
       seekVideoForTime,
       setCurrentTime,
       startTimeLoop,
@@ -490,36 +1002,33 @@ export function useVideoPlayer() {
   )
 
   // Handle video metadata loaded
-  const onLoadedMetadata = useCallback(() => {
-    const video = videoRef.current
-    if (video) {
-      const active = findClipAtTime(currentTimeRef.current)
-      if (active) {
-        if (active.track === 'video') {
-          const targetTime = timelineTimeToMediaTime(active, operationsByClip, currentTimeRef.current)
-          if (Number.isFinite(targetTime)) {
-            video.currentTime = targetTime
-          }
-        }
-      }
-      if (pendingSeekRef.current !== null) {
-        video.currentTime = pendingSeekRef.current
+  const onLoadedMetadata = useCallback((index: VideoBufferIndex = 0) => {
+    const video = getVideoBuffer(index)
+    if (!video) return
+    const pending = pendingVideoSeeksRef.current.get(index)
+    if (pending) {
+      video.currentTime = pending.mediaTime
+      pendingVideoSeeksRef.current.delete(index)
+      if (index === activeVideoBufferRef.current) {
         lastVideoClockRef.current = {
-          clipId: active?.id || '',
-          mediaTime: pendingSeekRef.current
-        }
-        pendingSeekRef.current = null
-        if (pendingAutoPlayRef.current) {
-          pendingAutoPlayRef.current = false
-          void video.play().catch(() => {
-            pendingAutoPlayRef.current = true
-          })
-          setPlaying(true)
-          startTimeLoop()
+          clipId: pending.clipId,
+          mediaTime: pending.mediaTime
         }
       }
+      if (pending.autoPlay) {
+        void video.play().catch(() => pendingVideoSeeksRef.current.set(index, pending))
+        setPlaying(true)
+        startTimeLoop()
+      }
+      return
     }
-  }, [findClipAtTime, setPlaying, startTimeLoop, operationsByClip])
+
+    if (index !== activeVideoBufferRef.current) return
+    const active = findClipAtTime(currentTimeRef.current)
+    if (active?.track !== 'video' || bufferClipIdsRef.current[index] !== active.id) return
+    const targetTime = timelineTimeToMediaTime(active, operationsByClip, currentTimeRef.current)
+    if (Number.isFinite(targetTime)) video.currentTime = targetTime
+  }, [findClipAtTime, getVideoBuffer, setPlaying, startTimeLoop, operationsByClip])
 
   // Keep paused video frame in sync when source/clip structure changes.
   useEffect(() => {
@@ -529,8 +1038,59 @@ export function useVideoPlayer() {
     seekVideoForTime(active, currentTimeRef.current, false)
   }, [clips, operationsByClip, findClipAtTime, seekVideoForTime])
 
+  // Prime the next incoming source while it is off-screen. The active decoder
+  // is never repointed at a transition boundary; buffers rotate instead.
+  useEffect(() => {
+    const timing = findNextTransitionAtTime(currentTimeRef.current)
+    if (!timing) return
+    const active = findClipAtTime(currentTimeRef.current)
+    const ownsActiveVideo = !!active && (
+      active.id === timing.left.id || active.id === timing.right.id
+    )
+    prepareTransitionVideoBuffers(timing, currentTimeRef.current, ownsActiveVideo)
+  }, [activeVideoBuffer, clips, findClipAtTime, findNextTransitionAtTime, operationsByClip, prepareTransitionVideoBuffers, transitions])
+
+  // Apply the same off-screen decode policy to ordinary touching cuts. This
+  // removes the first-play-only black frame that used to disappear merely
+  // because adding and deleting a transition happened to leave a spare source
+  // loaded by accident.
+  useEffect(() => {
+    prepareUpcomingVideoCut(currentTimeRef.current)
+  }, [activeVideoBuffer, clips, operationsByClip, prepareUpcomingVideoCut, transitions])
+
   // Handle video ended
-  const onEnded = useCallback(() => {
+  const onEnded = useCallback((index: VideoBufferIndex = 0) => {
+    if (index !== activeVideoBufferRef.current) return
+    const boundaryAssignment = transitionVideoBuffersRef.current
+    const assignedTransition = boundaryAssignment
+      ? transitions.find((transition) => transition.id === boundaryAssignment.transitionId)
+      : null
+    const boundaryTransition = assignedTransition
+      ? getTimelineTransitionTiming(assignedTransition, clips, operationsByClip)
+      : null
+    if (
+      boundaryTransition &&
+      boundaryAssignment?.transitionId === boundaryTransition.transition.id &&
+      boundaryAssignment.leftIndex === index &&
+      currentTimeRef.current >= boundaryTransition.start - 0.01 &&
+      currentTimeRef.current <= boundaryTransition.end + 0.05
+    ) {
+      const boundaryTime = Math.min(
+        boundaryTransition.end - 0.0001,
+        Math.max(currentTimeRef.current, boundaryTransition.boundary)
+      )
+      syncTransitionVideoBuffers(boundaryTransition, boundaryTime, true)
+      // The two transition buffers continue to own composition on both sides
+      // of the edit point. Promote the incoming buffer only at effect exit.
+      activeTransitionClockRef.current = {
+        id: boundaryTransition.transition.id,
+        phase: 'after'
+      }
+      currentTimeRef.current = boundaryTime
+      setCurrentTime(boundaryTime)
+      syncAudioForTime(boundaryTime, true)
+      return
+    }
     const active = findClipAtTime(currentTimeRef.current)
     if (!active || active.track !== 'video') return
     const range = getClipRange(active)
@@ -538,8 +1098,10 @@ export function useVideoPlayer() {
     const safeEnd = timelineDuration > 0 ? Math.max(0, timelineDuration - 0.0001) : 0
     const target = Math.min(range.end, safeEnd)
     lastVideoClockRef.current = { clipId: active.id, mediaTime: range.trimEnd }
+    currentTimeRef.current = target
     setCurrentTime(target)
-    const nextClip = findClipAtTime(target + 0.001) || findNextClipAfter(target + 0.001)
+    const immediateNextClip = findClipAtTime(target + 0.001)
+    const nextClip = immediateNextClip || findNextClipAfter(target + 0.001)
     if (!nextClip) {
       setPlaying(false)
       playingRef.current = false
@@ -548,17 +1110,25 @@ export function useVideoPlayer() {
       syncAudioForTime(target, false)
       return
     }
+    if (immediateNextClip?.track === 'video') {
+      seekVideoForTime(immediateNextClip, target + 0.001, true)
+    }
     syncAudioForTime(target, true)
   }, [
+    clips,
     findClipAtTime,
     findNextClipAfter,
     getClipRange,
+    seekVideoForTime,
     setCurrentTime,
     setPlaying,
     stopAllAudio,
     stopTimeLoop,
     syncAudioForTime,
-    timelineDuration
+    syncTransitionVideoBuffers,
+    timelineDuration,
+    operationsByClip,
+    transitions
   ])
 
   // Cleanup on unmount
@@ -571,6 +1141,10 @@ export function useVideoPlayer() {
 
   return {
     videoRef,
+    videoBufferRefs: [videoRef, videoBuffer1Ref, videoBuffer2Ref] as const,
+    activeVideoBuffer,
+    videoBufferClipIds,
+    transitionVideoBuffers,
     togglePlay,
     seekTo,
     step,

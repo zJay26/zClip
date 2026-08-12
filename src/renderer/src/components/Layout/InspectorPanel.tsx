@@ -77,7 +77,7 @@ const InspectorPanel: React.FC = () => {
   const { t } = usePreferences()
   const {
     operations, audioOperations, setSpeed, setVolume, setPitch,
-    selectedClipId, selectedClipIds, clips
+    selectedClipId, selectedClipIds, selectedTransitionId, clips
   } = useProjectStore(useShallow((state) => ({
     operations: state.operations,
     audioOperations: state.getAudioOperationsForSelection(),
@@ -86,9 +86,15 @@ const InspectorPanel: React.FC = () => {
     setPitch: state.setPitch,
     selectedClipId: state.selectedClipId,
     selectedClipIds: state.selectedClipIds,
+    selectedTransitionId: state.selectedTransitionId,
     clips: state.clips
   })))
   const [tab, setTab] = useState<InspectorTab>(readInitialTab)
+  useEffect(() => {
+    if (!selectedTransitionId) return
+    setTab('transitions')
+    try { window.localStorage.setItem(INSPECTOR_TAB_KEY, 'transitions') } catch { /* best effort */ }
+  }, [selectedTransitionId])
   const selectedClip = selectedClipId ? clips.find((clip) => clip.id === selectedClipId) ?? null : null
   const speedOp = operations.find((op) => op.type === 'speed')
   const speedRate = speedOp ? (speedOp.params as SpeedParams).rate : 1
@@ -189,7 +195,7 @@ const InspectorPanel: React.FC = () => {
           <div className="p-4">
             <div className="mb-4">
               <h2 className="text-sm font-semibold text-text-primary">{t('转场', 'Transitions')}</h2>
-              <p className="mt-1 text-xs leading-relaxed text-text-muted">{t('拖动一个转场到相邻视频片段的交界处。', 'Drag a transition onto the cut between adjacent video clips.')}</p>
+              <p className="mt-1 text-xs leading-relaxed text-text-muted">{t('点击快速应用，或拖到时间线中高亮的剪辑点。', 'Click to apply quickly, or drag onto a highlighted timeline cut.')}</p>
             </div>
             <TransitionControl />
           </div>

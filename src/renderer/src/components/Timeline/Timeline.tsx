@@ -23,9 +23,17 @@ import TimelineClipBlock from './TimelineClipBlock'
 import TimelineTransitionBlock from './TimelineTransitionBlock'
 import TimelineAudioFadeBlock from './TimelineAudioFadeBlock'
 import TimelinePlayhead from './TimelinePlayhead'
-import type { MediaOperation, TransitionEffectType, TrimParams } from '../../../../shared/types'
+import type { MediaOperation, TrimParams } from '../../../../shared/types'
 import { getClipTimelineRange } from '../../../../shared/timeline-utils'
-import { TRANSITION_DRAG_MIME } from '../Controls/TransitionControl'
+import { getEligibleTransitionCuts } from '../../../../shared/transition-utils'
+import type { TransitionCut } from '../../../../shared/transition-utils'
+import { TRANSITION_DRAG_MIME, TRANSITION_EFFECTS } from '../Controls/TransitionControl'
+import {
+  clearActiveTransitionDragGeometry,
+  dragRectIntersectsCut,
+  getTransitionDragGeometry,
+  getTransitionDragRect
+} from '../../lib/transition-drag'
 import { Badge, Button, Panel } from '../ui'
 import { usePreferences } from '../../contexts/preferences'
 
@@ -72,6 +80,7 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
   const contextMenuRef = useRef<HTMLDivElement>(null)
   const {
     clips,
+    selectedTransitionId,
     selectedClipId,
     timelineDuration,
     videoTrackCount,
@@ -94,9 +103,11 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
     pasteCopiedClips,
     deleteSelectedClips,
     addTransitionAtTime,
+    showToast,
     toggleGroupLink
   } = useProjectStore(useShallow((state) => ({
     clips: state.clips,
+    selectedTransitionId: state.selectedTransitionId,
     selectedClipId: state.selectedClipId,
     timelineDuration: state.timelineDuration,
     videoTrackCount: state.videoTrackCount,
@@ -119,6 +130,7 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
     pasteCopiedClips: state.pasteCopiedClips,
     deleteSelectedClips: state.deleteSelectedClips,
     addTransitionAtTime: state.addTransitionAtTime,
+    showToast: state.showToast,
     toggleGroupLink: state.toggleGroupLink
   })))
 
@@ -138,7 +150,10 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
   const [isDragging, setIsDragging] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ clipId: string; x: number; y: number } | null>(null)
   const [contextMenuPosition, setContextMenuPosition] = useState({ left: 0, top: 0 })
-  const [transitionDropActive, setTransitionDropActive] = useState(false)
+  const [transitionDrop, setTransitionDrop] = useState<{
+    target: TransitionCut | null
+    trackIndex: number | null
+  } | null>(null)
 
   // Track container rect (update on scroll / resize)
   const [containerRect, setContainerRect] = useState<DOMRect | null>(null)
@@ -205,6 +220,14 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
   const visibleClipIds = useMemo(() => new Set(visibleClips.map((clip) => clip.id)), [visibleClips])
   const selectedClipIdSet = useMemo(() => new Set(selectedClipIds), [selectedClipIds])
   const clipById = useMemo(() => new Map(clips.map((clip) => [clip.id, clip])), [clips])
+  const selectedTimelineTransition = useMemo(
+    () => transitions.find((transition) => transition.id === selectedTransitionId) ?? null,
+    [selectedTransitionId, transitions]
+  )
+  const eligibleTransitionCuts = useMemo(
+    () => getEligibleTransitionCuts(clips, operationsByClip),
+    [clips, operationsByClip]
+  )
   const groupClipCounts = useMemo(() => {
     const counts = new Map<string, number>()
     clips.forEach((clip) => counts.set(clip.groupId, (counts.get(clip.groupId) || 0) + 1))
@@ -236,32 +259,78 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
     [containerRect, trackAreaTop, trackGap, trackHeight, videoAreaHeight, videoTrackCount]
   )
 
+  const getTransitionDropTarget = useCallback((
+    clientX: number,
+    clientY: number,
+    dataTransfer?: DataTransfer | null
+  ): {
+    target: TransitionCut | null
+    trackIndex: number | null
+  } => {
+    const el = containerRef.current
+    if (!el || !containerRect) return { target: null, trackIndex: null }
+    const rect = el.getBoundingClientRect()
+    const dragRect = getTransitionDragRect(
+      clientX,
+      clientY,
+      getTransitionDragGeometry(dataTransfer)
+    )
+    const candidates = eligibleTransitionCuts
+      .filter((cut) => {
+        const cutClientX = rect.left + timeToX(cut.boundary) - el.scrollLeft
+        const trackTop = rect.top + trackAreaTop + cut.trackIndex * (trackHeight + trackGap)
+        return dragRectIntersectsCut(
+          dragRect,
+          cutClientX,
+          trackTop,
+          trackTop + trackHeight
+        )
+      })
+      .sort((a, b) =>
+        Math.hypot(
+          rect.left + timeToX(a.boundary) - el.scrollLeft - dragRect.centerX,
+          rect.top + trackAreaTop + a.trackIndex * (trackHeight + trackGap) + trackHeight / 2 - dragRect.centerY
+        ) - Math.hypot(
+          rect.left + timeToX(b.boundary) - el.scrollLeft - dragRect.centerX,
+          rect.top + trackAreaTop + b.trackIndex * (trackHeight + trackGap) + trackHeight / 2 - dragRect.centerY
+        )
+      )
+    const target = candidates[0] ?? null
+    const pointerTrackIndex = getVideoTrackIndexFromClientY(clientY)
+    return { target, trackIndex: target?.trackIndex ?? pointerTrackIndex }
+  }, [containerRect, eligibleTransitionCuts, getVideoTrackIndexFromClientY, timeToX, trackAreaTop, trackGap, trackHeight])
+
   const handleDragOver = useCallback((event: React.DragEvent) => {
     if (!hasDragType(event.dataTransfer.types, TRANSITION_DRAG_MIME)) return
     event.preventDefault()
     event.stopPropagation()
-    event.dataTransfer.dropEffect = 'copy'
-    setTransitionDropActive(true)
-  }, [])
+    const nextDrop = getTransitionDropTarget(event.clientX, event.clientY, event.dataTransfer)
+    event.dataTransfer.dropEffect = nextDrop.target ? 'copy' : 'none'
+    setTransitionDrop(nextDrop)
+  }, [getTransitionDropTarget])
 
   const handleDrop = useCallback(
     (event: React.DragEvent) => {
       const rawType =
         event.dataTransfer.getData(TRANSITION_DRAG_MIME) ||
         event.dataTransfer.getData('text/plain').replace(/^zclip-transition:/, '')
-      const type = rawType as TransitionEffectType
+      const type = TRANSITION_EFFECTS.find((effect) => effect.type === rawType)?.type
       if (!type) return
-      setTransitionDropActive(false)
+      const drop = getTransitionDropTarget(event.clientX, event.clientY, event.dataTransfer)
+      setTransitionDrop(null)
+      clearActiveTransitionDragGeometry()
       event.preventDefault()
       event.stopPropagation()
-      const el = containerRef.current
-      const trackIndex = getVideoTrackIndexFromClientY(event.clientY)
-      if (!el || trackIndex === null) return
-      const rect = el.getBoundingClientRect()
-      const x = event.clientX - rect.left + el.scrollLeft
-      addTransitionAtTime(type, xToTime(x), trackIndex)
+      if (!drop.target) {
+        showToast(
+          t('无法放置：转场只支持同轨且首尾紧贴的视频剪辑点', 'Cannot drop: transitions require touching clips on the same video track'),
+          'info'
+        )
+        return
+      }
+      addTransitionAtTime(type, drop.target.boundary, drop.target.trackIndex)
     },
-    [addTransitionAtTime, getVideoTrackIndexFromClientY, xToTime]
+    [addTransitionAtTime, getTransitionDropTarget, showToast, t]
   )
 
   // Selected clip trim info for display
@@ -375,6 +444,11 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
             {t(`入点 ${formatTime(selectedClipTrimInfo.trimStart)} · 出点 ${formatTime(selectedClipTrimInfo.trimEnd)}`, `In ${formatTime(selectedClipTrimInfo.trimStart)} · Out ${formatTime(selectedClipTrimInfo.trimEnd)}`)}
           </span>
         )}
+        {selectedTimelineTransition && (
+          <Badge className="border-accent/55 bg-accent/15 text-accent-soft">
+            {t('转场已选中', 'Transition selected')}
+          </Badge>
+        )}
         <CurrentTimeBadge />
       </div>
       {/* Main area: header + scrollable tracks */}
@@ -404,13 +478,21 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
           onWheel={handleWheelWithLock}
           onDragOver={handleDragOver}
           onDragLeave={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setTransitionDropActive(false)
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setTransitionDrop(null)
           }}
           onDrop={handleDrop}
         >
-          {transitionDropActive && (
-            <div className="pointer-events-none absolute inset-1 z-40 flex items-center justify-center rounded-md border-2 border-dashed border-accent/60 bg-accent/10">
-              <span className="ui-material rounded-full px-3 py-1.5 text-xs font-medium text-text-primary">{t('放到相邻视频片段的交界处', 'Drop on the cut between adjacent video clips')}</span>
+          {transitionDrop && (
+            <div
+              data-transition-drop-hint
+              className="pointer-events-none absolute top-2 z-50 rounded-full border border-border-subtle bg-panel/95 px-3.5 py-1.5 text-[13px] font-semibold leading-5 shadow-lg"
+              style={{ left: scrollLeft + 12 }}
+            >
+              <span className={transitionDrop.target ? 'text-accent-soft' : 'text-text-muted'}>
+                {transitionDrop.target
+                  ? t('方框已碰到剪辑点，松手应用', 'The card touches the cut — release to apply')
+                  : t('让方框碰到同轨、无空隙的剪辑点', 'Move the card onto a touching cut on the same track')}
+              </span>
             </div>
           )}
           <div
@@ -470,6 +552,35 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
                 style={{ top: videoAreaHeight + groupGap / 2 }}
               />
             </div>
+
+            {transitionDrop && eligibleTransitionCuts.map((cut) => {
+              const isTarget = transitionDrop.target?.left.id === cut.left.id &&
+                transitionDrop.target?.right.id === cut.right.id
+              const cutX = timeToX(cut.boundary)
+              const cutTop = trackAreaTop + cut.trackIndex * (trackHeight + trackGap)
+              return (
+                <div
+                  key={`transition-cut-${cut.left.id}-${cut.right.id}`}
+                  className="pointer-events-none absolute z-40"
+                  style={{
+                    left: cutX,
+                    top: cutTop + 3,
+                    height: Math.max(2, trackHeight - 6)
+                  }}
+                >
+                  <div className={`absolute left-1/2 top-0 h-full -translate-x-1/2 ${
+                    isTarget
+                      ? 'w-1 bg-accent shadow-[0_0_12px_rgb(var(--accent)/0.9)]'
+                      : 'w-0.5 bg-accent/55'
+                  }`} />
+                  <div className={`absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rotate-45 border ${
+                    isTarget
+                      ? 'h-4 w-4 border-white bg-accent shadow-[0_0_14px_rgb(var(--accent)/0.9)]'
+                      : 'h-2.5 w-2.5 border-accent/70 bg-panel'
+                  }`} />
+                </div>
+              )
+            })}
 
             {/* Video clips */}
             {videoClips.map((clip) => (

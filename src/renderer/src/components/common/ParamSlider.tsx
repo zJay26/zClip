@@ -134,7 +134,8 @@ const ParamSlider: React.FC<ParamSliderProps> = ({
   )
 
   // Calculate slider fill percentage for visual feedback
-  const percent = ((value - min) / (max - min)) * 100
+  const range = max - min
+  const percent = range > 0 ? ((value - min) / range) * 100 : 100
 
   return (
     <div className={`flex flex-col gap-1.5 ${disabled ? 'opacity-40 pointer-events-none' : ''}`}>

@@ -24,7 +24,7 @@
 <p align="center">
   <a href="https://github.com/zJay26/zClip/releases/download/{{TAG}}/{{SETUP_EXE}}"><strong>Download for Windows</strong></a>
   ·
-  <a href="#see-it-in-action">See the app</a>
+  <a href="#demo">Demo</a>
   ·
   <a href="#start-editing-in-three-steps">Get started</a>
 </p>
@@ -46,18 +46,11 @@
 - Anyone who prefers local processing for personal or work media
 - Developers looking for a complete Electron + FFmpeg desktop project to study or extend
 
-## See it in action
-
-![zClip themes and Chinese/English interface](./docs/demo/overview.png)
-
-<details>
-<summary>Watch a short import, edit, and export demo</summary>
+## Demo
 
 <p align="center">
   <img src="./docs/demo/demo.webp" alt="zClip workflow demo" />
 </p>
-
-</details>
 
 ## Download
 
@@ -92,11 +85,11 @@ Projects can be saved as `.zclip` files and reopened by double-clicking. Autosav
 
 ### What is new in {{TAG}}
 
-- Smoother cross-track timeline dragging with clearer selected-clip feedback
-- More reliable Space-to-play and Delete shortcuts after interacting with the timeline
-- Correct `LINKED` / `UNLINKED` states with reliable unlinking for imported media pairs
-- Automatic pause and play-button reset at the end of audio-only timelines
-- One refreshed zClip icon across the app, installer, and documentation
+- Reworked transition playback to remove black frames, jumps, and stalls around edit points
+- More forgiving transition drops, clearer selection and parameter controls, and duration-preserving replacement
+- Fixed detached and deleted audio continuing to play from its former video clip
+- Much faster exports for high-speed clips, simple sequential edits, GIF, WebP, VP9, and wipe transitions
+- Runtime detection for NVENC, QSV, and AMF with safe software fallback
 
 ## What it does not try to replace
 

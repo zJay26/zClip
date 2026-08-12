@@ -22,15 +22,15 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.5.1/zClip.Setup.2.5.1.exe"><strong>Download for Windows</strong></a>
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.6.0/zClip.Setup.2.6.0.exe"><strong>Download for Windows</strong></a>
   ·
-  <a href="#see-it-in-action">See the app</a>
+  <a href="#demo">Demo</a>
   ·
   <a href="#start-editing-in-three-steps">Get started</a>
 </p>
 
 > [!WARNING]
-> The Windows installer for `v2.5.1` is not commercially code-signed. Windows may show an “Unknown publisher” or SmartScreen warning. Download only from this repository and verify it with `SHA256SUMS.txt`; see [First launch on Windows](#first-launch-on-windows).
+> The Windows installer for `v2.6.0` is not commercially code-signed. Windows may show an “Unknown publisher” or SmartScreen warning. Download only from this repository and verify it with `SHA256SUMS.txt`; see [First launch on Windows](#first-launch-on-windows).
 
 ## The problems zClip is built for
 
@@ -46,32 +46,25 @@
 - Anyone who prefers local processing for personal or work media
 - Developers looking for a complete Electron + FFmpeg desktop project to study or extend
 
-## See it in action
-
-![zClip themes and Chinese/English interface](./docs/demo/overview.png)
-
-<details>
-<summary>Watch a short import, edit, and export demo</summary>
+## Demo
 
 <p align="center">
   <img src="./docs/demo/demo.webp" alt="zClip workflow demo" />
 </p>
 
-</details>
-
 ## Download
 
-Current version: `2.5.1`. Supported platform: Windows 10/11 x64.
+Current version: `2.6.0`. Supported platform: Windows 10/11 x64.
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.5.1/zClip.Setup.2.5.1.exe">
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.6.0/zClip.Setup.2.6.0.exe">
     <img src="https://img.shields.io/badge/Download_for_Windows-6D5DFB?style=for-the-badge&logo=windows&logoColor=white" alt="Download for Windows" />
   </a>
 </p>
 
-- [Read the release notes](https://github.com/zJay26/zClip/releases/tag/v2.5.1)
-- [Download SHA-256 checksums](https://github.com/zJay26/zClip/releases/download/v2.5.1/SHA256SUMS.txt)
-- [Check the signing status](https://github.com/zJay26/zClip/releases/download/v2.5.1/SIGNING_STATUS.txt)
+- [Read the release notes](https://github.com/zJay26/zClip/releases/tag/v2.6.0)
+- [Download SHA-256 checksums](https://github.com/zJay26/zClip/releases/download/v2.6.0/SHA256SUMS.txt)
+- [Check the signing status](https://github.com/zJay26/zClip/releases/download/v2.6.0/SIGNING_STATUS.txt)
 
 ## Start editing in three steps
 
@@ -90,13 +83,13 @@ Projects can be saved as `.zclip` files and reopened by double-clicking. Autosav
 - Apply seven transitions and position footage directly in the preview
 - Export the full timeline, selected clips, or a custom range with progress, speed, and ETA
 
-### What is new in v2.5.1
+### What is new in v2.6.0
 
-- Smoother cross-track timeline dragging with clearer selected-clip feedback
-- More reliable Space-to-play and Delete shortcuts after interacting with the timeline
-- Correct `LINKED` / `UNLINKED` states with reliable unlinking for imported media pairs
-- Automatic pause and play-button reset at the end of audio-only timelines
-- One refreshed zClip icon across the app, installer, and documentation
+- Reworked transition playback to remove black frames, jumps, and stalls around edit points
+- More forgiving transition drops, clearer selection and parameter controls, and duration-preserving replacement
+- Fixed detached and deleted audio continuing to play from its former video clip
+- Much faster exports for high-speed clips, simple sequential edits, GIF, WebP, VP9, and wipe transitions
+- Runtime detection for NVENC, QSV, and AMF with safe software fallback
 
 ## What it does not try to replace
 

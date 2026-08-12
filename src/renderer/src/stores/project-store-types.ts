@@ -20,6 +20,7 @@ export interface ProjectSnapshot {
   operationsByClip: Record<string, MediaOperation[]>
   transitions: TimelineTransition[]
   audioFades: AudioFadeSegment[]
+  selectedTransitionId: string | null
   selectedClipId: string | null
   selectedClipIds: string[]
   lastSelectedClipId: string | null
@@ -39,6 +40,7 @@ export interface ProjectStore {
   clips: TimelineClip[]
   transitions: TimelineTransition[]
   audioFades: AudioFadeSegment[]
+  selectedTransitionId: string | null
   selectedClipId: string | null
   selectedClipIds: string[]
   lastSelectedClipId: string | null
@@ -85,6 +87,7 @@ export interface ProjectStore {
   openFile: () => Promise<void>
   loadFile: (filePath: string) => Promise<void>
   selectClip: (clipId: string, mode?: 'single' | 'toggle' | 'range') => void
+  selectTransition: (transitionId: string) => void
   addVideoTrack: () => void
   removeVideoTrack: () => void
   addAudioTrack: () => void
@@ -125,6 +128,7 @@ export interface ProjectStore {
   setTransform: (params: Partial<TransformParams>, options?: HistoryEditOptions) => void
   setFade: (params: Partial<FadeParams>, options?: HistoryEditOptions) => void
   addTransitionAtTime: (type: TransitionEffectType, time: number, trackIndex: number) => boolean
+  applyTransition: (type: TransitionEffectType) => boolean
   updateTransition: (
     id: string,
     patch: Partial<Pick<TimelineTransition, 'startOffset' | 'endOffset'>>,

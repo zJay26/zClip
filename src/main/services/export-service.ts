@@ -26,6 +26,8 @@ import {
   getTimelineDuration,
   getVisibleDurationFromOps
 } from '../../shared/timeline-utils'
+import { getTimelineTransitionTiming } from '../../shared/transition-utils'
+import { getEffectiveTimelineAudioClips } from '../../shared/audio-utils'
 import { probe, runFFmpeg, terminateProcess, type FFmpegProgress } from './ffmpeg'
 import { buildFFmpegArgs } from './media-engine'
 import {
@@ -42,6 +44,12 @@ import path from 'path'
 import { randomUUID } from 'crypto'
 import os from 'os'
 import { authorizeMediaPath } from '../security/media-access'
+import {
+  detectPreferredH264Encoder,
+  getH264EncoderArgs,
+  getVp9ParallelArgs,
+  type H264EncoderKind
+} from './hardware-encoder'
 
 /** Resolution presets -> pixel dimensions */
 const RESOLUTION_MAP: Record<ResolutionPreset, { w: number; h: number } | null> = {
@@ -155,86 +163,94 @@ function getAudioFadesForClip(
     .filter((fade) => fade.duration > 0.01)
 }
 
-function getEffectiveAudioClips(clips: TimelineClip[]): TimelineClip[] {
-  const explicitAudioGroupIds = new Set(
-    clips
-      .filter((clip) => clip.track === 'audio' && clip.mediaInfo.hasAudio)
-      .map((clip) => clip.groupId)
-  )
-  return clips.filter((clip) =>
-    clip.mediaInfo.hasAudio &&
-    (clip.track === 'audio' || !explicitAudioGroupIds.has(clip.groupId))
-  )
-}
-
-function getTransitionTiming(
-  transition: TimelineTransition,
+function getVideoTransitionExtension(
+  clip: TimelineClip,
   clips: TimelineClip[],
-  operationsByClip: Record<string, MediaOperation[]>
-): { start: number; end: number; boundary: number } | null {
-  const left = clips.find((clip) => clip.id === transition.leftClipId)
-  const right = clips.find((clip) => clip.id === transition.rightClipId)
-  if (!left || !right) return null
-  const leftRange = getClipTimelineRange(left, operationsByClip)
-  const rightRange = getClipTimelineRange(right, operationsByClip)
-  const boundary = (leftRange.end + rightRange.start) / 2
-  const start = boundary + transition.startOffset
-  const end = boundary + transition.endOffset
-  if (end <= start + 0.01) return null
-  return { start, end, boundary }
+  operationsByClip: Record<string, MediaOperation[]>,
+  transitions: TimelineTransition[]
+): { startPadding: number; endPadding: number; effectiveStart: number } {
+  let startPadding = 0
+  let endPadding = 0
+  transitions.forEach((transition) => {
+    const timing = getTimelineTransitionTiming(transition, clips, operationsByClip)
+    if (!timing) return
+    if (transition.rightClipId === clip.id) {
+      startPadding = Math.max(startPadding, timing.boundary - timing.start)
+    }
+    if (transition.leftClipId === clip.id) {
+      endPadding = Math.max(endPadding, timing.end - timing.boundary)
+    }
+  })
+  return {
+    startPadding,
+    endPadding,
+    effectiveStart: clip.startTime - startPadding
+  }
 }
 
 function addVideoTransitionFilters(
   filters: string[],
   clip: TimelineClip,
-  clipRange: ReturnType<typeof getClipTimelineRange>,
   clips: TimelineClip[],
   operationsByClip: Record<string, MediaOperation[]>,
-  transitions: TimelineTransition[]
+  transitions: TimelineTransition[],
+  effectiveStart: number
 ): void {
   transitions.forEach((transition) => {
-    const timing = getTransitionTiming(transition, clips, operationsByClip)
+    const timing = getTimelineTransitionTiming(transition, clips, operationsByClip)
     if (!timing) return
-    const localStart = Math.max(0, timing.start - clipRange.start)
-    const localEnd = Math.min(clipRange.visibleDuration, timing.end - clipRange.start)
+    const localStart = timing.start - effectiveStart
+    const localBoundary = timing.boundary - effectiveStart
+    const localEnd = timing.end - effectiveStart
     const duration = localEnd - localStart
     if (duration <= 0.01) return
-    if (transition.type === 'crossfade' && transition.leftClipId === clip.id) {
-      filters.push(
-        `fade=t=out:st=${localStart.toFixed(3)}:d=${duration.toFixed(3)}:alpha=1`
-      )
-    } else if (transition.type === 'crossfade' && transition.rightClipId === clip.id) {
+    if (transition.type === 'crossfade' && transition.rightClipId === clip.id) {
+      // Right is overlaid after left. Fading only the right layer in yields
+      // left*(1-progress) + right*progress without exposing the canvas.
       filters.push(
         `fade=t=in:st=${localStart.toFixed(3)}:d=${duration.toFixed(3)}:alpha=1`
       )
-    } else if ((transition.type === 'fadeblack' || transition.type === 'fadewhite')) {
-      const halfDuration = duration / 2
-      if (transition.leftClipId === clip.id) {
-        filters.push(`fade=t=out:st=${localStart.toFixed(3)}:d=${halfDuration.toFixed(3)}:alpha=1`)
-      } else if (transition.rightClipId === clip.id) {
-        filters.push(`fade=t=in:st=${(localStart + halfDuration).toFixed(3)}:d=${halfDuration.toFixed(3)}:alpha=1`)
-      }
+    } else if (
+      (transition.type === 'fadeblack' || transition.type === 'fadewhite') &&
+      transition.rightClipId === clip.id
+    ) {
+      // Keep the incoming frame transparent until the opaque matte covers the
+      // cut, then reveal it immediately underneath the matte.
+      filters.push(`fade=t=in:st=${localBoundary.toFixed(3)}:d=0.010:alpha=1`)
     } else if (transition.rightClipId === clip.id && (transition.type === 'wipeleft' || transition.type === 'wiperight')) {
       const progress = `clip((T-${localStart.toFixed(3)})/${duration.toFixed(3)},0,1)`
       const visible = transition.type === 'wipeleft'
         ? `gte(X/W,1-${progress})`
         : `lte(X/W,${progress})`
+      // geq is one of FFmpeg's most expensive per-pixel filters. The incoming
+      // clip is already extended to the transition start, so keep it transparent
+      // before the wipe and only evaluate geq while the wipe is actually moving.
+      // After localEnd the unmodified, fully opaque frames pass through.
+      if (localStart > 0.001) {
+        filters.push(`colorchannelmixer=aa=0:enable='lt(t,${localStart.toFixed(3)})'`)
+      }
       filters.push(
-        `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(${visible},alpha(X,Y),0)'`
+        `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(${visible},alpha(X,Y),0)':` +
+        `enable='between(t,${localStart.toFixed(3)},${localEnd.toFixed(3)})'`
       )
     }
   })
 }
 
-function addVideoFadeFilters(filters: string[], ops: MediaOperation[], visibleDuration: number): void {
+function addVideoFadeFilters(
+  filters: string[],
+  ops: MediaOperation[],
+  visibleDuration: number,
+  startPadding = 0
+): void {
   const fade = ops.find((item) => item.type === 'fade' && item.enabled)
   if (!fade) return
   const params = fade.params as FadeParams
   const fadeIn = Math.max(0, Math.min(params.fadeIn, visibleDuration))
   const fadeOut = Math.max(0, Math.min(params.fadeOut, visibleDuration))
-  if (fadeIn > 0.01) filters.push(`fade=t=in:st=0:d=${fadeIn.toFixed(3)}:alpha=1`)
+  if (fadeIn > 0.01) filters.push(`fade=t=in:st=${startPadding.toFixed(3)}:d=${fadeIn.toFixed(3)}:alpha=1`)
   if (fadeOut > 0.01) {
-    filters.push(`fade=t=out:st=${Math.max(0, visibleDuration - fadeOut).toFixed(3)}:d=${fadeOut.toFixed(3)}:alpha=1`)
+    filters.push(`fade=t=out:st=${Math.max(0, startPadding + visibleDuration - fadeOut).toFixed(3)}:d=${fadeOut.toFixed(3)}:alpha=1`)
   }
 }
 
@@ -272,6 +288,119 @@ function buildVideoScaleFilters(
   return filters
 }
 
+function isDefaultSequenceTransform(transform: TransformParams): boolean {
+  return transform.fit === 'contain' &&
+    Math.abs(transform.scale - 1) < 0.0001 &&
+    Math.abs(transform.x) < 0.0001 &&
+    Math.abs(transform.y) < 0.0001 &&
+    transform.rotation === 0 &&
+    Math.abs(transform.opacity - 100) < 0.0001 &&
+    !transform.flipX &&
+    !transform.flipY
+}
+
+function buildSequenceScaleFilters(
+  outputSize: { w: number; h: number },
+  backgroundColor: string
+): string[] {
+  return [
+    `scale=${outputSize.w}:${outputSize.h}:force_original_aspect_ratio=decrease:force_divisible_by=2`,
+    `pad=${outputSize.w}:${outputSize.h}:(ow-iw)/2:(oh-ih)/2:color=${backgroundColor}`,
+    'setsar=1',
+    'format=yuv420p'
+  ]
+}
+
+function canUseSequentialVideoFastPath(
+  clips: TimelineClip[],
+  operationsByClip: Record<string, MediaOperation[]>,
+  transitions: TimelineTransition[],
+  outputSize: { w: number; h: number } | null,
+  timelineDuration: number,
+  audioOnlyFormat: boolean,
+  projectSettings?: ProjectSettings
+): boolean {
+  if (audioOnlyFormat || !outputSize || transitions.length > 0) return false
+  const videoClips = clips
+    .filter((clip) => clip.track === 'video' && clip.mediaInfo.hasVideo)
+    .slice()
+    .sort((a, b) => a.startTime - b.startTime || a.id.localeCompare(b.id))
+  if (videoClips.length === 0) return false
+  const trackIndex = videoClips[0].trackIndex
+  const tolerance = 1 / Math.max(1, resolveProjectFrameRate(clips, projectSettings))
+  let expectedStart = 0
+  for (const clip of videoClips) {
+    const ops = operationsByClip[clip.id] || []
+    const fade = ops.find((operation) => operation.type === 'fade' && operation.enabled)
+    const fadeParams = fade?.params as FadeParams | undefined
+    const hasVisibleFade = Boolean(
+      fadeParams && (fadeParams.fadeIn > 0.01 || fadeParams.fadeOut > 0.01)
+    )
+    const transform = getTransformParams(ops)
+    if (clip.trackIndex !== trackIndex || hasVisibleFade || !isDefaultSequenceTransform(transform)) return false
+    if (Math.abs(clip.startTime - expectedStart) > tolerance) return false
+    expectedStart = clip.startTime + getClipTimelineRange(clip, operationsByClip).visibleDuration
+  }
+  return Math.abs(expectedStart - timelineDuration) <= tolerance
+}
+
+interface TimelineInputWindow {
+  filePath: string
+  seekStart: number
+  seekEnd: number
+  speedRate: number
+  clips: TimelineClip[]
+}
+
+function buildTimelineInputWindows(
+  clips: TimelineClip[],
+  operationsByClip: Record<string, MediaOperation[]>,
+  effectiveAudioIds: Set<string>,
+  audioOnlyFormat: boolean
+): TimelineInputWindow[] {
+  const relevant = clips.filter((clip) =>
+    (!audioOnlyFormat && clip.track === 'video' && clip.mediaInfo.hasVideo) || effectiveAudioIds.has(clip.id)
+  )
+  const sorted = relevant.slice().sort((a, b) => {
+    const pathOrder = a.filePath.localeCompare(b.filePath)
+    if (pathOrder !== 0) return pathOrder
+    const aRange = getClipTimelineRange(a, operationsByClip)
+    const bRange = getClipTimelineRange(b, operationsByClip)
+    return aRange.speedRate - bRange.speedRate || aRange.trimStart - bRange.trimStart || a.id.localeCompare(b.id)
+  })
+  const windows: TimelineInputWindow[] = []
+  const maxMergeGapSeconds = 0.25
+  for (const clip of sorted) {
+    const range = getClipTimelineRange(clip, operationsByClip)
+    let candidate: TimelineInputWindow | undefined
+    for (let index = windows.length - 1; index >= 0; index -= 1) {
+      const window = windows[index]
+      if (
+        window.filePath === clip.filePath &&
+        Math.abs(window.speedRate - range.speedRate) < 0.0001 &&
+        range.trimStart <= window.seekEnd + maxMergeGapSeconds
+      ) {
+        candidate = window
+        break
+      }
+    }
+    if (candidate) {
+      candidate.seekStart = Math.min(candidate.seekStart, range.trimStart)
+      candidate.seekEnd = Math.max(candidate.seekEnd, range.trimEnd)
+      candidate.clips.push(clip)
+    } else {
+      windows.push({
+        filePath: clip.filePath,
+        seekStart: range.trimStart,
+        seekEnd: range.trimEnd,
+        speedRate: range.speedRate,
+        clips: [clip]
+      })
+    }
+  }
+  return windows
+}
+
 function buildOverlayExpr(
   transform: TransformParams,
   clip: TimelineClip,
@@ -293,7 +422,7 @@ function buildOverlayExpr(
   )
   let xExpression = baseX
   if (slide) {
-    const timing = getTransitionTiming(slide, clips, operationsByClip)
+    const timing = getTimelineTransitionTiming(slide, clips, operationsByClip)
     if (timing) {
       const duration = Math.max(0.01, timing.end - timing.start)
       const progress = `min(max((t-${timing.start.toFixed(3)})/${duration.toFixed(3)},0),1)`
@@ -480,28 +609,43 @@ function buildEta(
   return etaText
 }
 
-async function runExportJob(
+interface ExportJobOptions {
+  prepass?: {
+    args: string[]
+    duration: number
+    outputPath: string
+    progressWeight: number
+  }
+  fallbackArgs?: string[]
+  cleanupPaths?: string[]
+}
+
+export async function runExportJob(
   args: string[],
   duration: number,
   outputPath: string,
   win: BrowserWindow,
-  expectedStreamKind: 'video' | 'audio'
+  expectedStreamKind: 'video' | 'audio',
+  format: ExportOptions['format'],
+  options: ExportJobOptions = {}
 ): Promise<void> {
-  if (currentExportProcess) {
+  if (currentExportProcess || currentExportSettled) {
     throw new Error('已有导出任务正在运行')
   }
 
   const startedAt = Date.now()
   const etaHistory: number[] = []
   const lastEtaRef = { value: '' }
-  const onProgress = (progress: FFmpegProgress): void => {
+  const onProgress = (progress: FFmpegProgress, offset: number, span: number): void => {
     if (win.isDestroyed()) return
-    const normalizedPercent = Math.round(progress.percent * 100) / 100
+    const mappedPercent = offset + progress.percent * span / 100
+    const normalizedPercent = Math.round(mappedPercent * 100) / 100
+    const mappedTime = duration * normalizedPercent / 100
     win.webContents.send(IPC_CHANNELS.EXPORT_PROGRESS, {
       percent: normalizedPercent,
-      currentTime: progress.time,
+      currentTime: mappedTime,
       speed: progress.speed,
-      eta: buildEta(duration, progress.time, startedAt, normalizedPercent, etaHistory, lastEtaRef)
+      eta: buildEta(duration, mappedTime, startedAt, normalizedPercent, etaHistory, lastEtaRef)
     })
   }
 
@@ -510,25 +654,63 @@ async function runExportJob(
     path.dirname(outputPath),
     `.${path.basename(outputPath, extension)}.${randomUUID()}.partial${extension}`
   )
-  const actualArgs = [...args]
-  if (actualArgs[actualArgs.length - 1] !== outputPath) throw new Error('导出命令的输出路径不一致')
-  actualArgs[actualArgs.length - 1] = tempPath
-
-  const { process, promise } = runFFmpeg(actualArgs, duration, onProgress)
+  const withOutputPath = (sourceArgs: string[], expectedPath: string, actualPath: string): string[] => {
+    const next = [...sourceArgs]
+    if (next[next.length - 1] !== expectedPath) throw new Error('导出命令的输出路径不一致')
+    next[next.length - 1] = actualPath
+    return next
+  }
+  const actualArgs = withOutputPath(args, outputPath, tempPath)
   const verificationController = new AbortController()
   let resolveSettled!: () => void
   const settled = new Promise<void>((resolve) => {
     resolveSettled = resolve
   })
-  currentExportProcess = process
   currentExportCancelled = false
   currentExportAbortController = verificationController
   currentExportSettled = settled
 
+  const runStage = async (
+    stageArgs: string[],
+    stageDuration: number,
+    progressOffset: number,
+    progressSpan: number
+  ): Promise<void> => {
+    const launched = runFFmpeg(
+      stageArgs,
+      stageDuration,
+      (progress) => onProgress(progress, progressOffset, progressSpan)
+    )
+    currentExportProcess = launched.process
+    try {
+      await launched.promise
+    } finally {
+      if (currentExportProcess === launched.process) currentExportProcess = null
+    }
+  }
+
   try {
-    await promise
-    if (currentExportCancelled) {
+    const prepassWeight = Math.max(0, Math.min(80, options.prepass?.progressWeight ?? 0))
+    if (options.prepass) {
+      await fs.unlink(options.prepass.outputPath).catch(() => {})
+      await runStage(options.prepass.args, options.prepass.duration, 0, prepassWeight)
+      const paletteStat = await fs.stat(options.prepass.outputPath)
+      if (!paletteStat.isFile() || paletteStat.size <= 0) throw new Error('GIF 调色板生成失败')
+      if (currentExportCancelled) return
+    }
+
+    try {
+      await runStage(actualArgs, duration, prepassWeight, 100 - prepassWeight)
+    } catch (error) {
+      if (!options.fallbackArgs || currentExportCancelled) throw error
+      // Runtime probing can succeed while a real project still hits a driver,
+      // pixel-format or resolution limitation. Retry the exact same graph with
+      // the software encoder before surfacing an error to the user.
       await fs.unlink(tempPath).catch(() => {})
+      const fallbackActualArgs = withOutputPath(options.fallbackArgs, outputPath, tempPath)
+      await runStage(fallbackActualArgs, duration, prepassWeight, 100 - prepassWeight)
+    }
+    if (currentExportCancelled) {
       return
     }
     const stat = await fs.stat(tempPath)
@@ -557,17 +739,17 @@ async function runExportJob(
     }
   } catch (error) {
     if (currentExportCancelled) {
-      await fs.unlink(tempPath).catch(() => {})
       return
     }
-    const message = formatExportError(error)
+    const message = formatExportError(error, format)
     if (!win.isDestroyed()) {
       win.webContents.send(IPC_CHANNELS.EXPORT_ERROR, message)
     }
-    await fs.unlink(tempPath).catch(() => {})
     throw new Error(message)
   } finally {
-    if (currentExportProcess === process) {
+    await fs.unlink(tempPath).catch(() => {})
+    await Promise.all((options.cleanupPaths || []).map((cleanupPath) => fs.unlink(cleanupPath).catch(() => {})))
+    if (currentExportSettled === settled) {
       currentExportProcess = null
       currentExportAbortController = null
       currentExportSettled = null
@@ -622,21 +804,73 @@ export async function startExport(
 
   // Calculate effective duration for progress tracking
   const duration = getVisibleDurationFromOps(mediaInfo.duration, operations)
-
+  const h264Encoder = mediaInfo.hasVideo && isH264Format(exportOptions.format)
+    ? await detectPreferredH264Encoder()
+    : 'software'
+  const palettePath = exportOptions.format === 'gif'
+    ? path.join(os.tmpdir(), `zclip-palette-${process.pid}-${randomUUID()}.png`)
+    : null
   const args = buildFFmpegArgs(
     mediaInfo.filePath,
     exportOptions.outputPath,
     operations,
     mediaInfo,
-    { ...encoding, resolution, format: exportOptions.format, gifLoop: exportOptions.gifLoop }
+    {
+      ...encoding,
+      resolution,
+      format: exportOptions.format,
+      gifLoop: exportOptions.gifLoop,
+      gifPalettePass: palettePath ? { mode: 'use', palettePath } : undefined,
+      h264Encoder
+    }
   )
+  const paletteArgs = palettePath
+    ? buildFFmpegArgs(
+        mediaInfo.filePath,
+        palettePath,
+        operations,
+        mediaInfo,
+        {
+          ...encoding,
+          resolution,
+          format: exportOptions.format,
+          gifLoop: exportOptions.gifLoop,
+          gifPalettePass: { mode: 'generate', palettePath }
+        }
+      )
+    : null
+  const fallbackArgs = h264Encoder !== 'software'
+    ? buildFFmpegArgs(
+        mediaInfo.filePath,
+        exportOptions.outputPath,
+        operations,
+        mediaInfo,
+        {
+          ...encoding,
+          resolution,
+          format: exportOptions.format,
+          gifLoop: exportOptions.gifLoop,
+          h264Encoder: 'software'
+        }
+      )
+    : undefined
 
   await runExportJob(
     args,
     duration,
     exportOptions.outputPath,
     win,
-    isAudioFormat(exportOptions.format) || !mediaInfo.hasVideo ? 'audio' : 'video'
+    isAudioFormat(exportOptions.format) || !mediaInfo.hasVideo ? 'audio' : 'video',
+    exportOptions.format,
+    {
+      fallbackArgs,
+      ...(paletteArgs && palettePath
+        ? {
+          prepass: { args: paletteArgs, duration, outputPath: palettePath, progressWeight: 35 },
+          cleanupPaths: [palettePath]
+        }
+        : {})
+    }
   )
 }
 
@@ -657,7 +891,7 @@ export async function startTimelineExport(
   const sliced = sliceTimelineForRange(clips, operationsByClip, exportOptions.range, transitions, audioFades)
   const videoClips = sliced.clips.filter((clip) => clip.track === 'video' && clip.mediaInfo.hasVideo)
   const timelineDuration = sliced.duration
-  const hasAudio = getEffectiveAudioClips(sliced.clips).length > 0
+  const hasAudio = getEffectiveTimelineAudioClips(sliced.clips).length > 0
   const audioOnlyFormat = isAudioFormat(exportOptions.format)
   if (!Number.isFinite(timelineDuration) || timelineDuration <= 0.001) {
     throw new Error('导出范围内没有有效时长')
@@ -666,7 +900,13 @@ export async function startTimelineExport(
     throw new Error(audioOnlyFormat ? '导出范围内没有音频内容' : '导出范围内没有视频内容')
   }
   const outputSize = resolveOutputSize(videoClips, resolution, exportOptions.projectSettings)
+  const h264Encoder = !audioOnlyFormat && isH264Format(exportOptions.format)
+    ? await detectPreferredH264Encoder()
+    : 'software'
 
+  const palettePath = exportOptions.format === 'gif'
+    ? path.join(os.tmpdir(), `zclip-palette-${process.pid}-${randomUUID()}.png`)
+    : null
   const compiledArgs = buildTimelineFFmpegArgs(
     sliced.clips,
     sliced.operationsByClip,
@@ -678,20 +918,82 @@ export async function startTimelineExport(
     encoding,
     exportOptions.format,
     exportOptions.gifLoop,
-    exportOptions.projectSettings
+    exportOptions.projectSettings,
+    palettePath ? { mode: 'use', palettePath } : undefined,
+    h264Encoder
   )
+  const compiledPaletteArgs = palettePath
+    ? buildTimelineFFmpegArgs(
+        sliced.clips,
+        sliced.operationsByClip,
+        palettePath,
+        outputSize,
+        timelineDuration,
+        sliced.transitions,
+        sliced.audioFades,
+        encoding,
+        exportOptions.format,
+        exportOptions.gifLoop,
+        exportOptions.projectSettings,
+        { mode: 'generate', palettePath },
+        'software'
+      )
+    : null
+  const compiledFallbackArgs = h264Encoder !== 'software'
+    ? buildTimelineFFmpegArgs(
+        sliced.clips,
+        sliced.operationsByClip,
+        exportOptions.outputPath,
+        outputSize,
+        timelineDuration,
+        sliced.transitions,
+        sliced.audioFades,
+        encoding,
+        exportOptions.format,
+        exportOptions.gifLoop,
+        exportOptions.projectSettings,
+        undefined,
+        'software'
+      )
+    : null
 
   const materialized = await materializeFilterGraph(compiledArgs)
+  let materializedPalette: Awaited<ReturnType<typeof materializeFilterGraph>> | null = null
+  let materializedFallback: Awaited<ReturnType<typeof materializeFilterGraph>> | null = null
   try {
+    materializedPalette = compiledPaletteArgs
+      ? await materializeFilterGraph(compiledPaletteArgs)
+      : null
+    materializedFallback = compiledFallbackArgs
+      ? await materializeFilterGraph(compiledFallbackArgs)
+      : null
     await runExportJob(
       materialized.args,
       timelineDuration,
       exportOptions.outputPath,
       win,
-      audioOnlyFormat ? 'audio' : 'video'
+      audioOnlyFormat ? 'audio' : 'video',
+      exportOptions.format,
+      {
+        fallbackArgs: materializedFallback?.args,
+        ...(materializedPalette && palettePath
+          ? {
+            prepass: {
+              args: materializedPalette.args,
+              duration: timelineDuration,
+              outputPath: palettePath,
+              progressWeight: 35
+            },
+            cleanupPaths: [palettePath]
+          }
+          : {})
+      }
     )
   } finally {
     if (materialized.scriptPath) await fs.unlink(materialized.scriptPath).catch(() => {})
+    if (materializedPalette?.scriptPath) await fs.unlink(materializedPalette.scriptPath).catch(() => {})
+    if (materializedFallback?.scriptPath) await fs.unlink(materializedFallback.scriptPath).catch(() => {})
+    if (palettePath) await fs.unlink(palettePath).catch(() => {})
   }
 }
 
@@ -741,7 +1043,9 @@ export function buildTimelineFFmpegArgs(
   encoding: ResolvedExportEncodingOptions,
   format: ExportOptions['format'],
   gifLoop?: ExportOptions['gifLoop'],
-  projectSettings?: ProjectSettings
+  projectSettings?: ProjectSettings,
+  gifPalettePass?: { mode: 'generate' | 'use'; palettePath: string },
+  h264Encoder: H264EncoderKind = 'software'
 ): string[] {
   const args: string[] = ['-y']
   const audioOnlyFormat = isAudioFormat(format)
@@ -750,35 +1054,89 @@ export function buildTimelineFFmpegArgs(
   const animatedImageFormat = gifFormat || webpFormat
 
   const inputs: TimelineClip[] = [...clips]
-  const effectiveAudioIds = new Set(getEffectiveAudioClips(inputs).map((clip) => clip.id))
-  const inputPaths = Array.from(new Set(inputs.map((clip) => clip.filePath)))
-  inputPaths.forEach((filePath) => args.push('-i', filePath))
+  const effectiveAudioIds = new Set(getEffectiveTimelineAudioClips(inputs).map((clip) => clip.id))
+  const frameRate = resolveProjectFrameRate(clips, projectSettings)
+  const animatedFps = animatedImageFormat
+    ? resolveAnimatedImageFps(
+        clips
+          .filter((clip) => clip.track === 'video' && clip.mediaInfo.hasVideo)
+          .map((clip) => clip.mediaInfo.fps),
+        encoding.animatedFps
+      )
+    : frameRate
+  const sequentialVideoFastPath = canUseSequentialVideoFastPath(
+    clips,
+    operationsByClip,
+    transitions,
+    outputSize,
+    timelineDuration,
+    audioOnlyFormat,
+    projectSettings
+  )
   const filterParts: string[] = []
   const videoSourceByClip = new Map<string, string>()
   const audioSourceByClip = new Map<string, string>()
-  inputPaths.forEach((filePath, inputIndex) => {
-    const videoConsumers = inputs.filter((clip) =>
-      clip.filePath === filePath && clip.track === 'video' && clip.mediaInfo.hasVideo && !audioOnlyFormat
+  const inputSeekStartByClip = new Map<string, number>()
+  let inputCount = 0
+  if (animatedImageFormat) {
+    // A shared split source can retain decoded frames until every trimmed
+    // consumer advances. With long/high-resolution sources this may exhaust
+    // memory before the first WebP/GIF frame reaches the encoder. Animated
+    // image exports have no audio, so give every visible video clip a bounded,
+    // independently seeked input instead.
+    inputs
+      .filter((clip) => clip.track === 'video' && clip.mediaInfo.hasVideo && !audioOnlyFormat)
+      .forEach((clip) => {
+        const inputIndex = inputCount
+        inputCount += 1
+        const range = getClipTimelineRange(clip, operationsByClip)
+        const sourceDuration = Math.max(0.001, range.trimEnd - range.trimStart)
+        if (range.trimStart > 0.000_001) {
+          args.push('-ss', range.trimStart.toFixed(6))
+        }
+        args.push('-t', sourceDuration.toFixed(6), '-i', clip.filePath)
+        videoSourceByClip.set(clip.id, `${inputIndex}:v`)
+        inputSeekStartByClip.set(clip.id, range.trimStart)
+      })
+  } else {
+    const inputWindows = buildTimelineInputWindows(
+      inputs,
+      operationsByClip,
+      effectiveAudioIds,
+      audioOnlyFormat
     )
-    const audioConsumers = inputs.filter((clip) =>
-      clip.filePath === filePath && effectiveAudioIds.has(clip.id) && !animatedImageFormat
-    )
-    if (videoConsumers.length > 1) {
-      const labels = videoConsumers.map((_, index) => `srcv${inputIndex}_${index}`)
-      filterParts.push(`[${inputIndex}:v]split=${labels.length}${labels.map((label) => `[${label}]`).join('')}`)
-      videoConsumers.forEach((clip, index) => videoSourceByClip.set(clip.id, labels[index]))
-    } else if (videoConsumers.length === 1) {
-      videoSourceByClip.set(videoConsumers[0].id, `${inputIndex}:v`)
-    }
-    if (audioConsumers.length > 1) {
-      const labels = audioConsumers.map((_, index) => `srca${inputIndex}_${index}`)
-      filterParts.push(`[${inputIndex}:a]asplit=${labels.length}${labels.map((label) => `[${label}]`).join('')}`)
-      audioConsumers.forEach((clip, index) => audioSourceByClip.set(clip.id, labels[index]))
-    } else if (audioConsumers.length === 1) {
-      audioSourceByClip.set(audioConsumers[0].id, `${inputIndex}:a`)
-    }
-  })
-  const frameRate = resolveProjectFrameRate(clips, projectSettings)
+    inputWindows.forEach((window) => {
+      const inputIndex = inputCount
+      inputCount += 1
+      if (window.seekStart > 0.000_001) args.push('-ss', window.seekStart.toFixed(6))
+      args.push('-t', Math.max(0.001, window.seekEnd - window.seekStart).toFixed(6), '-i', window.filePath)
+      window.clips.forEach((clip) => inputSeekStartByClip.set(clip.id, window.seekStart))
+      const videoConsumers = window.clips.filter((clip) =>
+        clip.track === 'video' && clip.mediaInfo.hasVideo && !audioOnlyFormat
+      )
+      const audioConsumers = window.clips.filter((clip) => effectiveAudioIds.has(clip.id))
+      if (videoConsumers.length > 1) {
+        const labels = videoConsumers.map((_, index) => `srcv${inputIndex}_${index}`)
+        filterParts.push(`[${inputIndex}:v]split=${labels.length}${labels.map((label) => `[${label}]`).join('')}`)
+        videoConsumers.forEach((clip, index) => videoSourceByClip.set(clip.id, labels[index]))
+      } else if (videoConsumers.length === 1) {
+        videoSourceByClip.set(videoConsumers[0].id, `${inputIndex}:v`)
+      }
+      if (audioConsumers.length > 1) {
+        const labels = audioConsumers.map((_, index) => `srca${inputIndex}_${index}`)
+        filterParts.push(`[${inputIndex}:a]asplit=${labels.length}${labels.map((label) => `[${label}]`).join('')}`)
+        audioConsumers.forEach((clip, index) => audioSourceByClip.set(clip.id, labels[index]))
+      } else if (audioConsumers.length === 1) {
+        audioSourceByClip.set(audioConsumers[0].id, `${inputIndex}:a`)
+      }
+    })
+  }
+  let gifPaletteInputLabel = ''
+  if (gifFormat && gifPalettePass?.mode === 'use') {
+    gifPaletteInputLabel = `${inputCount}:v`
+    args.push('-i', gifPalettePass.palettePath)
+    inputCount += 1
+  }
   const overlayOutputSize = outputSize || resolveCanvasSize(
     clips.filter((clip) => clip.track === 'video' && clip.mediaInfo.hasVideo),
     projectSettings
@@ -799,21 +1157,58 @@ export function buildTimelineFFmpegArgs(
     const pitch = ops.find((op) => op.type === 'pitch' && op.enabled)
     const range = getClipTimelineRange(clip, operationsByClip)
     const { trimStart, trimEnd, speedRate } = range
+    const inputSeekStart = inputSeekStartByClip.get(clip.id) ?? 0
 
     if (clip.track === 'video' && clip.mediaInfo.hasVideo && !audioOnlyFormat) {
       const transform = getTransformParams(ops)
+      const transitionExtension = getVideoTransitionExtension(
+        clip,
+        clips,
+        operationsByClip,
+        transitions
+      )
       const vFilters: string[] = []
-      vFilters.push(`trim=start=${trimStart}:end=${trimEnd}`)
+      const filterTrimStart = Math.max(0, trimStart - inputSeekStart)
+      const filterTrimEnd = Math.max(filterTrimStart + 0.001, trimEnd - inputSeekStart)
+      vFilters.push(`trim=start=${filterTrimStart}:end=${filterTrimEnd}`)
       vFilters.push('setpts=PTS-STARTPTS')
       if (Math.abs(speedRate - 1) > 0.0001) {
         vFilters.push(`setpts=PTS/${speedRate}`)
       }
-      if (outputSize) {
-        vFilters.push(...buildVideoScaleFilters(transform, outputSize))
+      // Decimate after the speed PTS transform but before scaling, RGBA
+      // conversion and compositing. A 16x clip otherwise makes those expensive
+      // filters process roughly sixteen frames for every frame that survives.
+      if (sequentialVideoFastPath || speedRate > 1.0001) {
+        vFilters.push(`fps=${animatedFps}`)
       }
-      addVideoFadeFilters(vFilters, ops, range.visibleDuration)
-      addVideoTransitionFilters(vFilters, clip, range, clips, operationsByClip, transitions)
-      vFilters.push(`setpts=PTS+${clip.startTime}/TB`)
+      if (outputSize) {
+        vFilters.push(...(
+          sequentialVideoFastPath
+            ? buildSequenceScaleFilters(
+                outputSize,
+                sanitizeColor(getProjectSettings(projectSettings).canvas.backgroundColor)
+              )
+            : buildVideoScaleFilters(transform, outputSize)
+        ))
+      }
+      if (transitionExtension.startPadding > 0.001 || transitionExtension.endPadding > 0.001) {
+        vFilters.push(
+          `tpad=start_mode=clone:start_duration=${transitionExtension.startPadding.toFixed(3)}:` +
+          `stop_mode=clone:stop_duration=${transitionExtension.endPadding.toFixed(3)}`
+        )
+      }
+      addVideoFadeFilters(vFilters, ops, range.visibleDuration, transitionExtension.startPadding)
+      addVideoTransitionFilters(
+        vFilters,
+        clip,
+        clips,
+        operationsByClip,
+        transitions,
+        transitionExtension.effectiveStart
+      )
+      if (!sequentialVideoFastPath) {
+        vFilters.push(`setpts=PTS+${transitionExtension.effectiveStart}/TB`)
+      }
       const sourceLabel = videoSourceByClip.get(clip.id)
       if (!sourceLabel) throw new Error(`视频片段缺少输入流：${clip.id}`)
       filterParts.push(`[${sourceLabel}]${vFilters.join(',')}[v${index}]`)
@@ -838,13 +1233,15 @@ export function buildTimelineFFmpegArgs(
 
     if (!animatedImageFormat && effectiveAudioIds.has(clip.id)) {
       const aFilters: string[] = []
-      aFilters.push(`atrim=start=${trimStart}:end=${trimEnd}`)
+      const filterTrimStart = Math.max(0, trimStart - inputSeekStart)
+      const filterTrimEnd = Math.max(filterTrimStart + 0.001, trimEnd - inputSeekStart)
+      aFilters.push(`atrim=start=${filterTrimStart}:end=${filterTrimEnd}`)
       aFilters.push('asetpts=PTS-STARTPTS')
       aFilters.push(...buildAudioAdjustmentFilters({
         speedRate,
         volumePercent: volume ? (volume.params as VolumeParams).percent : undefined,
         pitchPercent: pitch ? (pitch.params as PitchParams).percent : undefined,
-          sampleRate: clip.mediaInfo.sampleRate
+        sampleRate: clip.mediaInfo.sampleRate
       }))
       getAudioFadesForClip(clip, operationsByClip, audioFades).forEach((fade) => {
         aFilters.push(`afade=t=${fade.kind}:st=${fade.start.toFixed(3)}:d=${fade.duration.toFixed(3)}`)
@@ -862,12 +1259,47 @@ export function buildTimelineFFmpegArgs(
   })
 
   let videoOutLabel = ''
-  if (videoLabels.length > 0 && outputSize) {
+  if (sequentialVideoFastPath && videoLabels.length > 0) {
+    const sortedVideo = videoLabels.slice().sort((a, b) => a.startTime - b.startTime || a.id.localeCompare(b.id))
+    if (sortedVideo.length === 1) {
+      videoOutLabel = sortedVideo[0].label
+    } else {
+      videoOutLabel = 'vsequence'
+      filterParts.push(
+        `${sortedVideo.map((item) => `[${item.label}]`).join('')}concat=n=${sortedVideo.length}:v=1:a=0[${videoOutLabel}]`
+      )
+    }
+  } else if (videoLabels.length > 0 && outputSize) {
     const bg = sanitizeColor(getProjectSettings(projectSettings).canvas.backgroundColor)
     filterParts.push(`color=c=${bg}:s=${outputSize.w}x${outputSize.h}:r=${frameRate}:d=${timelineDuration}[base]`)
     const sortedVideo = videoLabels
       .slice()
       .sort(compareVideoOverlayOrder)
+    const mattesByRightClip = new Map<string, Array<{
+      transition: TimelineTransition
+      transitionIndex: number
+      start: number
+      end: number
+      boundary: number
+    }>>()
+    transitions.forEach((transition, transitionIndex) => {
+      if (transition.type !== 'fadeblack' && transition.type !== 'fadewhite') return
+      const timing = getTimelineTransitionTiming(transition, clips, operationsByClip)
+      if (!timing || timing.end <= 0 || timing.start >= timelineDuration) return
+      const start = Math.max(0, timing.start)
+      const end = Math.min(timelineDuration, timing.end)
+      if (end - start <= 0.02) return
+      const entry = {
+        transition,
+        transitionIndex,
+        start,
+        end,
+        boundary: Math.max(start, Math.min(end, timing.boundary))
+      }
+      const entries = mattesByRightClip.get(transition.rightClipId)
+      if (entries) entries.push(entry)
+      else mattesByRightClip.set(transition.rightClipId, [entry])
+    })
     let current = 'base'
     sortedVideo.forEach((item, idx) => {
       const next = `vout${idx}`
@@ -875,52 +1307,48 @@ export function buildTimelineFFmpegArgs(
         `[${current}][${item.label}]overlay=x='${item.overlayX}':y='${item.overlayY}':eof_action=pass[${next}]`
       )
       current = next
+      for (const entry of mattesByRightClip.get(item.id) ?? []) {
+        const duration = entry.end - entry.start
+        const fadeInDuration = Math.max(0.01, entry.boundary - entry.start)
+        const fadeOutDuration = Math.max(0.01, entry.end - entry.boundary)
+        const matte = `matte${entry.transitionIndex}`
+        const matteOut = `matteout${entry.transitionIndex}`
+        const color = entry.transition.type === 'fadewhite' ? 'white' : 'black'
+        filterParts.push(
+          `color=c=${color}:s=${outputSize.w}x${outputSize.h}:r=${frameRate}:d=${duration},format=rgba,` +
+          `fade=t=in:st=0:d=${fadeInDuration.toFixed(3)}:alpha=1,` +
+          `fade=t=out:st=${fadeInDuration.toFixed(3)}:d=${fadeOutDuration.toFixed(3)}:alpha=1,` +
+          `setpts=PTS+${entry.start.toFixed(3)}/TB[${matte}]`
+        )
+        filterParts.push(`[${current}][${matte}]overlay=eof_action=pass[${matteOut}]`)
+        current = matteOut
+      }
     })
     videoOutLabel = current
-
-    transitions.forEach((transition, transitionIndex) => {
-      if (transition.type !== 'fadeblack' && transition.type !== 'fadewhite') return
-      const timing = getTransitionTiming(transition, clips, operationsByClip)
-      if (!timing || timing.end <= 0 || timing.start >= timelineDuration) return
-      const start = Math.max(0, timing.start)
-      const end = Math.min(timelineDuration, timing.end)
-      const duration = end - start
-      if (duration <= 0.02) return
-      const half = duration / 2
-      const matte = `matte${transitionIndex}`
-      const next = `matteout${transitionIndex}`
-      const color = transition.type === 'fadewhite' ? 'white' : 'black'
-      filterParts.push(
-        `color=c=${color}:s=${outputSize.w}x${outputSize.h}:r=${frameRate}:d=${duration},format=rgba,` +
-        `fade=t=in:st=0:d=${half.toFixed(3)}:alpha=1,` +
-        `fade=t=out:st=${half.toFixed(3)}:d=${half.toFixed(3)}:alpha=1,` +
-        `setpts=PTS+${start.toFixed(3)}/TB[${matte}]`
-      )
-      filterParts.push(`[${videoOutLabel}][${matte}]overlay=eof_action=pass[${next}]`)
-      videoOutLabel = next
-    })
   }
 
   if (gifFormat && videoOutLabel) {
-    const gifFps = resolveAnimatedImageFps(
-      clips
-        .filter((clip) => clip.track === 'video' && clip.mediaInfo.hasVideo)
-        .map((clip) => clip.mediaInfo.fps),
-      encoding.animatedFps
-    )
     const palette = getGifPaletteOptions(encoding)
-    filterParts.push(
-      `[${videoOutLabel}]fps=${gifFps},split[g0][g1];[g0]palettegen=${palette.palettegen}[pal];[g1][pal]paletteuse=${palette.paletteuse}[gifout]`
-    )
-    videoOutLabel = 'gifout'
+    if (gifPalettePass?.mode === 'generate') {
+      filterParts.push(
+        `[${videoOutLabel}]fps=${animatedFps},palettegen=${palette.palettegen}[gifpalette]`
+      )
+      videoOutLabel = 'gifpalette'
+    } else if (gifPalettePass?.mode === 'use') {
+      filterParts.push(
+        `[${videoOutLabel}]fps=${animatedFps}[gifvideo];` +
+        `[gifvideo][${gifPaletteInputLabel}]paletteuse=${palette.paletteuse}[gifout]`
+      )
+      videoOutLabel = 'gifout'
+    } else {
+      filterParts.push(
+        `[${videoOutLabel}]fps=${animatedFps},split[g0][g1];` +
+        `[g0]palettegen=${palette.palettegen}[pal];[g1][pal]paletteuse=${palette.paletteuse}[gifout]`
+      )
+      videoOutLabel = 'gifout'
+    }
   } else if (webpFormat && videoOutLabel) {
-    const webpFps = resolveAnimatedImageFps(
-      clips
-        .filter((clip) => clip.track === 'video' && clip.mediaInfo.hasVideo)
-        .map((clip) => clip.mediaInfo.fps),
-      encoding.animatedFps
-    )
-    filterParts.push(`[${videoOutLabel}]fps=${webpFps}[webpout]`)
+    filterParts.push(`[${videoOutLabel}]fps=${animatedFps}[webpout]`)
     videoOutLabel = 'webpout'
   } else if (videoOutLabel) {
     filterParts.push(`[${videoOutLabel}]fps=${frameRate},format=yuv420p[vfinal]`)
@@ -959,7 +1387,9 @@ export function buildTimelineFFmpegArgs(
 
   if (videoOutLabel) {
     args.push('-map', `[${videoOutLabel}]`)
-    if (animatedImageFormat) {
+    if (gifFormat && gifPalettePass?.mode === 'generate') {
+      args.push('-frames:v', '1', '-c:v', 'png', '-threads', '1', '-update', '1')
+    } else if (animatedImageFormat) {
       args.push('-loop', gifLoop === 'once' ? '1' : '0')
       if (webpFormat) {
         // Use libwebp for broader FFmpeg compatibility across bundled builds.
@@ -973,19 +1403,14 @@ export function buildTimelineFFmpegArgs(
     } else if (format === 'webm') {
       args.push('-c:v', 'libvpx-vp9')
       args.push('-cpu-used', String(encoding.vp9CpuUsed))
+      args.push(...getVp9ParallelArgs(outputSize?.w ?? overlayOutputSize.w))
       if (encoding.videoBitrateKbps) {
         args.push('-b:v', `${encoding.videoBitrateKbps}k`)
       } else {
         args.push('-b:v', '0', '-crf', String(encoding.vp9Crf))
       }
     } else {
-      args.push('-c:v', 'libx264', '-preset', encoding.h264Preset)
-      args.push('-pix_fmt', 'yuv420p')
-      if (encoding.videoBitrateKbps) {
-        args.push('-b:v', `${encoding.videoBitrateKbps}k`)
-      } else {
-        args.push('-crf', String(encoding.crf))
-      }
+      args.push(...getH264EncoderArgs(h264Encoder, encoding))
     }
   } else {
     args.push('-vn')
@@ -1015,15 +1440,28 @@ export function buildTimelineFFmpegArgs(
   return args
 }
 
-function formatExportError(error: unknown): string {
+export function formatExportError(
+  error: unknown,
+  format?: ExportOptions['format']
+): string {
   if (!(error instanceof Error)) return 'Unknown export error'
   const message = error.message || ''
   if (/Unknown encoder|Encoder .* not found/i.test(message)) {
     return `当前 FFmpeg 缺少所需编码器，导出失败。${message}`
+  }
+  if (/Cannot allocate memory|Out of memory|return code -12|退出代码 4294967284/i.test(message)) {
+    if (format === 'webp' || format === 'gif') {
+      return `导出 ${format.toUpperCase()} 时内存不足。请缩短导出范围，或降低分辨率和动图帧率；较长内容建议改用 MP4 或 WebM。`
+    }
+    return '导出时内存不足。请关闭占用内存较高的程序，或降低导出分辨率后重试。'
   }
   return message
 }
 
 function isAudioFormat(format: ExportOptions['format']): boolean {
   return ['mp3', 'wav', 'flac', 'aac', 'opus'].includes(format)
+}
+
+function isH264Format(format: ExportOptions['format']): boolean {
+  return format === 'mp4' || format === 'mov' || format === 'mkv'
 }

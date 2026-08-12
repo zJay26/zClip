@@ -202,7 +202,10 @@ const AppLayout: React.FC = () => {
   const spaceShortcutActiveRef = useRef(false)
 
   const {
-    videoRef,
+    videoBufferRefs,
+    activeVideoBuffer,
+    videoBufferClipIds,
+    transitionVideoBuffers,
     togglePlay,
     seekTo,
     step,
@@ -676,7 +679,10 @@ const AppLayout: React.FC = () => {
       <div className="flex min-h-0 flex-1 bg-bg-elevated">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col p-3">
           <VideoPreview
-            videoRef={videoRef as React.RefObject<HTMLVideoElement>}
+            videoBufferRefs={videoBufferRefs}
+            activeVideoBuffer={activeVideoBuffer}
+            videoBufferClipIds={videoBufferClipIds}
+            transitionVideoBuffers={transitionVideoBuffers}
             onLoadedMetadata={onLoadedMetadata}
             onEnded={onEnded}
             togglePlay={togglePlay}

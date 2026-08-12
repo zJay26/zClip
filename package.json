@@ -1,6 +1,6 @@
 {
   "name": "zClip",
-  "version": "2.5.1",
+  "version": "2.6.0",
   "private": true,
   "description": "本地、离线、无订阅的 Windows 视频剪辑器",
   "author": "zJay26",
@@ -31,6 +31,7 @@
     "prepare:ffmpeg": "node ./scripts/prepare-ffmpeg.mjs",
     "check:native": "node ./scripts/check-native-tools.mjs",
     "check:packaged": "node ./scripts/check-packaged-app.mjs",
+    "check:transition-ui": "node ./scripts/check-transition-ui.mjs",
     "docs:assets": "node ./scripts/capture-readme-assets.mjs",
     "audit:dependencies": "npm audit --audit-level=high",
     "audit:prod": "npm run audit:dependencies",

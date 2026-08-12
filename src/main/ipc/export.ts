@@ -23,6 +23,7 @@ import {
   isTimelineClip,
   isTimelineTransition
 } from '../../shared/project-validation'
+import { normalizeTimelineTransitions } from '../../shared/transition-utils'
 import { assertAuthorizedMediaPath } from '../security/media-access'
 import {
   consumeFileCapability,
@@ -196,6 +197,11 @@ export function registerExportHandlers(): void {
               (payload.audioFades || []).some((item) => !clipIds.has(item.clipId))) {
             throw new Error('时间线效果引用了不存在的片段')
           }
+          const safeTransitions = normalizeTimelineTransitions(
+            payload.transitions || [],
+            payload.clips,
+            payload.operationsByClip
+          )
           await authorizeExportSources(payload.clips.map((clip) => clip.filePath), payload.exportOptions.outputPath)
           if (!consumeFileCapability('export-write', payload.exportOptions.outputPath)) {
             throw new Error('导出路径授权已使用，请重新选择保存位置')
@@ -205,7 +211,7 @@ export function registerExportHandlers(): void {
             payload.operationsByClip,
             payload.exportOptions,
             win,
-            payload.transitions || [],
+            safeTransitions,
             payload.audioFades || []
           )
         } else if (payload.mediaInfo && isMediaInfo(payload.mediaInfo) && payload.operations) {

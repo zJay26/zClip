@@ -25,6 +25,12 @@ import {
 import fs from 'fs/promises'
 import path from 'path'
 import { isMediaInfo } from '../../shared/project-validation'
+import {
+  getHardwareDecodeInputArgs,
+  getH264EncoderArgs,
+  getVp9ParallelArgs,
+  type H264EncoderKind
+} from './hardware-encoder'
 export { parseMediaInfo }
 
 const MEDIA_INFO_CACHE_LIMIT = 512
@@ -93,6 +99,8 @@ export function buildFFmpegArgs(
     resolution?: { w: number; h: number } | null
     format: ExportFormat
     gifLoop?: GifLoopMode
+    gifPalettePass?: { mode: 'generate' | 'use'; palettePath: string }
+    h264Encoder?: H264EncoderKind
   }
 ): string[] {
   const enabledOps = operations.filter((op) => op.enabled)
@@ -105,28 +113,48 @@ export function buildFFmpegArgs(
   const speed = enabledOps.find((op) => op.type === 'speed')
   const volume = enabledOps.find((op) => op.type === 'volume')
   const pitch = enabledOps.find((op) => op.type === 'pitch')
+  const h264Encoder = options.h264Encoder ?? 'software'
+  const speedRate = speed ? (speed.params as SpeedParams).rate : 1
+  const hasSpeedAdjustment = Math.abs(speedRate - 1) > 0.0001
 
   const args: string[] = ['-y'] // overwrite output
 
   // --- Input with optional seek ---
-  if (trim) {
-    const { startTime } = trim.params as TrimParams
-    args.push('-ss', startTime.toFixed(3))
+  const canUseDirectHardwareFrames =
+    !audioOnlyFormat &&
+    !animatedImageFormat &&
+    ['mp4', 'mov', 'mkv'].includes(options.format) &&
+    mediaInfo.hasVideo &&
+    mediaInfo.videoCodec.toLowerCase() === 'h264' &&
+    !hasSpeedAdjustment &&
+    !options.resolution &&
+    h264Encoder !== 'software'
+  if (canUseDirectHardwareFrames) {
+    args.push(...getHardwareDecodeInputArgs(h264Encoder))
   }
-  args.push('-i', inputPath)
   if (trim) {
     const { startTime, endTime } = trim.params as TrimParams
     const duration = endTime - startTime
-    args.push('-t', duration.toFixed(3))
+    args.push('-ss', startTime.toFixed(3), '-t', duration.toFixed(3))
+  }
+  args.push('-i', inputPath)
+  if (gifFormat && options.gifPalettePass?.mode === 'use') {
+    args.push('-i', options.gifPalettePass.palettePath)
   }
 
   // --- Build video filter chain ---
   const vFilters: string[] = []
 
-  if (speed) {
-    const { rate } = speed.params as SpeedParams
+  if (hasSpeedAdjustment) {
+    const rate = speedRate
     // setpts adjusts video speed: PTS/rate = faster, PTS*rate = slower
     vFilters.push(`setpts=PTS/${rate}`)
+    if (rate > 1.0001) {
+      const targetFps = animatedImageFormat
+        ? resolveAnimatedImageFps([mediaInfo.fps], options.animatedFps)
+        : Math.max(1, Math.min(240, Math.round(mediaInfo.fps || 30)))
+      vFilters.push(`fps=${targetFps}`)
+    }
   }
 
   if (options.resolution) {
@@ -141,7 +169,7 @@ export function buildFFmpegArgs(
   const aFilters: string[] = []
 
   aFilters.push(...buildAudioAdjustmentFilters({
-    speedRate: speed ? (speed.params as SpeedParams).rate : 1,
+    speedRate,
     volumePercent: volume ? (volume.params as VolumeParams).percent : undefined,
     pitchPercent: pitch ? (pitch.params as PitchParams).percent : undefined,
     sampleRate: mediaInfo.sampleRate
@@ -160,16 +188,29 @@ export function buildFFmpegArgs(
     if (gifFormat) {
       const gifFps = resolveAnimatedImageFps([mediaInfo.fps], options.animatedFps)
       const palette = getGifPaletteOptions(options)
-      const gifFilters = [...vFilters, `fps=${gifFps}`]
-      args.push(
-        '-filter_complex',
-        `[0:v]${gifFilters.join(',')},split[g0][g1];[g0]palettegen=${palette.palettegen}[pal];[g1][pal]paletteuse=${palette.paletteuse}[vout]`
-      )
-      args.push('-map', '[vout]')
-      args.push('-loop', options.gifLoop === 'once' ? '1' : '0')
+      const gifFilters = vFilters.includes(`fps=${gifFps}`) ? [...vFilters] : [...vFilters, `fps=${gifFps}`]
+      if (options.gifPalettePass?.mode === 'generate') {
+        args.push(
+          '-filter_complex',
+          `[0:v]${gifFilters.join(',')},palettegen=${palette.palettegen}[vout]`
+        )
+        args.push('-map', '[vout]', '-frames:v', '1', '-c:v', 'png', '-threads', '1', '-update', '1')
+      } else if (options.gifPalettePass?.mode === 'use') {
+        args.push(
+          '-filter_complex',
+          `[0:v]${gifFilters.join(',')}[gifvideo];[gifvideo][1:v]paletteuse=${palette.paletteuse}[vout]`
+        )
+        args.push('-map', '[vout]', '-loop', options.gifLoop === 'once' ? '1' : '0')
+      } else {
+        args.push(
+          '-filter_complex',
+          `[0:v]${gifFilters.join(',')},split[g0][g1];[g0]palettegen=${palette.palettegen}[pal];[g1][pal]paletteuse=${palette.paletteuse}[vout]`
+        )
+        args.push('-map', '[vout]', '-loop', options.gifLoop === 'once' ? '1' : '0')
+      }
     } else if (webpFormat) {
       const webpFps = resolveAnimatedImageFps([mediaInfo.fps], options.animatedFps)
-      const webpFilters = [...vFilters, `fps=${webpFps}`]
+      const webpFilters = vFilters.includes(`fps=${webpFps}`) ? [...vFilters] : [...vFilters, `fps=${webpFps}`]
       args.push('-vf', webpFilters.join(','))
       args.push('-loop', options.gifLoop === 'once' ? '1' : '0')
       // Use libwebp for broader FFmpeg compatibility across bundled builds.
@@ -180,6 +221,7 @@ export function buildFFmpegArgs(
     } else if (options.format === 'webm') {
       args.push('-c:v', 'libvpx-vp9')
       args.push('-cpu-used', String(options.vp9CpuUsed))
+      args.push(...getVp9ParallelArgs(options.resolution?.w ?? mediaInfo.width))
       if (options.videoBitrateKbps) {
         args.push('-b:v', `${options.videoBitrateKbps}k`)
       } else {
@@ -187,13 +229,7 @@ export function buildFFmpegArgs(
         args.push('-crf', String(options.vp9Crf))
       }
     } else {
-      args.push('-c:v', 'libx264')
-      args.push('-preset', options.h264Preset ?? 'medium')
-      if (options.videoBitrateKbps) {
-        args.push('-b:v', `${options.videoBitrateKbps}k`)
-      } else {
-        args.push('-crf', String(options.crf))
-      }
+      args.push(...getH264EncoderArgs(h264Encoder, options, canUseDirectHardwareFrames))
     }
   } else {
     args.push('-vn')

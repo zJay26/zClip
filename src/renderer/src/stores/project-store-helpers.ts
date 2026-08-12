@@ -139,10 +139,11 @@ export function getLinkedAudioClipId(
   const selected = clips.find((clip) => clip.id === selectedClipId)
   if (!selected) return null
   if (selected.track === 'audio') return selected.id
+  const canUseEmbeddedAudio = selected.mediaInfo.hasAudio && selected.embeddedAudioEnabled !== false
   const isLinked = linkedGroups[selected.groupId] !== false
-  if (!isLinked) return selected.mediaInfo.hasAudio ? selected.id : null
+  if (!isLinked) return canUseEmbeddedAudio ? selected.id : null
   const audioClip = clips.find((clip) => clip.groupId === selected.groupId && clip.track === 'audio')
-  return audioClip?.id || (selected.mediaInfo.hasAudio ? selected.id : null)
+  return audioClip?.id || (canUseEmbeddedAudio ? selected.id : null)
 }
 
 export function takeSnapshot(state: ProjectStore): ProjectSnapshot {
@@ -151,6 +152,7 @@ export function takeSnapshot(state: ProjectStore): ProjectSnapshot {
     operationsByClip: structuredClone(state.operationsByClip),
     transitions: structuredClone(state.transitions),
     audioFades: structuredClone(state.audioFades),
+    selectedTransitionId: state.selectedTransitionId,
     selectedClipId: state.selectedClipId,
     selectedClipIds: [...state.selectedClipIds],
     lastSelectedClipId: state.lastSelectedClipId,
@@ -168,11 +170,25 @@ export function applySnapshot(
   snapshot: ProjectSnapshot
 ): Partial<ProjectStore> {
   const selectedClip = getSelectedClip(snapshot.clips, snapshot.selectedClipId)
+  const selectedTransition = snapshot.selectedTransitionId
+    ? snapshot.transitions.find((transition) => transition.id === snapshot.selectedTransitionId)
+    : undefined
+  const transitionClips = selectedTransition
+    ? snapshot.clips.filter((clip) =>
+        clip.id === selectedTransition.leftClipId || clip.id === selectedTransition.rightClipId
+      )
+    : []
+  const activeClip = selectedClip ||
+    transitionClips.find((clip) => clip.filePath === state.sourceFile) ||
+    transitionClips[0]
   return {
     clips: snapshot.clips,
     operationsByClip: snapshot.operationsByClip,
     transitions: snapshot.transitions,
     audioFades: snapshot.audioFades,
+    selectedTransitionId: snapshot.selectedTransitionId && snapshot.transitions.some(
+      (transition) => transition.id === snapshot.selectedTransitionId
+    ) ? snapshot.selectedTransitionId : null,
     selectedClipId: snapshot.selectedClipId,
     selectedClipIds: snapshot.selectedClipIds,
     lastSelectedClipId: snapshot.lastSelectedClipId,
@@ -182,9 +198,9 @@ export function applySnapshot(
     audioTrackCount: snapshot.audioTrackCount,
     currentTime: snapshot.currentTime,
     projectSettings: structuredClone(snapshot.projectSettings),
-    sourceFile: selectedClip?.filePath ?? null,
-    mediaInfo: selectedClip?.mediaInfo ?? null,
-    duration: selectedClip?.duration ?? 0,
+    sourceFile: activeClip?.filePath ?? null,
+    mediaInfo: activeClip?.mediaInfo ?? null,
+    duration: activeClip?.duration ?? 0,
     operations: selectedClip ? (snapshot.operationsByClip[selectedClip.id] || []) : [],
     playing: false
   }

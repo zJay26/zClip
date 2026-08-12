@@ -26,6 +26,16 @@ import {
   getSpeedRate,
   timelineTimeToMediaTime
 } from '../../../shared/timeline-utils'
+import {
+  MIN_TRANSITION_SIDE_DURATION,
+  findTransitionCut,
+  getEligibleTransitionCuts,
+  normalizeTimelineTransitions
+} from '../../../shared/transition-utils'
+import type {
+  NormalizeTimelineTransitionOptions,
+  TransitionCut
+} from '../../../shared/transition-utils'
 import type { HistoryEditOptions, ProjectSnapshot, ProjectStore } from './project-store-types'
 import { appendHistory, HISTORY_LIMIT, snapshotsEqual } from './project-history'
 import {
@@ -52,6 +62,7 @@ let mergeOutputSequence = 1
 let pendingHistoryTransaction: ProjectSnapshot | null = null
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 let importQueue: Promise<void> = Promise.resolve()
+const EMPTY_MEDIA_OPERATIONS = Object.freeze([]) as unknown as MediaOperation[]
 
 function cancelToastTimer(): void {
   if (!toastTimer) return
@@ -98,7 +109,6 @@ const MIN_EFFECT_DURATION = 0.08
 const DEFAULT_TRANSITION_DURATION = 1
 const DEFAULT_AUDIO_FADE_DURATION = 1
 const MAX_TRANSITION_DROP_DISTANCE = 2
-const MAX_TRANSITION_GAP = 1.5
 
 function clampNumber(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min
@@ -115,58 +125,31 @@ function getClipRangeById(
   return { clip, range: getClipTimelineRange(clip, operationsByClip) }
 }
 
-function getTransitionBounds(
-  transition: TimelineTransition,
-  clips: TimelineClip[],
-  operationsByClip: Record<string, MediaOperation[]>
-): { boundary: number; minStartOffset: number; maxEndOffset: number } | null {
-  const left = getClipRangeById(clips, operationsByClip, transition.leftClipId)
-  const right = getClipRangeById(clips, operationsByClip, transition.rightClipId)
-  if (!left || !right) return null
-  if (left.clip.track !== 'video' || right.clip.track !== 'video') return null
-  const boundary = (left.range.end + right.range.start) / 2
-  return {
-    boundary,
-    minStartOffset: left.range.start - boundary,
-    maxEndOffset: right.range.end - boundary
-  }
-}
-
-function clampTransition(
-  transition: TimelineTransition,
-  clips: TimelineClip[],
-  operationsByClip: Record<string, MediaOperation[]>
-): TimelineTransition | null {
-  const bounds = getTransitionBounds(transition, clips, operationsByClip)
-  if (!bounds) return null
-  const startLimit = Math.min(-MIN_EFFECT_DURATION, bounds.minStartOffset)
-  const endLimit = Math.max(MIN_EFFECT_DURATION, bounds.maxEndOffset)
-  let startOffset = clampNumber(transition.startOffset, bounds.minStartOffset, -MIN_EFFECT_DURATION)
-  let endOffset = clampNumber(transition.endOffset, MIN_EFFECT_DURATION, bounds.maxEndOffset)
-  if (startOffset >= endOffset - MIN_EFFECT_DURATION) {
-    startOffset = Math.max(bounds.minStartOffset, startLimit)
-    endOffset = Math.min(bounds.maxEndOffset, endLimit)
-  }
-  if (endOffset - startOffset < MIN_EFFECT_DURATION) return null
-  return { ...transition, startOffset, endOffset }
+function disableEmbeddedAudioForRemovedAudioClips(
+  originalClips: TimelineClip[],
+  remainingClips: TimelineClip[],
+  removedIds: Set<string>
+): TimelineClip[] {
+  const affectedGroups = new Set(
+    originalClips
+      .filter((clip) => removedIds.has(clip.id) && clip.track === 'audio' && clip.mediaInfo.hasAudio)
+      .map((clip) => clip.groupId)
+  )
+  if (affectedGroups.size === 0) return remainingClips
+  return remainingClips.map((clip) =>
+    clip.track === 'video' && affectedGroups.has(clip.groupId) && clip.embeddedAudioEnabled !== false
+      ? { ...clip, embeddedAudioEnabled: false }
+      : clip
+  )
 }
 
 function normalizeTransitions(
   transitions: TimelineTransition[] | undefined,
   clips: TimelineClip[],
-  operationsByClip: Record<string, MediaOperation[]>
+  operationsByClip: Record<string, MediaOperation[]>,
+  options?: NormalizeTimelineTransitionOptions
 ): TimelineTransition[] {
-  const seen = new Set<string>()
-  const next: TimelineTransition[] = []
-  ;(transitions || []).forEach((transition) => {
-    const clamped = clampTransition(transition, clips, operationsByClip)
-    if (!clamped) return
-    const key = `${clamped.leftClipId}:${clamped.rightClipId}`
-    if (seen.has(key)) return
-    seen.add(key)
-    next.push(clamped)
-  })
-  return next
+  return normalizeTimelineTransitions(transitions, clips, operationsByClip, options)
 }
 
 function getAudioFadeBounds(
@@ -220,56 +203,35 @@ function findTransitionPair(
   operationsByClip: Record<string, MediaOperation[]>,
   time: number,
   trackIndex: number
-): { left: TimelineClip; right: TimelineClip; boundary: number } | null {
-  const findBest = (preferredTrackIndex: number | null): { left: TimelineClip; right: TimelineClip; boundary: number; distance: number } | null => {
-    const videoClips = clips
-      .filter((clip) => {
-        if (clip.track !== 'video' || !clip.mediaInfo.hasVideo) return false
-        return preferredTrackIndex === null || clip.trackIndex === preferredTrackIndex
-      })
-      .map((clip) => ({ clip, range: getClipTimelineRange(clip, operationsByClip) }))
-      .filter((item) => item.range.visibleDuration > MIN_EFFECT_DURATION)
-      .sort((a, b) => a.range.start - b.range.start)
-
-    let best: { left: TimelineClip; right: TimelineClip; boundary: number; distance: number } | null = null
-    for (let i = 0; i < videoClips.length - 1; i += 1) {
-      const left = videoClips[i]
-      const right = videoClips[i + 1]
-      const gap = right.range.start - left.range.end
-      if (gap < -0.05 || gap > MAX_TRANSITION_GAP) continue
-      const boundary = (left.range.end + right.range.start) / 2
-      const distance = Math.abs(time - boundary)
-      if (distance > MAX_TRANSITION_DROP_DISTANCE) continue
-      if (!best || distance < best.distance) {
-        best = { left: left.clip, right: right.clip, boundary, distance }
-      }
-    }
-    return best
+): TransitionCut | null {
+  let best: TransitionCut | null = null
+  let bestDistance = Infinity
+  for (const cut of getEligibleTransitionCuts(clips, operationsByClip, trackIndex)) {
+    const distance = Math.abs(time - cut.boundary)
+    if (distance > MAX_TRANSITION_DROP_DISTANCE || distance >= bestDistance) continue
+    best = cut
+    bestDistance = distance
   }
-
-  const sameTrack = findBest(trackIndex)
-  const fallback = sameTrack || findBest(null)
-  return fallback ? { left: fallback.left, right: fallback.right, boundary: fallback.boundary } : null
+  return best
 }
 
 function makeDefaultTransition(
   type: TransitionEffectType,
-  left: TimelineClip,
-  right: TimelineClip,
-  operationsByClip: Record<string, MediaOperation[]>
+  cut: TransitionCut
 ): TimelineTransition {
-  const leftRange = getClipTimelineRange(left, operationsByClip)
-  const rightRange = getClipTimelineRange(right, operationsByClip)
-  const boundary = (leftRange.end + rightRange.start) / 2
   const halfDuration = Math.max(
-    MIN_EFFECT_DURATION,
-    Math.min(DEFAULT_TRANSITION_DURATION / 2, boundary - leftRange.start, rightRange.end - boundary)
+    MIN_TRANSITION_SIDE_DURATION,
+    Math.min(
+      DEFAULT_TRANSITION_DURATION / 2,
+      cut.boundary - cut.leftRange.start,
+      cut.rightRange.end - cut.boundary
+    )
   )
   return {
     id: uid(),
     type,
-    leftClipId: left.id,
-    rightClipId: right.id,
+    leftClipId: cut.left.id,
+    rightClipId: cut.right.id,
     startOffset: -halfDuration,
     endOffset: halfDuration
   }
@@ -371,8 +333,39 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
     update: Partial<ProjectStore> | ((state: ProjectStore) => Partial<ProjectStore> | ProjectStore)
   ): void => {
     baseSet((state) => {
-      const patch = typeof update === 'function' ? update(state) : update
-      if (!patch || typeof patch !== 'object' || Object.prototype.hasOwnProperty.call(patch, 'projectDirty')) {
+      const rawPatch = typeof update === 'function' ? update(state) : update
+      if (!rawPatch || typeof rawPatch !== 'object') return rawPatch
+      let patch = Object.prototype.hasOwnProperty.call(rawPatch, 'transitions') &&
+        !Object.prototype.hasOwnProperty.call(rawPatch, 'selectedTransitionId') &&
+        state.selectedTransitionId &&
+        !(rawPatch.transitions as TimelineTransition[] | undefined)?.some(
+          (transition) => transition.id === state.selectedTransitionId
+        )
+        ? { ...rawPatch, selectedTransitionId: null }
+        : rawPatch
+      const removedInvalidTransition = Object.prototype.hasOwnProperty.call(rawPatch, 'transitions') &&
+        !Object.prototype.hasOwnProperty.call(rawPatch, 'selectedTransitionId') &&
+        state.transitions.some((transition) =>
+          !(rawPatch.transitions as TimelineTransition[] | undefined)?.some((item) => item.id === transition.id)
+        )
+      if (removedInvalidTransition && !Object.prototype.hasOwnProperty.call(rawPatch, 'toast')) {
+        cancelToastTimer()
+        patch = {
+          ...patch,
+          toast: {
+            message: translate(
+              '片段不再满足转场条件，相关转场已自动移除（可撤销）',
+              'The clips no longer form a valid cut, so the transition was removed (undo is available)'
+            ),
+            type: 'info'
+          }
+        }
+        toastTimer = setTimeout(() => {
+          baseSet({ toast: null })
+          toastTimer = null
+        }, 3200)
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'projectDirty')) {
         return patch
       }
       const documentChanged = DOCUMENT_STATE_KEYS.some((key) =>
@@ -384,9 +377,89 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
     })
   }
 
+  const applyTransitionToCut = (type: TransitionEffectType, requestedCut: TransitionCut): boolean => {
+    let appliedId: string | null = null
+    let replaced = false
+    let rejectedForOverlap = false
+    set((state) => {
+      const cut = findTransitionCut(
+        state.clips,
+        state.operationsByClip,
+        requestedCut.left.id,
+        requestedCut.right.id
+      )
+      if (!cut) return state
+      const defaultTransition = makeDefaultTransition(type, cut)
+      const existingIndex = state.transitions.findIndex(
+        (transition) => transition.leftClipId === cut.left.id && transition.rightClipId === cut.right.id
+      )
+      const transitions = [...state.transitions]
+      let candidateId: string
+      if (existingIndex >= 0) {
+        replaced = true
+        candidateId = transitions[existingIndex].id
+        transitions[existingIndex] = {
+          ...transitions[existingIndex],
+          // Replacing an effect is a type-only operation. Duration and
+          // alignment belong to the edit point and must remain untouched.
+          type
+        }
+      } else {
+        candidateId = defaultTransition.id
+        transitions.push(defaultTransition)
+      }
+      const normalized = normalizeTransitions(
+        transitions,
+        state.clips,
+        state.operationsByClip,
+        existingIndex >= 0
+          ? { editedTransitionId: candidateId, preserveNeighborDurations: true }
+          : undefined
+      )
+      const retainedIds = new Set(normalized.map((transition) => transition.id))
+      if (
+        !retainedIds.has(candidateId) ||
+        state.transitions.some((transition) => !retainedIds.has(transition.id))
+      ) {
+        rejectedForOverlap = true
+        return state
+      }
+      appliedId = candidateId
+      return {
+        transitions: normalized,
+        selectedTransitionId: appliedId,
+        selectedClipId: null,
+        selectedClipIds: [],
+        lastSelectedClipId: null,
+        historyPast: appendHistory(state.historyPast, takeSnapshot(state)),
+        historyFuture: []
+      }
+    })
+    if (!appliedId) {
+      if (rejectedForOverlap) {
+        get().showToast(
+          translate(
+            '无法添加：中间片段太短，两个转场会互相重叠',
+            'Cannot add: the middle clip is too short for two non-overlapping transitions'
+          ),
+          'info'
+        )
+      }
+      return false
+    }
+    get().showToast(
+      replaced
+        ? translate('转场效果已更新', 'Transition updated')
+        : translate('转场已添加，剪辑点已选中', 'Transition added and selected'),
+      'success'
+    )
+    return true
+  }
+
   return ({
   // Initial state
   clips: [],
+  selectedTransitionId: null,
   selectedClipId: null,
   selectedClipIds: [],
   lastSelectedClipId: null,
@@ -474,6 +547,7 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
               trimBoundEnd: duration,
               track: 'video',
               trackIndex,
+              embeddedAudioEnabled: !info.hasAudio,
               mediaInfo: info
             }
             newClips.push(clip)
@@ -525,6 +599,7 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
 
         set({
           clips: resolvedClips,
+          selectedTransitionId: null,
           selectedClipId: nextSelectedClipId,
           selectedClipIds: nextSelectedClipId ? [nextSelectedClipId] : [],
           lastSelectedClipId: nextSelectedClipId,
@@ -642,6 +717,7 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
     }
 
     set({
+      selectedTransitionId: null,
       selectedClipId: clipId,
       selectedClipIds: nextSelectedIds,
       lastSelectedClipId: clipId,
@@ -659,18 +735,46 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
     setDocumentTitle(clip.filePath, clips.length)
   },
 
+  selectTransition: (transitionId) => {
+    if (!get().transitions.some((transition) => transition.id === transitionId)) return
+    set({
+      selectedTransitionId: transitionId,
+      selectedClipId: null,
+      selectedClipIds: [],
+      lastSelectedClipId: null
+    })
+  },
+
   addVideoTrack: () =>
     set((state) => ({ videoTrackCount: Math.min(state.videoTrackCount + 1, 16) })),
   removeVideoTrack: () =>
     set((state) => {
       const nextCount = Math.max(state.videoTrackCount - 1, 1)
       if (nextCount === state.videoTrackCount) return state
+      const movedIds = new Set(
+        state.clips
+          .filter((clip) => clip.track === 'video' && clip.trackIndex >= nextCount)
+          .map((clip) => clip.id)
+      )
       const updatedClips = state.clips.map((clip) =>
         clip.track === 'video' && clip.trackIndex >= nextCount
           ? { ...clip, trackIndex: nextCount - 1 }
           : clip
       )
-      return { videoTrackCount: nextCount, clips: updatedClips }
+      const resolvedClips = resolveClipOverlaps(
+        updatedClips,
+        state.operationsByClip,
+        movedIds,
+        state.linkedGroups
+      )
+      const timelineDuration = getTimelineDuration(resolvedClips, state.operationsByClip)
+      return {
+        videoTrackCount: nextCount,
+        clips: resolvedClips,
+        transitions: normalizeTransitions(state.transitions, resolvedClips, state.operationsByClip),
+        timelineDuration,
+        currentTime: clampTimelineTime(state.currentTime, timelineDuration)
+      }
     }),
   addAudioTrack: () =>
     set((state) => ({ audioTrackCount: Math.min(state.audioTrackCount + 1, 16) })),
@@ -678,12 +782,30 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
     set((state) => {
       const nextCount = Math.max(state.audioTrackCount - 1, 1)
       if (nextCount === state.audioTrackCount) return state
+      const movedIds = new Set(
+        state.clips
+          .filter((clip) => clip.track === 'audio' && clip.trackIndex >= nextCount)
+          .map((clip) => clip.id)
+      )
       const updatedClips = state.clips.map((clip) =>
         clip.track === 'audio' && clip.trackIndex >= nextCount
           ? { ...clip, trackIndex: nextCount - 1 }
           : clip
       )
-      return { audioTrackCount: nextCount, clips: updatedClips }
+      const resolvedClips = resolveClipOverlaps(
+        updatedClips,
+        state.operationsByClip,
+        movedIds,
+        state.linkedGroups
+      )
+      const timelineDuration = getTimelineDuration(resolvedClips, state.operationsByClip)
+      return {
+        audioTrackCount: nextCount,
+        clips: resolvedClips,
+        audioFades: normalizeAudioFades(state.audioFades, resolvedClips, state.operationsByClip),
+        timelineDuration,
+        currentTime: clampTimelineTime(state.currentTime, timelineDuration)
+      }
     }),
 
   moveClip: (clipId, patch, options) =>
@@ -850,6 +972,7 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
       const newOpsByClip = { ...operationsByClip }
       const newLinkedGroups = { ...state.linkedGroups }
       const groupIdMap = new Map<string, { groupA: string; groupB: string }>()
+      const splitTailIdBySource = new Map<string, string>()
       const activeClipIds = new Set<string>()
 
       for (const clip of clipsToSplit) {
@@ -909,6 +1032,7 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
         )
         const clipIndex = newClips.findIndex((c) => c.id === clip.id)
         newClips.splice(clipIndex + 1, 0, clipB)
+        splitTailIdBySource.set(clip.id, clipBId)
 
         newOpsByClip[clip.id] = fixedOpsA
         newOpsByClip[clipBId] = opsB
@@ -925,11 +1049,15 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
         newLinkedGroups
       )
       const splitSourceIds = new Set(clipsToSplit.map((clip) => clip.id))
+      const remappedTransitions = state.transitions.map((transition) => ({
+        ...transition,
+        // A transition attached to the split clip's outgoing edge follows the
+        // new tail half. An incoming transition remains on the original head.
+        leftClipId: splitTailIdBySource.get(transition.leftClipId) ?? transition.leftClipId
+      }))
       return {
         clips: resolvedClips,
-        transitions: state.transitions.filter(
-          (item) => !splitSourceIds.has(item.leftClipId) && !splitSourceIds.has(item.rightClipId)
-        ),
+        transitions: normalizeTransitions(remappedTransitions, resolvedClips, newOpsByClip),
         audioFades: state.audioFades.filter((item) => !splitSourceIds.has(item.clipId)),
         operationsByClip: newOpsByClip,
         operations: state.selectedClipId ? (newOpsByClip[state.selectedClipId] || state.operations) : state.operations,
@@ -1045,6 +1173,7 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
         clips: resolvedClips,
         operationsByClip: nextOpsByClip,
         linkedGroups: nextLinkedGroups,
+        selectedTransitionId: null,
         selectedClipId: nextSelectedClipId,
         selectedClipIds: nextSelectedClipIds,
         lastSelectedClipId: nextSelectedClipId,
@@ -1148,6 +1277,7 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
           trimBoundEnd: mergedInfo.duration,
           track: 'video',
           trackIndex: firstVideo.trackIndex,
+          embeddedAudioEnabled: !(hasAudioSelection && mergedInfo.hasAudio && firstAudio),
           mediaInfo: mergedInfo
         })
       }
@@ -1178,7 +1308,11 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
         newOpsByClip[clip.id] = createDefaultOperations(clip.duration)
       })
 
-      const remainingClips = latest.clips.filter((clip) => !selectedIdSet.has(clip.id))
+      const remainingClips = disableEmbeddedAudioForRemovedAudioClips(
+        latest.clips,
+        latest.clips.filter((clip) => !selectedIdSet.has(clip.id)),
+        selectedIdSet
+      )
       const linkedGroups = { ...latest.linkedGroups, [mergedGroupId]: true }
       const resolvedClips = resolveClipOverlaps(
         [...remainingClips, ...createdClips],
@@ -1205,6 +1339,7 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
         ),
         audioFades: latest.audioFades.filter((item) => !selectedIdSet.has(item.clipId)),
         operationsByClip: newOpsByClip,
+        selectedTransitionId: null,
         selectedClipId: nextSelectedClipId,
         selectedClipIds: nextSelectedClipId ? [nextSelectedClipId] : [],
         lastSelectedClipId: nextSelectedClipId,
@@ -1231,7 +1366,11 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
   deleteClip: (clipId) =>
     set((state) => {
       const historyPast = appendHistory(state.historyPast, takeSnapshot(state))
-      const updatedClips = state.clips.filter((c) => c.id !== clipId)
+      const updatedClips = disableEmbeddedAudioForRemovedAudioClips(
+        state.clips,
+        state.clips.filter((c) => c.id !== clipId),
+        new Set([clipId])
+      )
       const newOpsByClip = { ...state.operationsByClip }
       delete newOpsByClip[clipId]
       const resolvedClips = resolveClipOverlaps(updatedClips, newOpsByClip, new Set(), state.linkedGroups)
@@ -1277,7 +1416,11 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
           if (clip.groupId === base.groupId) removeSet.add(clip.id)
         })
       })
-      const updatedClips = state.clips.filter((c) => !removeSet.has(c.id))
+      const updatedClips = disableEmbeddedAudioForRemovedAudioClips(
+        state.clips,
+        state.clips.filter((c) => !removeSet.has(c.id)),
+        removeSet
+      )
       const newOpsByClip = { ...state.operationsByClip }
       removeSet.forEach((id) => delete newOpsByClip[id])
       const resolvedClips = resolveClipOverlaps(updatedClips, newOpsByClip, new Set(), state.linkedGroups)
@@ -1357,6 +1500,7 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
       operationsByClip[clipId] || createDefaultOperations(clip.duration)
 
     set({
+      selectedTransitionId: null,
       selectedClipId: clipId,
       selectedClipIds: [clipId],
       lastSelectedClipId: clipId,
@@ -1429,6 +1573,12 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
         operations: updated,
         operationsByClip: nextOpsByClip,
         clips: resolvedClips,
+        transitions: shouldUpdateTimeline
+          ? normalizeTransitions(state.transitions, resolvedClips, nextOpsByClip)
+          : state.transitions,
+        audioFades: shouldUpdateTimeline
+          ? normalizeAudioFades(state.audioFades, resolvedClips, nextOpsByClip)
+          : state.audioFades,
         timelineDuration: nextTimelineDuration,
         currentTime: shouldUpdateTimeline
           ? clampTimelineTime(state.currentTime, nextTimelineDuration)
@@ -1643,36 +1793,61 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
 
   addTransitionAtTime: (type, time, trackIndex) => {
     const state = get()
-    const pair = findTransitionPair(state.clips, state.operationsByClip, time, trackIndex)
-    if (!pair) {
-      get().showToast(translate('请将转场拖到同一视频轨上两个相邻画面段之间', 'Drop the transition between two adjacent clips on the same video track'), 'info')
+    const cut = findTransitionPair(state.clips, state.operationsByClip, time, trackIndex)
+    if (!cut) {
+      get().showToast(
+        translate(
+          '这里只能放置在同一视频轨上、首尾紧贴的剪辑点',
+          'Transitions require a touching cut between clips on the same video track'
+        ),
+        'info'
+      )
       return false
     }
-    const nextTransition = makeDefaultTransition(type, pair.left, pair.right, state.operationsByClip)
-    set((latest) => {
-      const historyPast = appendHistory(latest.historyPast, takeSnapshot(latest))
-      const existingIndex = latest.transitions.findIndex(
-        (item) => item.leftClipId === pair.left.id && item.rightClipId === pair.right.id
+    return applyTransitionToCut(type, cut)
+  },
+
+  applyTransition: (type) => {
+    const state = get()
+    if (state.selectedTransitionId) {
+      const selected = state.transitions.find((transition) => transition.id === state.selectedTransitionId)
+      if (selected) {
+        set((latest) => ({
+          transitions: latest.transitions.map((transition) =>
+            transition.id === selected.id ? { ...transition, type } : transition
+          ),
+          historyPast: appendHistory(latest.historyPast, takeSnapshot(latest)),
+          historyFuture: []
+        }))
+        get().showToast(translate('已切换所选转场效果', 'Selected transition effect changed'), 'success')
+        return true
+      }
+    }
+
+    const cuts = getEligibleTransitionCuts(state.clips, state.operationsByClip)
+    const selectedClip = state.selectedClipId
+      ? state.clips.find((clip) => clip.id === state.selectedClipId && clip.track === 'video')
+      : null
+    const selectionCuts = selectedClip
+      ? cuts.filter((cut) => cut.left.id === selectedClip.id || cut.right.id === selectedClip.id)
+      : []
+    const candidates = selectionCuts.length > 0
+      ? selectionCuts
+      : cuts.filter((cut) => Math.abs(cut.boundary - state.currentTime) <= MAX_TRANSITION_DROP_DISTANCE)
+    const cut = candidates.sort(
+      (a, b) => Math.abs(a.boundary - state.currentTime) - Math.abs(b.boundary - state.currentTime)
+    )[0]
+    if (!cut) {
+      get().showToast(
+        translate(
+          '先选择剪辑点旁的片段，或将播放头放到同轨相邻片段的剪辑点',
+          'Select a clip beside a cut, or move the playhead to a touching same-track cut'
+        ),
+        'info'
       )
-      const transitions = [...latest.transitions]
-      if (existingIndex >= 0) {
-        transitions[existingIndex] = {
-          ...transitions[existingIndex],
-          type,
-          startOffset: nextTransition.startOffset,
-          endOffset: nextTransition.endOffset
-        }
-      } else {
-        transitions.push(nextTransition)
-      }
-      return {
-        transitions: normalizeTransitions(transitions, latest.clips, latest.operationsByClip),
-        historyPast,
-        historyFuture: []
-      }
-    })
-    get().showToast(translate('转场已添加', 'Transition added'), 'success')
-    return true
+      return false
+    }
+    return applyTransitionToCut(type, cut)
   },
 
   updateTransition: (id, patch, options) =>
@@ -1680,10 +1855,12 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
       const target = state.transitions.find((item) => item.id === id)
       if (!target) return state
       const historyPast = historyPastForEdit(state, options)
-      const transitions = state.transitions
-        .map((item) => (item.id === id ? { ...item, ...patch } : item))
-        .map((item) => clampTransition(item, state.clips, state.operationsByClip))
-        .filter((item): item is TimelineTransition => !!item)
+      const transitions = normalizeTransitions(
+        state.transitions.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+        state.clips,
+        state.operationsByClip,
+        { editedTransitionId: id, preserveNeighborDurations: true }
+      )
       return {
         transitions,
         historyPast,
@@ -1697,6 +1874,7 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
       const historyPast = appendHistory(state.historyPast, takeSnapshot(state))
       return {
         transitions: state.transitions.filter((item) => item.id !== id),
+        selectedTransitionId: state.selectedTransitionId === id ? null : state.selectedTransitionId,
         historyPast,
         historyFuture: []
       }
@@ -1804,6 +1982,12 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
         operations: targetId === state.selectedClipId ? updated : state.operations,
         operationsByClip: newOpsByClip,
         clips: resolvedClips,
+        transitions: shouldUpdateTimeline
+          ? normalizeTransitions(state.transitions, resolvedClips, newOpsByClip)
+          : state.transitions,
+        audioFades: shouldUpdateTimeline
+          ? normalizeAudioFades(state.audioFades, resolvedClips, newOpsByClip)
+          : state.audioFades,
         timelineDuration: nextTimelineDuration,
         currentTime: shouldUpdateTimeline
           ? clampTimelineTime(state.currentTime, nextTimelineDuration)
@@ -2243,8 +2427,9 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
   getAudioOperationsForSelection: () => {
     const { clips, linkedGroups, selectedClipId, operationsByClip, operations } = get()
     const targetId = getLinkedAudioClipId(clips, linkedGroups, selectedClipId)
-    if (!targetId || targetId === selectedClipId) return operations
-    return operationsByClip[targetId] || []
+    if (!targetId) return EMPTY_MEDIA_OPERATIONS
+    if (targetId === selectedClipId) return operations
+    return operationsByClip[targetId] || EMPTY_MEDIA_OPERATIONS
   },
 
   getMergeSelectionState: () => {
@@ -2266,6 +2451,7 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
       clips: [],
       transitions: [],
       audioFades: [],
+      selectedTransitionId: null,
       selectedClipId: null,
       selectedClipIds: [],
       lastSelectedClipId: null,

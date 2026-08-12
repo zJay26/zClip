@@ -11,7 +11,7 @@
 <h1 align="center">zClip</h1>
 
 <p align="center"><em>A local-first, offline Windows video editor without subscriptions.</em></p>
-<p align="center"><strong>偶尔只想剪一段视频，不必启动一整套专业软件，也不该在导出时才撞上会员墙。</strong></p>
+<p align="center"><strong>只想简单剪一段视频，不必启动一整套专业软件，也不该在导出时才被要求开通会员。</strong></p>
 <p align="center">zClip 是一款面向 Windows 的免费开源本地视频剪辑器：素材不上传，常用剪辑和导出在自己的电脑上完成。</p>
 
 <p align="center">
@@ -24,7 +24,7 @@
 <p align="center">
   <a href="https://github.com/zJay26/zClip/releases/download/{{TAG}}/{{SETUP_EXE}}"><strong>下载 Windows 安装包</strong></a>
   ·
-  <a href="#先看效果">先看效果</a>
+  <a href="#demo">Demo</a>
   ·
   <a href="#三步开始剪辑">三步上手</a>
 </p>
@@ -46,18 +46,11 @@
 - 在意隐私，希望素材留在本机的人
 - 想研究或二次开发一个完整 Electron + FFmpeg 桌面项目的开发者
 
-## 先看效果
-
-![zClip 深浅色界面与中英文切换](./docs/demo/overview.png)
-
-<details>
-<summary>查看导入、剪辑与导出的短演示</summary>
+## Demo
 
 <p align="center">
   <img src="./docs/demo/demo.webp" alt="zClip 操作演示" />
 </p>
-
-</details>
 
 ## 下载
 
@@ -92,11 +85,11 @@
 
 ### {{TAG}} 有什么新变化
 
-- 时间轴片段跨轨拖动更流畅，选中反馈更醒目
-- 修复时间轴与功能区争夺键盘焦点，空格播放和 Delete 删除更可靠
-- `LINKED` / `UNLINKED` 状态与实际链接关系一致，并可正常取消链接
-- 纯音频时间线播放到结尾后会自动暂停并复位播放按钮
-- 应用、安装包和文档统一使用新的 zClip 图标
+- 重做转场播放衔接，消除剪辑点黑帧、跳变和音画卡顿
+- 转场拖放范围更直观，选中反馈与参数面板更明确，替换效果时保留时长
+- 修复取消链接并删除音频后仍播放原音频的问题
+- 大幅优化高倍速片段、普通顺序片段、GIF、WebP、VP9 和擦除转场的导出速度
+- 自动探测可用的 NVENC、QSV、AMF 硬件编码器，失败时安全回退软件编码
 
 ## 它不打算替代什么
 

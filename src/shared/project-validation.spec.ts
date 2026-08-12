@@ -36,8 +36,11 @@ function project(): ProjectData {
 describe('project validation', () => {
   it('accepts a valid project and strips ephemeral proxy paths', () => {
     const value = project()
+    value.clips[0].embeddedAudioEnabled = false
     expect(isProjectData(value)).toBe(true)
-    expect(sanitizeProjectForPersistence(value).clips[0].mediaInfo.playbackPath).toBeUndefined()
+    const sanitized = sanitizeProjectForPersistence(value)
+    expect(sanitized.clips[0].mediaInfo.playbackPath).toBeUndefined()
+    expect(sanitized.clips[0].embeddedAudioEnabled).toBe(false)
   })
 
   it('rejects invalid operation parameters and dangling references', () => {

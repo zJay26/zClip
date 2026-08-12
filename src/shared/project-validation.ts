@@ -8,6 +8,7 @@ import type {
 } from './types'
 import { isSupportedMediaExtension } from './media-formats'
 import { getClipTimelineRange, getTimelineDuration } from './timeline-utils'
+import { normalizeTimelineTransitions } from './transition-utils'
 
 const OPERATION_TYPES = new Set(['trim', 'speed', 'volume', 'pitch', 'transform', 'fade'])
 const TRACK_TYPES = new Set(['video', 'audio'])
@@ -89,6 +90,7 @@ export function isTimelineClip(value: unknown): value is TimelineClip {
       !isSupportedMediaExtension(value.filePath) ||
       !finite(value.startTime, 0, 60 * 60 * 24 * 365) || !finite(value.duration, 0.001, 60 * 60 * 24 * 365) ||
       !TRACK_TYPES.has(String(value.track)) || !finite(value.trackIndex, 0, 64) || !Number.isInteger(value.trackIndex) ||
+      (value.embeddedAudioEnabled !== undefined && typeof value.embeddedAudioEnabled !== 'boolean') ||
       !isMediaInfo(value.mediaInfo) || value.mediaInfo.filePath !== value.filePath) return false
   const trimBoundStart = value.trimBoundStart ?? 0
   const trimBoundEnd = value.trimBoundEnd ?? value.duration
@@ -194,5 +196,9 @@ export function sanitizeProjectForPersistence(data: ProjectData): ProjectData {
       playbackProxyFailed: false
     }
   }))
-  return { ...data, clips }
+  return {
+    ...data,
+    clips,
+    transitions: normalizeTimelineTransitions(data.transitions, clips, data.operationsByClip)
+  }
 }
