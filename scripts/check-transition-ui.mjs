@@ -4,6 +4,7 @@ import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { checkEditorWorkflow } from './check-editor-workflow-ui.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const rootDir = path.resolve(path.dirname(__filename), '..')
@@ -275,6 +276,11 @@ async function main() {
       throw new Error(`${error instanceof Error ? error.message : String(error)}\nRenderer diagnostics: ${JSON.stringify(diagnostics)}`)
     }
     console.log('Transition UI QA: project loaded')
+    if (process.argv.includes('--editor-workflow-only')) {
+      await checkEditorWorkflow(cdp, projectPath, screenshotPath)
+      await cdp.capture(screenshotPath)
+      return
+    }
 
     const ordinaryCutSeekPoint = await cdp.evaluate(`(() => {
       const editor = document.querySelector('[aria-label="时间线编辑区"]')
@@ -791,9 +797,9 @@ async function main() {
       `Number(document.querySelector('[data-preview-timeline-time]')?.dataset.previewTimelineTime || 0) >= ${playbackWarmupStart + 0.15}`,
       5_000
     )
-    await cdp.evaluate(`window.__zclipTransitionQa.measurementStartTimeline = Number(
-      document.querySelector('[data-preview-timeline-time]')?.dataset.previewTimelineTime || 0
-    )`)
+    // Retain the verified pre-roll samples. A polling round trip can finish
+    // after a customized transition has already started and discard its entry.
+    await cdp.evaluate(`window.__zclipTransitionQa.measurementStartTimeline = ${playbackWarmupStart}`)
     await cdp.waitFor(`Number(document.querySelector('[data-preview-timeline-time]')?.dataset.previewTimelineTime || 0) >= 3.98`, 5_000)
     await cdp.waitFor(`Number(document.querySelector('[data-preview-timeline-time]')?.dataset.previewTimelineTime || 0) >= 4.65`, 5_000)
     await delay(120)
@@ -899,6 +905,7 @@ async function main() {
       throw new Error(`Transition handoff was not continuous: ${JSON.stringify(playbackState)}`)
     }
 
+    await checkEditorWorkflow(cdp, projectPath, screenshotPath)
     await cdp.capture(screenshotPath)
 
     console.log(JSON.stringify({

@@ -4,6 +4,41 @@ All notable changes to zClip are documented in this file.
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-09-07
+
+### Added
+
+- Add delete-and-close-gaps (`Shift+Delete`) and close-all-gaps actions. Only time empty across every track is removed, so audio/video stays synchronized.
+- Add select-all, clear-selection, previous/next cut and timeline start/end navigation, import/export shortcuts, and a bilingual `F1` shortcut guide.
+
+### Fixed
+
+- Preserve copied transitions, audio fades, links and track availability when pasting clips, with independent IDs and complete undo/redo.
+- Allow empty projects to be saved and recovered after deleting all clips; stop playback and clamp the playhead after deletion.
+- Coalesce repeated saves, include edits made while the save picker is open, and prevent stale save completions from changing another project. Keep newer edits dirty and prevent Save and Exit from discarding them.
+- Recover from export picker/IPC exceptions, reject invalid ranges, ignore unrelated merge events, and retain the export lock until cancellation cleanup settles.
+- Keep input focus when dialogs update, preserve native text-editing shortcuts, and improve keyboard focus trapping.
+- Make Fit update at unchanged zoom levels and support multi-hour timelines and horizontal trackpad scrolling.
+- Reject project files larger than the supported read limit before replacing existing project or autosave files.
+
+### Changed
+
+- Avoid repeated full clip scans when deleting linked selections; use sorted intervals and prefix sums for gap remapping.
+- Refresh compatible dependency versions and resolve all four dependency-audit findings present in the previous lockfile.
+- Extend packaged UI verification to editing shortcuts, theme/language help, copy/paste, history, ripple deletion, and saving an empty project.
+
+## [2.6.0] - 2026-08-12
+
+### Changed
+
+- Rework ordinary-cut and transition playback, transition selection/drop feedback, and duration-preserving effect replacement.
+- Speed up sequential/high-speed exports, bounded input seeking, GIF/WebP/VP9 and wipe transitions; probe hardware encoders with software fallback.
+
+### Fixed
+
+- Stop detached and deleted audio from continuing through a video's embedded stream.
+- Normalize transition constraints after moving, trimming, changing speed, deleting clips and restoring projects.
+
 ## [2.5.1] - 2026-08-11
 
 ### Changed

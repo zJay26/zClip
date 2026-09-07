@@ -3,7 +3,7 @@
 // Ctrl+滚轮以光标为中心缩放，普通滚轮水平滚动
 // ============================================================
 
-import { useState, useCallback, useEffect, useRef, type RefObject } from 'react'
+import { useState, useCallback, useLayoutEffect, type RefObject } from 'react'
 import { clamp } from '../../lib/utils'
 import { MIN_ZOOM, MAX_ZOOM, TIMELINE_TAIL_PX } from './timeline-constants'
 
@@ -23,22 +23,33 @@ export function useTimelineZoom(
   timelineDuration: number
 ): TimelineZoomState {
   const [zoom, setZoomRaw] = useState(1)
-  const basePpsRef = useRef<number | null>(null)
-
-  const containerWidth = containerRef.current?.clientWidth ?? 800
-  const basePPS = basePpsRef.current ?? Math.max(1, containerWidth / Math.max(timelineDuration, 0.1))
+  const [basePps, setBasePps] = useState<number | null>(null)
+  const [containerWidth, setContainerWidth] = useState(800)
+  const fitPps = Math.max(1, containerWidth - TIMELINE_TAIL_PX) / Math.max(timelineDuration, 0.1)
+  const basePPS = basePps ?? fitPps
   const pixelsPerSecond = basePPS * zoom
   const totalWidth = Math.max(containerWidth, timelineDuration * pixelsPerSecond + TIMELINE_TAIL_PX)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    const measure = () => setContainerWidth(Math.max(1, container.clientWidth))
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(container)
+    return () => observer.disconnect()
+  }, [containerRef, timelineDuration > 0])
+
+  useLayoutEffect(() => {
     if (timelineDuration <= 0) {
-      basePpsRef.current = null
+      setBasePps(null)
+      setZoomRaw(1)
       return
     }
-    if (basePpsRef.current === null) {
-      basePpsRef.current = Math.max(1, containerWidth / Math.max(timelineDuration, 0.1))
-    }
-  }, [timelineDuration, containerWidth])
+    setBasePps((current) => current ?? Math.max(1,
+      (containerRef.current?.clientWidth || containerWidth) - TIMELINE_TAIL_PX
+    ) / Math.max(timelineDuration, 0.1))
+  }, [containerRef, timelineDuration, containerWidth])
 
   const setZoom = useCallback((z: number) => {
     setZoomRaw(clamp(z, MIN_ZOOM * 0.5, MAX_ZOOM))
@@ -85,20 +96,20 @@ export function useTimelineZoom(
         if (e.cancelable) {
           e.preventDefault()
         }
-        container.scrollLeft += e.deltaY
+        container.scrollLeft += Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY
       }
     },
     [containerRef, pixelsPerSecond, zoom, basePPS]
   )
 
   const zoomToFit = useCallback(() => {
-    basePpsRef.current = Math.max(1, containerWidth / Math.max(timelineDuration, 0.1))
+    setBasePps(fitPps)
     setZoomRaw(1)
     const container = containerRef.current
     if (container) {
       container.scrollLeft = 0
     }
-  }, [containerRef, containerWidth, timelineDuration])
+  }, [containerRef, fitPps])
 
   return {
     zoom,

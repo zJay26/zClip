@@ -9,6 +9,8 @@ import VideoPreview from '../Preview/VideoPreview'
 import Timeline from '../Timeline/Timeline'
 import { useVideoPlayer } from '../../hooks/useVideoPlayer'
 import TopToolbar from './TopToolbar'
+import ShortcutHelp from './ShortcutHelp'
+import { getAdjacentClipBoundary } from '../../stores/timeline-editing'
 import InspectorPanel from './InspectorPanel'
 import OverlayStack from './OverlayStack'
 import { Button, Dialog } from '../ui'
@@ -194,6 +196,7 @@ const AppLayout: React.FC = () => {
   const [autosavePrompt, setAutosavePrompt] = useState<ProjectData | null>(null)
   const [closePrompt, setClosePrompt] = useState(false)
   const [closeSaving, setCloseSaving] = useState(false)
+  const [showHelp, setShowHelp] = useState(false)
   const [cacheStats, setCacheStats] = useState<CacheStats | null>(null)
   const [layoutSizes, setLayoutSizes] = useState<LayoutSizeState>(readLayoutSizes)
   const resizeCleanupRef = useRef<(() => void) | null>(null)
@@ -312,7 +315,12 @@ const AppLayout: React.FC = () => {
   // ---- Keyboard shortcuts ----
   useEffect(() => {
     const handler = (e: KeyboardEvent): void => {
-      if (hasBlockingKeyboardLayer()) return
+      if (e.isComposing || hasBlockingKeyboardLayer()) return
+      if (e.code === 'F1') {
+        e.preventDefault()
+        setShowHelp(true)
+        return
+      }
       if ((e.ctrlKey || e.metaKey) && !e.altKey) {
         if ((loading || merging) && (e.code === 'KeyS' || e.code === 'KeyO' || e.code === 'KeyN')) {
           e.preventDefault()
@@ -321,7 +329,7 @@ const AppLayout: React.FC = () => {
         }
         if (e.code === 'KeyS') {
           e.preventDefault()
-          if (clips.length > 0) void (e.shiftKey ? saveProjectAs() : saveProject())
+          void (e.shiftKey ? saveProjectAs() : saveProject())
           return
         }
         if (e.code === 'KeyO') {
@@ -334,7 +342,19 @@ const AppLayout: React.FC = () => {
           newProject()
           return
         }
+        if (!loading && !merging && e.code === 'KeyI') {
+          e.preventDefault()
+          void openFiles()
+          return
+        }
+        if (!loading && !merging && e.code === 'KeyE') {
+          e.preventDefault()
+          if (clips.length > 0) setShowExport(true)
+          return
+        }
       }
+      if (isTextEditingTarget(e.target) || e.altKey) return
+      if ((e.ctrlKey || e.metaKey) && !['KeyZ', 'KeyY', 'KeyC', 'KeyX', 'KeyV', 'KeyA'].includes(e.code)) return
       if (e.code === 'Space') {
         if (shouldPreserveNativeSpace(e.target)) return
         e.preventDefault()
@@ -351,6 +371,31 @@ const AppLayout: React.FC = () => {
         return
       }
       switch (e.code) {
+        case 'KeyA':
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault()
+            useProjectStore.getState().selectAllClips()
+          }
+          break
+        case 'Escape':
+          e.preventDefault()
+          useProjectStore.getState().clearSelection()
+          break
+        case 'Home':
+        case 'End':
+          if (shouldPreserveDirectionalKeys(e.target)) return
+          e.preventDefault()
+          seekTo(e.code === 'Home' ? 0 : useProjectStore.getState().timelineDuration)
+          break
+        case 'ArrowUp':
+        case 'ArrowDown': {
+          if (shouldPreserveDirectionalKeys(e.target)) return
+          e.preventDefault()
+          const state = useProjectStore.getState()
+          seekTo(getAdjacentClipBoundary(state.clips, state.operationsByClip, state.currentTime,
+            e.code === 'ArrowUp' ? -1 : 1, 1 / frameStep))
+          break
+        }
         case 'KeyZ':
           if (e.ctrlKey || e.metaKey) {
             e.preventDefault()
@@ -373,6 +418,7 @@ const AppLayout: React.FC = () => {
           break
         case 'KeyK':
           if (isTextEditingTarget(e.target)) return
+          if (e.repeat) return
           togglePlay()
           break
         case 'KeyL':
@@ -405,14 +451,17 @@ const AppLayout: React.FC = () => {
         case 'Delete':
         case 'Backspace':
           if (shouldPreserveDeleteKeys(e.target)) return
-          deleteSelectedClips()
+          e.preventDefault()
+          if (!e.repeat) deleteSelectedClips({ closeGap: e.shiftKey })
           break
         case 'ArrowLeft':
           if (shouldPreserveDirectionalKeys(e.target)) return
+          e.preventDefault()
           step(e.shiftKey ? -1 : -frameStep)
           break
         case 'ArrowRight':
           if (shouldPreserveDirectionalKeys(e.target)) return
+          e.preventDefault()
           step(e.shiftKey ? 1 : frameStep)
           break
       }
@@ -447,7 +496,9 @@ const AppLayout: React.FC = () => {
     saveProject,
     saveProjectAs,
     openProject,
-    newProject
+    newProject,
+    openFiles,
+    seekTo
   ])
 
   // ---- Drag & Drop ----
@@ -586,7 +637,7 @@ const AppLayout: React.FC = () => {
     refreshRecentProjects()
     window.api.getCacheStats().then(setCacheStats).catch(() => {})
     window.api.getAutosave().then((data) => {
-      if (data && data.clips.length > 0 && clips.length === 0) {
+      if (data && useProjectStore.getState().clips.length === 0 && !useProjectStore.getState().projectDirty) {
         setAutosavePrompt(data)
       }
     }).catch(() => {})
@@ -622,7 +673,7 @@ const AppLayout: React.FC = () => {
   }, [projectDirty])
 
   useEffect(() => {
-    if (clips.length === 0 || !projectDirty) return
+    if (!projectDirty) return
     const handle = window.setTimeout(() => {
       autosaveNow().catch((error) => {
         showToast(error instanceof Error
@@ -673,6 +724,7 @@ const AppLayout: React.FC = () => {
         onRelinkMissingMedia={() => { void relinkMissingMedia() }}
         onOpenExport={() => setShowExport(true)}
         exportButtonRef={exportButtonRef}
+        onOpenHelp={() => setShowHelp(true)}
       />
 
       {/* ===== Main content ===== */}
@@ -768,6 +820,7 @@ const AppLayout: React.FC = () => {
         clearError={clearError}
       />
 
+      <ShortcutHelp open={showHelp} onClose={() => setShowHelp(false)} />
       {autosavePrompt && (
         <Dialog
           open
@@ -835,7 +888,7 @@ const AppLayout: React.FC = () => {
             onClick={() => {
               setCloseSaving(true)
               void saveProject().then((saved) => {
-                if (saved) resolveCloseRequest('close')
+                if (saved && !useProjectStore.getState().projectDirty) resolveCloseRequest('close')
                 else setCloseSaving(false)
               })
             }}

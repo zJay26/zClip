@@ -26,6 +26,7 @@ npm run dev
 npm run check
 npm run pack:dir
 npm run check:packaged
+npm run check:editor-ui
 ```
 
 如果修改 README 模板或版本号，还需要运行：

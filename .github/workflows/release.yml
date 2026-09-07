@@ -64,6 +64,8 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       - name: Verify packaged application
         run: npm run check:packaged
+      - name: Verify packaged editor workflow
+        run: npm run check:editor-ui
       - name: Verify and record Authenticode status
         shell: pwsh
         run: |
@@ -159,7 +161,6 @@ jobs:
           else
             installer_label='Windows installer (Authenticode signed)'
           fi
-          notes="$(cat release-assets/RELEASE_NOTES.md)"
           gh release create "$GITHUB_REF_NAME" \
             "${installer}#${installer_label}" \
             release-assets/zClip.sbom.cdx.json \
@@ -170,6 +171,6 @@ jobs:
             --verify-tag \
             --fail-on-no-commits \
             --generate-notes \
-            --notes "$notes" \
+            --notes-file release-assets/RELEASE_NOTES.md \
             --repo "$GITHUB_REPOSITORY" \
             --title "zClip $version"

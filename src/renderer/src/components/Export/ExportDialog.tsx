@@ -353,9 +353,7 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose, originRef })
   }
 
   const handleClose = (): void => {
-    if (exporting) {
-      cancelExport()
-    }
+    cancelExport()
     onClose()
   }
 

@@ -76,10 +76,10 @@ export function getTickInterval(
 ): { major: number; minor: number } {
   // 固定档位刻度：缩放跨档才跳变，避免刻度抖动
   const targetMajorPx = 90
-  const majorOptions = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600]
+  const majorOptions = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1200, 1800, 3600, 7200, 14400, 21600, 43200, 86400]
   const major =
     majorOptions.find((n) => n * pixelsPerSecond >= targetMajorPx) ||
-    majorOptions[majorOptions.length - 1]
+    Math.ceil(targetMajorPx / Math.max(Number.EPSILON, pixelsPerSecond) / 86400) * 86400
   const minor = major >= 1 ? major / 5 : major / 4
 
   return { major, minor }

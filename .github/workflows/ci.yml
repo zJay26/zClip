@@ -26,3 +26,4 @@ jobs:
       - run: npm run check
       - run: npm run pack:dir
       - run: npm run check:packaged
+      - run: npm run check:editor-ui

@@ -11,6 +11,14 @@ const RECENT_LIMIT = 10
 const MAX_PROJECT_FILE_BYTES = 25 * 1024 * 1024
 const writeQueues = new Map<string, Promise<void>>()
 
+function serializeProject(data: ProjectData): string {
+  const contents = `${JSON.stringify(data, null, 2)}\n`
+  if (Buffer.byteLength(contents, 'utf8') > MAX_PROJECT_FILE_BYTES) {
+    throw new Error('项目超过 25 MB 上限，请减少片段后重试')
+  }
+  return contents
+}
+
 function pathKey(filePath: string): string {
   const normalized = path.resolve(filePath)
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized
@@ -65,7 +73,7 @@ export async function writeProjectFile(filePath: string, data: ProjectData): Pro
     savedAt: new Date().toISOString()
   }
   if (!isProjectData(projectData)) throw new Error('项目数据校验失败')
-  await queuedAtomicWrite(filePath, `${JSON.stringify(projectData, null, 2)}\n`, true)
+  await queuedAtomicWrite(filePath, serializeProject(projectData), true)
   await addRecentProject(filePath)
 }
 
@@ -122,9 +130,10 @@ export async function writeAutosave(data: ProjectData): Promise<void> {
     savedAt: new Date().toISOString()
   }
   if (!isProjectData(autosaveData)) throw new Error('自动保存数据校验失败')
+  const contents = serializeProject(autosaveData)
   const autosavePath = getAutosavePath()
   await queuedFileOperation(autosavePath, async () => {
-    await atomicWrite(autosavePath, `${JSON.stringify(autosaveData, null, 2)}\n`)
+    await atomicWrite(autosavePath, contents)
   })
 }
 

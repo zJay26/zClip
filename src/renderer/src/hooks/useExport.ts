@@ -64,29 +64,22 @@ export function useExport(opts?: UseExportOptions) {
   // Use ref so the IPC listener always sees the latest callback
   const onCompleteRef = useRef(opts?.onComplete)
   onCompleteRef.current = opts?.onComplete
-  const errorEventSeenRef = useRef(false)
+  const activeJobRef = useRef<{ canceled: boolean; started: boolean; errorSeen: boolean; outputPath?: string } | null>(null)
   const completionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Listen for export events from main process
   useEffect(() => {
     const unsubProgress = window.api.onExportProgress((progress) => {
-      setExportProgress(progress)
+      if (activeJobRef.current && !activeJobRef.current.canceled) setExportProgress(progress)
     })
     const unsubComplete = window.api.onExportComplete((outputPath) => {
-      setExporting(false)
-      setExportProgress(null)
-      showToast(translate(`导出完成：${outputPath}`, `Export complete: ${outputPath}`), 'success')
-      // Auto-close dialog after a short delay so user can see 100%
-      if (completionTimerRef.current) clearTimeout(completionTimerRef.current)
-      completionTimerRef.current = setTimeout(() => {
-        completionTimerRef.current = null
-        onCompleteRef.current?.()
-      }, 600)
+      const job = activeJobRef.current
+      if (job && !job.canceled) job.outputPath = outputPath
     })
     const unsubError = window.api.onExportError((error) => {
-      errorEventSeenRef.current = true
-      setExporting(false)
-      setExportProgress(null)
+      const job = activeJobRef.current
+      if (!job || job.canceled || job.errorSeen) return
+      job.errorSeen = true
       showToast(translate(`导出失败：${error}`, `Export failed: ${error}`), 'error')
     })
 
@@ -110,7 +103,7 @@ export function useExport(opts?: UseExportOptions) {
       scope: ExportScope = { mode: 'timeline' },
       customOptions?: ExportCustomOptions
     ): Promise<boolean> => {
-      if (!mediaInfo && clips.length === 0) return false
+      if ((!mediaInfo && clips.length === 0) || activeJobRef.current || useProjectStore.getState().exporting) return false
       if (completionTimerRef.current) {
         clearTimeout(completionTimerRef.current)
         completionTimerRef.current = null
@@ -142,56 +135,56 @@ export function useExport(opts?: UseExportOptions) {
         )
         exportAudioFades = audioFades.filter((fade) => selected.has(fade.clipId))
       } else if (scope.mode === 'range') {
-        const startTime = Math.max(0, Math.min(scope.startTime, scope.endTime))
-        const endTime = Math.max(startTime, scope.endTime)
-        if (endTime - startTime <= 0.001) {
-          showToast(translate('导出范围时长必须大于 0', 'Export range duration must be greater than 0'), 'info')
+        const startTime = scope.startTime
+        const endTime = scope.endTime
+        if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || startTime < 0 || endTime > useProjectStore.getState().timelineDuration || endTime - startTime <= 0.001) {
+          showToast(translate('请选择时间线内有效的起止时间', 'Choose a valid start and end within the timeline'), 'info')
           return false
         }
         range = { startTime, endTime }
       }
 
-      // Ask user where to save
-      const baseName = mediaInfo
-        ? mediaInfo.filePath.split(/[\\/]/).pop() || 'output'
-        : 'zclip_timeline'
-      const nameWithoutExt = baseName.replace(/\.[^.]+$/, '')
-      const outputPath = await window.api.showSaveDialog(`${nameWithoutExt}_edited.${format}`)
-      if (!outputPath) return false
-
-      const exportOptions: ExportOptions = {
-        format,
-        resolution,
-        quality,
-        customOptions: quality === 'custom' ? customOptions : undefined,
-        outputPath,
-        range,
-        projectSettings,
-        gifLoop: isAnimatedImageFormat(format) ? gifLoop : undefined
-      }
-
+      const job = { canceled: false, started: false, errorSeen: false, outputPath: undefined as string | undefined }
+      activeJobRef.current = job
       setExporting(true)
       setExportProgress(null)
-      errorEventSeenRef.current = false
-
-      const result = await window.api.startExport({
-        mediaInfo: mediaInfo ?? undefined,
-        operations,
-        clips: exportClips,
-        operationsByClip: exportOpsByClip,
-        transitions: exportTransitions,
-        audioFades: exportAudioFades,
-        exportOptions
-      })
-      if (!result.success) {
-        setExporting(false)
-        setExportProgress(null)
-        if (!errorEventSeenRef.current) {
-          showToast(translate(`导出失败：${result.error || '未知错误'}`, `Export failed: ${result.error || 'Unknown error'}`), 'error')
+      try {
+        const baseName = (mediaInfo?.filePath || 'zclip_timeline').split(/[\\/]/).pop() || 'output'
+        const nameWithoutExt = baseName.replace(/\.[^.]+$/, '')
+        const outputPath = await window.api.showSaveDialog(`${nameWithoutExt}_edited.${format}`)
+        if (!outputPath || job.canceled) return false
+        const exportOptions: ExportOptions = {
+          format, resolution, quality,
+          customOptions: quality === 'custom' ? customOptions : undefined,
+          outputPath, range, projectSettings,
+          gifLoop: isAnimatedImageFormat(format) ? gifLoop : undefined
+        }
+        job.started = true
+        const result = await window.api.startExport({
+          mediaInfo: mediaInfo ?? undefined, operations, clips: exportClips,
+          operationsByClip: exportOpsByClip, transitions: exportTransitions,
+          audioFades: exportAudioFades, exportOptions
+        })
+        if (job.canceled) return false
+        if (!result.success) throw new Error(result.error || translate('未知错误', 'Unknown error'))
+        setExportProgress({ percent: 100, currentTime: 0, speed: '', eta: '' })
+        showToast(translate(`导出完成：${job.outputPath || outputPath}`, `Export complete: ${job.outputPath || outputPath}`), 'success')
+        completionTimerRef.current = setTimeout(() => {
+          completionTimerRef.current = null
+          onCompleteRef.current?.()
+        }, 600)
+        return true
+      } catch (error) {
+        if (!job.canceled && !job.errorSeen) {
+          const detail = error instanceof Error ? error.message : translate('未知错误', 'Unknown error')
+          showToast(translate(`导出失败：${detail}`, `Export failed: ${detail}`), 'error')
         }
         return false
+      } finally {
+        activeJobRef.current = null
+        setExporting(false)
+        if (!completionTimerRef.current) setExportProgress(null)
       }
-      return true
     },
     [
       mediaInfo,
@@ -213,10 +206,17 @@ export function useExport(opts?: UseExportOptions) {
       clearTimeout(completionTimerRef.current)
       completionTimerRef.current = null
     }
-    window.api.cancelExport()
-    setExporting(false)
-    setExportProgress(null)
-    showToast(translate('导出已取消', 'Export canceled'), 'info')
+    const job = activeJobRef.current
+    if (!job || job.canceled) return
+    job.canceled = true
+    try {
+      if (job.started) window.api.cancelExport()
+      showToast(translate('正在取消导出', 'Canceling export'), 'info')
+    } catch (error) {
+      job.canceled = false
+      showToast(error instanceof Error ? error.message : translate('取消失败', 'Could not cancel export'), 'error')
+    }
+    // Keep the export lock until the native job has finished cleaning up.
   }, [setExporting, setExportProgress, showToast])
 
   return { startExport, cancelExport, exporting, exportProgress }

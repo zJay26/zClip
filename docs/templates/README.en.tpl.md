@@ -85,11 +85,11 @@ Projects can be saved as `.zclip` files and reopened by double-clicking. Autosav
 
 ### What is new in {{TAG}}
 
-- Reworked transition playback to remove black frames, jumps, and stalls around edit points
-- More forgiving transition drops, clearer selection and parameter controls, and duration-preserving replacement
-- Fixed detached and deleted audio continuing to play from its former video clip
-- Much faster exports for high-speed clips, simple sequential edits, GIF, WebP, VP9, and wipe transitions
-- Runtime detection for NVENC, QSV, and AMF with safe software fallback
+- Delete clips and close newly empty time, or close all gaps, while shifting every track together and preserving occupied time
+- Copy transitions, audio fades, and linked clips; select all, jump between cuts, and open keyboard help with F1
+- Save and recover empty projects, coalesce repeated saves, and prevent stale saves from changing another project
+- Improve export errors and cancellation, dialog input focus, long-timeline fitting, and horizontal trackpad scrolling
+- Refresh dependencies and add editing, persistence, export lifecycle, and packaged UI regression checks
 
 ## What it does not try to replace
 
@@ -149,6 +149,12 @@ The currently supported release target is Windows 10/11 x64. Other platforms do 
 
 | Action | Shortcut |
 | --- | --- |
+| Import media / Export | `Ctrl/Cmd + I` / `Ctrl/Cmd + E` |
+| Keyboard help | `F1` |
+| Select all / Clear selection | `Ctrl/Cmd + A` / `Esc` |
+| Previous / Next cut | `↑` / `↓` |
+| Timeline start / end | `Home` / `End` |
+| Delete and close gaps | `Shift + Delete` |
 | New project | `Ctrl/Cmd + N` |
 | Open project | `Ctrl/Cmd + O` |
 | Save / Save as | `Ctrl/Cmd + S` / `Ctrl/Cmd + Shift + S` |

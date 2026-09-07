@@ -68,15 +68,16 @@ const TimelineRuler: React.FC<TimelineRulerProps> = ({
 
   // Generate tick marks (use index steps to avoid float drift)
   const tickInterval = getTickInterval(timelineDuration, pixelsPerSecond)
-  const tailSeconds = TIMELINE_TAIL_PX / Math.max(1, pixelsPerSecond)
+  const safePixelsPerSecond = Math.max(Number.EPSILON, pixelsPerSecond)
+  const tailSeconds = TIMELINE_TAIL_PX / safePixelsPerSecond
   const effectiveDuration = timelineDuration + tailSeconds
   const ticks: { time: number; major: boolean }[] = []
   const minor = tickInterval.minor
   const major = tickInterval.major
   const majorStepCount = Math.max(1, Math.round(major / minor))
   const totalSteps = Math.ceil((effectiveDuration + minor) / minor)
-  const visibleStart = Math.max(0, scrollLeft / Math.max(1, pixelsPerSecond) - major)
-  const visibleEnd = Math.min(effectiveDuration, (scrollLeft + (containerRect?.width || 1200)) / Math.max(1, pixelsPerSecond) + major)
+  const visibleStart = Math.max(0, scrollLeft / safePixelsPerSecond - major)
+  const visibleEnd = Math.min(effectiveDuration, (scrollLeft + (containerRect?.width || 1200)) / safePixelsPerSecond + major)
   const firstStep = Math.max(0, Math.floor(visibleStart / minor))
   const lastStep = Math.min(totalSteps, Math.ceil(visibleEnd / minor))
   for (let i = firstStep; i <= lastStep; i++) {

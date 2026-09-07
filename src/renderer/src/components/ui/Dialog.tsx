@@ -32,6 +32,8 @@ const Dialog: React.FC<DialogProps> = ({
 }) => {
   const { t } = usePreferences()
   const surfaceRef = useRef<HTMLDivElement>(null)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
   const titleId = useId()
   const descriptionId = useId()
   const transformOrigin = useMemo(() => {
@@ -44,22 +46,27 @@ const Dialog: React.FC<DialogProps> = ({
     if (!open) return
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const surface = surfaceRef.current
-    const focusable = surface?.querySelector<HTMLElement>('button, input, select, textarea, [tabindex]:not([tabindex="-1"])')
+    const focusable = surface?.querySelector<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])')
     ;(initialFocusRef?.current || focusable || surface)?.focus()
     const handleKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape' && onClose) {
+      if (event.key === 'Escape' && onCloseRef.current) {
         event.preventDefault()
-        onClose()
+        event.stopPropagation()
+        onCloseRef.current()
       }
       if (event.key !== 'Tab' || !surface) return
       const items = Array.from(surface.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'))
-      if (items.length === 0) return
+      if (items.length === 0) {
+        event.preventDefault()
+        surface.focus()
+        return
+      }
       const first = items[0]
       const last = items[items.length - 1]
-      if (event.shiftKey && document.activeElement === first) {
+      if (event.shiftKey && (document.activeElement === first || !surface.contains(document.activeElement))) {
         event.preventDefault()
         last.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
+      } else if (!event.shiftKey && (document.activeElement === last || document.activeElement === surface || !surface.contains(document.activeElement))) {
         event.preventDefault()
         first.focus()
       }
@@ -69,7 +76,7 @@ const Dialog: React.FC<DialogProps> = ({
       document.removeEventListener('keydown', handleKeyDown)
       previous?.focus()
     }
-  }, [initialFocusRef, onClose, open])
+  }, [initialFocusRef, open])
 
   return (
     <AnimatePresence onExitComplete={onExitComplete}>

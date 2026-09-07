@@ -55,6 +55,8 @@ import {
 } from './project-store-helpers'
 import { getMergeSelectionMeta } from './merge-selection'
 import { resolveClipOverlaps } from './timeline-overlap'
+import { createProjectSaver } from './project-saver'
+import { findEmptyIntervals, createGapTimeMapper } from './timeline-editing'
 import { uid } from '../lib/utils'
 import { translate } from '../contexts/preferences'
 
@@ -317,12 +319,6 @@ function normalizeProjectData(data: ProjectData): ProjectData {
   }
 }
 
-function projectNameFromPath(filePath: string | null): string {
-  if (!filePath) return translate('未命名项目', 'Untitled project')
-  const fileName = filePath.split(/[\\/]/).pop() || translate('未命名项目', 'Untitled project')
-  return fileName.replace(/\.zclip$/i, '').replace(/\.[^.]+$/, '') || translate('未命名项目', 'Untitled project')
-}
-
 const DOCUMENT_STATE_KEYS: ReadonlyArray<keyof ProjectStore> = [
   'clips', 'operationsByClip', 'transitions', 'audioFades', 'linkedGroups',
   'videoTrackCount', 'audioTrackCount', 'projectSettings'
@@ -376,6 +372,9 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
         : patch
     })
   }
+
+  let documentGeneration = 0
+  const persistProject = createProjectSaver(get, set, () => documentGeneration)
 
   const applyTransitionToCut = (type: TransitionEffectType, requestedCut: TransitionCut): boolean => {
     let appliedId: string | null = null
@@ -1093,6 +1092,9 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
           clips: copiedClips,
           operationsByClip: copiedOps,
           linkedGroups: copiedLinkedGroups,
+          transitions: structuredClone(state.transitions.filter((item) =>
+            selectedIdSet.has(item.leftClipId) && selectedIdSet.has(item.rightClipId))),
+          audioFades: structuredClone(state.audioFades.filter((item) => selectedIdSet.has(item.clipId))),
           minStartTime
         }
       }
@@ -1148,6 +1150,17 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
       })
 
       const nextOpsByClip = { ...state.operationsByClip, ...pastedOpsByClip }
+      const newClipIdByOldClipId = new Map(
+        Array.from(oldClipIdByNewClipId).map(([newId, oldId]) => [oldId, newId])
+      )
+      const pastedTransitions = clipboard.transitions.map((item) => ({
+        ...item, id: uid(),
+        leftClipId: newClipIdByOldClipId.get(item.leftClipId)!,
+        rightClipId: newClipIdByOldClipId.get(item.rightClipId)!
+      }))
+      const pastedFades = clipboard.audioFades.map((item) => ({
+        ...item, id: uid(), clipId: newClipIdByOldClipId.get(item.clipId)!
+      }))
       const nextLinkedGroups = { ...state.linkedGroups }
       groupMap.forEach((newGroupId, oldGroupId) => {
         nextLinkedGroups[newGroupId] = clipboard.linkedGroups[oldGroupId] !== false
@@ -1172,6 +1185,10 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
       return {
         clips: resolvedClips,
         operationsByClip: nextOpsByClip,
+        transitions: normalizeTransitions([...state.transitions, ...pastedTransitions], resolvedClips, nextOpsByClip),
+        audioFades: normalizeAudioFades([...state.audioFades, ...pastedFades], resolvedClips, nextOpsByClip),
+        videoTrackCount: Math.max(state.videoTrackCount, ...pastedClips.filter((clip) => clip.track === 'video').map((clip) => clip.trackIndex + 1)),
+        audioTrackCount: Math.max(state.audioTrackCount, ...pastedClips.filter((clip) => clip.track === 'audio').map((clip) => clip.trackIndex + 1)),
         linkedGroups: nextLinkedGroups,
         selectedTransitionId: null,
         selectedClipId: nextSelectedClipId,
@@ -1365,6 +1382,7 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
 
   deleteClip: (clipId) =>
     set((state) => {
+      if (!state.clips.some((clip) => clip.id === clipId)) return state
       const historyPast = appendHistory(state.historyPast, takeSnapshot(state))
       const updatedClips = disableEmbeddedAudioForRemovedAudioClips(
         state.clips,
@@ -1397,24 +1415,55 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
         duration: nextClip?.duration ?? 0,
         operations: nextSelectedId ? (newOpsByClip[nextSelectedId] || []) : [],
         timelineDuration: getTimelineDuration(resolvedClips, newOpsByClip),
+        currentTime: Math.min(state.currentTime, getTimelineDuration(resolvedClips, newOpsByClip)),
+        playing: false,
         historyPast,
         historyFuture: []
       }
     }),
 
-  deleteSelectedClips: () =>
+  selectAllClips: () => set((state) => {
+    if (state.clips.length === 0) return state
+    const primary = getSelectedClip(state.clips, state.selectedClipId) || state.clips[0]
+    return {
+      selectedClipId: primary.id, selectedClipIds: state.clips.map((clip) => clip.id),
+      selectedTransitionId: null, lastSelectedClipId: primary.id,
+      sourceFile: primary.filePath, mediaInfo: primary.mediaInfo, duration: primary.duration,
+      operations: state.operationsByClip[primary.id] || []
+    }
+  }),
+
+  clearSelection: () => set({
+    selectedClipId: null, selectedClipIds: [], selectedTransitionId: null,
+    lastSelectedClipId: null, operations: []
+  }),
+
+  removeTimelineGaps: () => set((state) => {
+    const gaps = findEmptyIntervals(state.clips, state.operationsByClip)
+    if (gaps.length === 0) return state
+    const remapTime = createGapTimeMapper(gaps)
+    const clips = state.clips.map((clip) => ({
+      ...clip, startTime: remapTime(clip.startTime)
+    }))
+    return {
+      clips, playing: false,
+      currentTime: remapTime(state.currentTime),
+      timelineDuration: getTimelineDuration(clips, state.operationsByClip),
+      transitions: normalizeTransitions(state.transitions, clips, state.operationsByClip),
+      historyPast: appendHistory(state.historyPast, takeSnapshot(state)), historyFuture: []
+    }
+  }),
+
+  deleteSelectedClips: (options) =>
     set((state) => {
-      const historyPast = appendHistory(state.historyPast, takeSnapshot(state))
       if (state.selectedClipIds.length === 0) return state
+      const historyPast = appendHistory(state.historyPast, takeSnapshot(state))
       const removeSet = new Set(state.selectedClipIds)
-      state.selectedClipIds.forEach((id) => {
-        const base = state.clips.find((clip) => clip.id === id)
-        if (!base) return
-        const isLinked = state.linkedGroups[base.groupId] !== false
-        if (!isLinked) return
-        state.clips.forEach((clip) => {
-          if (clip.groupId === base.groupId) removeSet.add(clip.id)
-        })
+      const removedGroups = new Set(state.clips.filter((clip) =>
+        removeSet.has(clip.id) && state.linkedGroups[clip.groupId] !== false
+      ).map((clip) => clip.groupId))
+      state.clips.forEach((clip) => {
+        if (removedGroups.has(clip.groupId)) removeSet.add(clip.id)
       })
       const updatedClips = disableEmbeddedAudioForRemovedAudioClips(
         state.clips,
@@ -1423,16 +1472,23 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
       )
       const newOpsByClip = { ...state.operationsByClip }
       removeSet.forEach((id) => delete newOpsByClip[id])
-      const resolvedClips = resolveClipOverlaps(updatedClips, newOpsByClip, new Set(), state.linkedGroups)
+      const gaps = options?.closeGap ? findEmptyIntervals(updatedClips, newOpsByClip,
+        state.clips.filter((clip) => removeSet.has(clip.id)).map((clip) => getClipTimelineRange(clip, state.operationsByClip))
+      ) : []
+      const remapTime = createGapTimeMapper(gaps)
+      const resolvedClips = updatedClips.map((clip) => ({
+        ...clip, startTime: remapTime(clip.startTime)
+      }))
+      const nextDuration = getTimelineDuration(resolvedClips, newOpsByClip)
 
       const nextSelectedId = resolvedClips[0]?.id ?? null
       const nextClip = resolvedClips.find((c) => c.id === nextSelectedId) ?? null
 
       return {
         clips: resolvedClips,
-        transitions: state.transitions.filter(
+        transitions: normalizeTransitions(state.transitions.filter(
           (item) => !removeSet.has(item.leftClipId) && !removeSet.has(item.rightClipId)
-        ),
+        ), resolvedClips, newOpsByClip),
         audioFades: state.audioFades.filter((item) => !removeSet.has(item.clipId)),
         operationsByClip: newOpsByClip,
         selectedClipId: nextSelectedId,
@@ -1442,7 +1498,9 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
         mediaInfo: nextClip?.mediaInfo ?? null,
         duration: nextClip?.duration ?? 0,
         operations: nextSelectedId ? (newOpsByClip[nextSelectedId] || []) : [],
-        timelineDuration: getTimelineDuration(resolvedClips, newOpsByClip),
+        timelineDuration: nextDuration,
+        currentTime: Math.min(remapTime(state.currentTime), nextDuration),
+        playing: false,
         historyPast,
         historyFuture: []
       }
@@ -2057,85 +2115,8 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
   },
   clearError: () => set({ error: null }),
 
-  saveProject: async () => {
-    try {
-      const state = get()
-      const savedRevision = state.documentRevision
-      const filePath =
-        state.projectFilePath ||
-        (await window.api.showProjectSaveDialog(`${projectNameFromPath(state.sourceFile)}.zclip`))
-      if (!filePath) return false
-      const result = await window.api.saveProjectFile(filePath, buildProjectData(state))
-      if (!result.success) throw new Error(result.error || translate('未知错误', 'Unknown error'))
-      let savedLatestRevision = false
-      set((current) => {
-        savedLatestRevision = current.documentRevision === savedRevision
-        return {
-          projectFilePath: filePath,
-          projectDirty: savedLatestRevision ? false : current.projectDirty
-        }
-      })
-      let autosaveCleanupFailed = false
-      if (savedLatestRevision) {
-        await get().clearAutosave().catch(() => { autosaveCleanupFailed = true })
-      }
-      await get().refreshRecentProjects().catch(() => {})
-      get().showToast(
-        !savedLatestRevision
-          ? translate('项目已保存，但保存期间产生了新改动', 'Project saved, but newer changes still need saving')
-          : autosaveCleanupFailed
-          ? translate('项目已保存，但旧自动保存未能清理', 'Project saved, but the previous autosave could not be cleared')
-          : translate('项目已保存', 'Project saved'),
-        !savedLatestRevision || autosaveCleanupFailed ? 'info' : 'success'
-      )
-      return true
-    } catch (error) {
-      get().showToast(translate(
-        `项目保存失败：${error instanceof Error ? error.message : '未知错误'}`,
-        `Project save failed: ${error instanceof Error ? error.message : 'Unknown error'}`
-      ), 'error')
-      return false
-    }
-  },
-
-  saveProjectAs: async () => {
-    try {
-      const state = get()
-      const savedRevision = state.documentRevision
-      const filePath = await window.api.showProjectSaveDialog(`${projectNameFromPath(get().projectFilePath)}.zclip`)
-      if (!filePath) return false
-      const result = await window.api.saveProjectFile(filePath, buildProjectData(state))
-      if (!result.success) throw new Error(result.error || translate('未知错误', 'Unknown error'))
-      let savedLatestRevision = false
-      set((current) => {
-        savedLatestRevision = current.documentRevision === savedRevision
-        return {
-          projectFilePath: filePath,
-          projectDirty: savedLatestRevision ? false : current.projectDirty
-        }
-      })
-      let autosaveCleanupFailed = false
-      if (savedLatestRevision) {
-        await get().clearAutosave().catch(() => { autosaveCleanupFailed = true })
-      }
-      await get().refreshRecentProjects().catch(() => {})
-      get().showToast(
-        !savedLatestRevision
-          ? translate('项目已另存，但保存期间产生了新改动', 'Project saved as a new file, but newer changes still need saving')
-          : autosaveCleanupFailed
-          ? translate('项目已另存，但旧自动保存未能清理', 'Project saved as a new file, but the previous autosave could not be cleared')
-          : translate('项目已另存', 'Project saved as a new file'),
-        !savedLatestRevision || autosaveCleanupFailed ? 'info' : 'success'
-      )
-      return true
-    } catch (error) {
-      get().showToast(translate(
-        `项目另存失败：${error instanceof Error ? error.message : '未知错误'}`,
-        `Save as failed: ${error instanceof Error ? error.message : 'Unknown error'}`
-      ), 'error')
-      return false
-    }
-  },
+  saveProject: () => persistProject(),
+  saveProjectAs: () => persistProject(true),
 
   openProject: async () => {
     try {
@@ -2232,6 +2213,7 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
   },
 
   restoreProjectData: (data, filePath = null) => {
+    documentGeneration++
     pendingHistoryTransaction = null
     const normalized = normalizeProjectData(data)
     const selectedClipId = normalized.clips[0]?.id ?? null
@@ -2240,6 +2222,7 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
     set({
       clips: normalized.clips,
       transitions: normalized.transitions || [],
+      selectedTransitionId: null,
       audioFades: normalized.audioFades || [],
       selectedClipId,
       selectedClipIds: selectedClipId ? [selectedClipId] : [],
@@ -2267,7 +2250,8 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
       exporting: false,
       exportProgress: null,
       merging: false,
-      missingMediaPaths: []
+      missingMediaPaths: [],
+      autosaveReady: false
     })
     setDocumentTitle(selectedClip?.filePath ?? null, normalized.clips.length)
   },
@@ -2403,16 +2387,17 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
 
   autosaveNow: async () => {
     const state = get()
-    if (state.clips.length === 0) return
+    const generation = documentGeneration
     const result = await window.api.saveAutosave(buildProjectData(state))
     if (!result.success) throw new Error(result.error || translate('自动保存失败', 'Autosave failed'))
-    set({ autosaveReady: true })
+    if (generation === documentGeneration) set({ autosaveReady: true })
   },
 
   clearAutosave: async () => {
+    const generation = documentGeneration
     const result = await window.api.clearAutosave()
     if (!result.success) throw new Error(result.error || translate('清除自动保存失败', 'Could not clear autosave'))
-    set({ autosaveReady: false })
+    if (generation === documentGeneration) set({ autosaveReady: false })
   },
 
   markProjectDirty: () => set({ projectDirty: true }),
@@ -2445,6 +2430,7 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
   },
 
   reset: () => {
+    documentGeneration++
     pendingHistoryTransaction = null
     cancelToastTimer()
     set({
@@ -2479,6 +2465,7 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
       exportProgress: null,
       merging: false,
       toast: null,
+      autosaveReady: false,
       missingMediaPaths: []
     })
     setDocumentTitle(null, 0)

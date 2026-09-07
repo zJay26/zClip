@@ -25,6 +25,7 @@ import TimelineAudioFadeBlock from './TimelineAudioFadeBlock'
 import TimelinePlayhead from './TimelinePlayhead'
 import type { MediaOperation, TrimParams } from '../../../../shared/types'
 import { getClipTimelineRange } from '../../../../shared/timeline-utils'
+import { findEmptyIntervals } from '../../stores/timeline-editing'
 import { getEligibleTransitionCuts } from '../../../../shared/transition-utils'
 import type { TransitionCut } from '../../../../shared/transition-utils'
 import { TRANSITION_DRAG_MIME, TRANSITION_EFFECTS } from '../Controls/TransitionControl'
@@ -34,7 +35,7 @@ import {
   getTransitionDragGeometry,
   getTransitionDragRect
 } from '../../lib/transition-drag'
-import { Badge, Button, Panel } from '../ui'
+import { Badge, Button, Menu, Panel } from '../ui'
 import { usePreferences } from '../../contexts/preferences'
 
 interface TimelineProps {
@@ -102,6 +103,8 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
     cutSelectedClips,
     pasteCopiedClips,
     deleteSelectedClips,
+    selectAllClips,
+    removeTimelineGaps,
     addTransitionAtTime,
     showToast,
     toggleGroupLink
@@ -129,12 +132,15 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
     cutSelectedClips: state.cutSelectedClips,
     pasteCopiedClips: state.pasteCopiedClips,
     deleteSelectedClips: state.deleteSelectedClips,
+    selectAllClips: state.selectAllClips,
+    removeTimelineGaps: state.removeTimelineGaps,
     addTransitionAtTime: state.addTransitionAtTime,
     showToast: state.showToast,
     toggleGroupLink: state.toggleGroupLink
   })))
 
   const snap = useSnap()
+  const hasGaps = useMemo(() => findEmptyIntervals(clips, operationsByClip).length > 0, [clips, operationsByClip])
 
   const {
     zoom,
@@ -206,8 +212,8 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
   // Filter clips by track type
   const visibleClips = useMemo(() => {
     const overscanPixels = 800
-    const start = Math.max(0, (scrollLeft - overscanPixels) / Math.max(1, pixelsPerSecond))
-    const end = (scrollLeft + (containerRect?.width || 1200) + overscanPixels) / Math.max(1, pixelsPerSecond)
+    const start = Math.max(0, (scrollLeft - overscanPixels) / Math.max(Number.EPSILON, pixelsPerSecond))
+    const end = (scrollLeft + (containerRect?.width || 1200) + overscanPixels) / Math.max(Number.EPSILON, pixelsPerSecond)
     const selected = new Set(selectedClipIds)
     return clips.filter((clip) => {
       if (isDragging && selected.has(clip.id)) return true
@@ -426,6 +432,11 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
           className="w-20 accent-accent"
         />
         <Button onClick={zoomToFit} size="sm" leadingIcon={<ScanLine aria-hidden size={13} strokeWidth={1.75} />} title={t('适配全部片段', 'Fit all clips')}>{t('适配', 'Fit')}</Button>
+        <Menu label={t('编辑', 'Edit')} items={[
+          { id: 'select-all', label: t('全选片段', 'Select all clips'), shortcut: 'Ctrl+A', onSelect: selectAllClips },
+          { id: 'ripple-delete', label: t('删除并关闭空隙', 'Delete and close gaps'), shortcut: 'Shift+Delete', disabled: selectedClipIds.length === 0, onSelect: () => deleteSelectedClips({ closeGap: true }) },
+          { id: 'close-gaps', label: t('消除全部空隙', 'Close all gaps'), disabled: !hasGaps, onSelect: removeTimelineGaps }
+        ]} />
         <div className="mx-1 h-4 w-px bg-border-subtle" />
         <Button onClick={splitClipAtPlayhead} size="sm" leadingIcon={<Scissors aria-hidden size={13} strokeWidth={1.75} />} title={t('在播放头位置分割 (C)', 'Split at playhead (C)')}>{t('分割', 'Split')}</Button>
         <Button
@@ -713,6 +724,7 @@ const Timeline: React.FC<TimelineProps> = ({ seekTo }) => {
             { label: t('剪切', 'Cut'), action: cutSelectedClips },
             { label: t('粘贴', 'Paste'), action: pasteCopiedClips },
             { label: t('删除', 'Delete'), action: deleteSelectedClips },
+            { label: t('删除并关闭空隙', 'Delete and close gaps'), action: () => deleteSelectedClips({ closeGap: true }) },
             {
               label: contextClip.groupId && t('音画链接/取消链接', 'Link/unlink audio and video'),
               action: () => toggleGroupLink(contextClip.groupId)

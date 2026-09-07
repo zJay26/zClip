@@ -43,6 +43,8 @@ describe('project store notifications and save races', () => {
       documentRevision: 1
     })
     const saving = useProjectStore.getState().saveProject()
+    await Promise.resolve()
+    expect(saveProjectFile).toHaveBeenCalledTimes(1)
     useProjectStore.setState({ projectDirty: true, documentRevision: 2 })
     finishSave?.({ success: true })
 

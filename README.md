@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.6.0/zClip.Setup.2.6.0.exe"><strong>下载 Windows 安装包</strong></a>
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.7.0/zClip.Setup.2.7.0.exe"><strong>下载 Windows 安装包</strong></a>
   ·
   <a href="#demo">Demo</a>
   ·
@@ -30,7 +30,7 @@
 </p>
 
 > [!WARNING]
-> `v2.6.0` 的 Windows 安装包尚未进行商业代码签名，Windows 可能显示“未知发布者”或 SmartScreen 提示。请只从本仓库 Releases 下载，并用同一页面的 `SHA256SUMS.txt` 核对文件；详情见[首次运行说明](#windows-首次运行提示)。
+> `v2.7.0` 的 Windows 安装包尚未进行商业代码签名，Windows 可能显示“未知发布者”或 SmartScreen 提示。请只从本仓库 Releases 下载，并用同一页面的 `SHA256SUMS.txt` 核对文件；详情见[首次运行说明](#windows-首次运行提示)。
 
 ## zClip 解决什么麻烦
 
@@ -54,17 +54,17 @@
 
 ## 下载
 
-当前版本：`2.6.0`，支持 Windows 10/11 x64。
+当前版本：`2.7.0`，支持 Windows 10/11 x64。
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.6.0/zClip.Setup.2.6.0.exe">
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.7.0/zClip.Setup.2.7.0.exe">
     <img src="https://img.shields.io/badge/下载_Windows_安装包-6D5DFB?style=for-the-badge&logo=windows&logoColor=white" alt="下载 Windows 安装包" />
   </a>
 </p>
 
-- [查看本版本说明](https://github.com/zJay26/zClip/releases/tag/v2.6.0)
-- [下载 SHA-256 校验和](https://github.com/zJay26/zClip/releases/download/v2.6.0/SHA256SUMS.txt)
-- [查看签名状态](https://github.com/zJay26/zClip/releases/download/v2.6.0/SIGNING_STATUS.txt)
+- [查看本版本说明](https://github.com/zJay26/zClip/releases/tag/v2.7.0)
+- [下载 SHA-256 校验和](https://github.com/zJay26/zClip/releases/download/v2.7.0/SHA256SUMS.txt)
+- [查看签名状态](https://github.com/zJay26/zClip/releases/download/v2.7.0/SIGNING_STATUS.txt)
 
 ## 三步开始剪辑
 
@@ -83,13 +83,13 @@
 - 使用七种转场，并直接在预览画面中拖动定位
 - 导出整条时间线、选中片段或自定义范围，显示进度、速度与预计剩余时间
 
-### v2.6.0 有什么新变化
+### v2.7.0 有什么新变化
 
-- 重做转场播放衔接，消除剪辑点黑帧、跳变和音画卡顿
-- 转场拖放范围更直观，选中反馈与参数面板更明确，替换效果时保留时长
-- 修复取消链接并删除音频后仍播放原音频的问题
-- 大幅优化高倍速片段、普通顺序片段、GIF、WebP、VP9 和擦除转场的导出速度
-- 自动探测可用的 NVENC、QSV、AMF 硬件编码器，失败时安全回退软件编码
+- 新增“删除并关闭空隙”和“消除全部空隙”，所有轨道同步移动，并保留仍有素材覆盖的时间段
+- 复制粘贴保留转场、音频淡化和音画链接，支持全选、剪辑点跳转及 F1 快捷键帮助
+- 支持保存和恢复空项目，防止重复保存和切换项目时的异步状态错乱
+- 改进导出异常与取消处理、弹窗输入焦点，以及长时间线适配和触控板滚动
+- 更新依赖并补充编辑流程、项目保存、导出生命周期和打包界面的回归检查
 
 ## 它不打算替代什么
 
@@ -149,6 +149,12 @@ zClip 适合日常快速剪辑，但暂时不以专业调色、复杂合成、�
 
 | 操作 | 快捷键 |
 | --- | --- |
+| 导入媒体 / 导出 | `Ctrl/Cmd + I` / `Ctrl/Cmd + E` |
+| 快捷键帮助 | `F1` |
+| 全选 / 取消选择 | `Ctrl/Cmd + A` / `Esc` |
+| 上一个 / 下一个剪辑点 | `↑` / `↓` |
+| 时间线起点 / 终点 | `Home` / `End` |
+| 删除并关闭空隙 | `Shift + Delete` |
 | 新建项目 | `Ctrl/Cmd + N` |
 | 打开项目 | `Ctrl/Cmd + O` |
 | 保存 / 另存为 | `Ctrl/Cmd + S` / `Ctrl/Cmd + Shift + S` |

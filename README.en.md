@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.6.0/zClip.Setup.2.6.0.exe"><strong>Download for Windows</strong></a>
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.7.0/zClip.Setup.2.7.0.exe"><strong>Download for Windows</strong></a>
   ·
   <a href="#demo">Demo</a>
   ·
@@ -30,7 +30,7 @@
 </p>
 
 > [!WARNING]
-> The Windows installer for `v2.6.0` is not commercially code-signed. Windows may show an “Unknown publisher” or SmartScreen warning. Download only from this repository and verify it with `SHA256SUMS.txt`; see [First launch on Windows](#first-launch-on-windows).
+> The Windows installer for `v2.7.0` is not commercially code-signed. Windows may show an “Unknown publisher” or SmartScreen warning. Download only from this repository and verify it with `SHA256SUMS.txt`; see [First launch on Windows](#first-launch-on-windows).
 
 ## The problems zClip is built for
 
@@ -54,17 +54,17 @@
 
 ## Download
 
-Current version: `2.6.0`. Supported platform: Windows 10/11 x64.
+Current version: `2.7.0`. Supported platform: Windows 10/11 x64.
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.6.0/zClip.Setup.2.6.0.exe">
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.7.0/zClip.Setup.2.7.0.exe">
     <img src="https://img.shields.io/badge/Download_for_Windows-6D5DFB?style=for-the-badge&logo=windows&logoColor=white" alt="Download for Windows" />
   </a>
 </p>
 
-- [Read the release notes](https://github.com/zJay26/zClip/releases/tag/v2.6.0)
-- [Download SHA-256 checksums](https://github.com/zJay26/zClip/releases/download/v2.6.0/SHA256SUMS.txt)
-- [Check the signing status](https://github.com/zJay26/zClip/releases/download/v2.6.0/SIGNING_STATUS.txt)
+- [Read the release notes](https://github.com/zJay26/zClip/releases/tag/v2.7.0)
+- [Download SHA-256 checksums](https://github.com/zJay26/zClip/releases/download/v2.7.0/SHA256SUMS.txt)
+- [Check the signing status](https://github.com/zJay26/zClip/releases/download/v2.7.0/SIGNING_STATUS.txt)
 
 ## Start editing in three steps
 
@@ -83,13 +83,13 @@ Projects can be saved as `.zclip` files and reopened by double-clicking. Autosav
 - Apply seven transitions and position footage directly in the preview
 - Export the full timeline, selected clips, or a custom range with progress, speed, and ETA
 
-### What is new in v2.6.0
+### What is new in v2.7.0
 
-- Reworked transition playback to remove black frames, jumps, and stalls around edit points
-- More forgiving transition drops, clearer selection and parameter controls, and duration-preserving replacement
-- Fixed detached and deleted audio continuing to play from its former video clip
-- Much faster exports for high-speed clips, simple sequential edits, GIF, WebP, VP9, and wipe transitions
-- Runtime detection for NVENC, QSV, and AMF with safe software fallback
+- Delete clips and close newly empty time, or close all gaps, while shifting every track together and preserving occupied time
+- Copy transitions, audio fades, and linked clips; select all, jump between cuts, and open keyboard help with F1
+- Save and recover empty projects, coalesce repeated saves, and prevent stale saves from changing another project
+- Improve export errors and cancellation, dialog input focus, long-timeline fitting, and horizontal trackpad scrolling
+- Refresh dependencies and add editing, persistence, export lifecycle, and packaged UI regression checks
 
 ## What it does not try to replace
 
@@ -149,6 +149,12 @@ The currently supported release target is Windows 10/11 x64. Other platforms do 
 
 | Action | Shortcut |
 | --- | --- |
+| Import media / Export | `Ctrl/Cmd + I` / `Ctrl/Cmd + E` |
+| Keyboard help | `F1` |
+| Select all / Clear selection | `Ctrl/Cmd + A` / `Esc` |
+| Previous / Next cut | `↑` / `↓` |
+| Timeline start / end | `Home` / `End` |
+| Delete and close gaps | `Shift + Delete` |
 | New project | `Ctrl/Cmd + N` |
 | Open project | `Ctrl/Cmd + O` |
 | Save / Save as | `Ctrl/Cmd + S` / `Ctrl/Cmd + Shift + S` |

@@ -49,6 +49,8 @@ export interface ProjectStore {
     clips: TimelineClip[]
     operationsByClip: Record<string, MediaOperation[]>
     linkedGroups: Record<string, boolean>
+    transitions: TimelineTransition[]
+    audioFades: AudioFadeSegment[]
     minStartTime: number
   } | null
   historyPast: ProjectSnapshot[]
@@ -87,6 +89,8 @@ export interface ProjectStore {
   openFile: () => Promise<void>
   loadFile: (filePath: string) => Promise<void>
   selectClip: (clipId: string, mode?: 'single' | 'toggle' | 'range') => void
+  selectAllClips: () => void
+  clearSelection: () => void
   selectTransition: (transitionId: string) => void
   addVideoTrack: () => void
   removeVideoTrack: () => void
@@ -109,7 +113,8 @@ export interface ProjectStore {
   pasteCopiedClips: () => void
   mergeSelectedClips: () => Promise<void>
   deleteClip: (clipId: string) => void
-  deleteSelectedClips: () => void
+  deleteSelectedClips: (options?: { closeGap?: boolean }) => void
+  removeTimelineGaps: () => void
   undo: () => void
   redo: () => void
   beginHistoryTransaction: () => void

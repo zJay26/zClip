@@ -1,5 +1,5 @@
 import React from 'react'
-import { Clapperboard, Database, Download, FilePlus, FilePlus2, FolderOpen, Languages, Link2, Moon, Redo2, Save, SaveAll, Sun, Undo2 } from 'lucide-react'
+import { Clapperboard, Database, Download, FilePlus, FilePlus2, FolderOpen, Keyboard, Languages, Link2, Moon, Redo2, Save, SaveAll, Sun, Undo2 } from 'lucide-react'
 import { formatFileSize } from '../../lib/utils'
 import { usePreferences } from '../../contexts/preferences'
 import { Badge, Button, IconButton, Menu, type MenuItem } from '../ui'
@@ -24,6 +24,7 @@ interface TopToolbarProps {
   onSaveProjectAs: () => void
   onOpenRecentProject: (filePath: string) => void
   onOpenExport: () => void
+  onOpenHelp?: () => void
   onClearCache: () => void
   cacheLabel: string
   missingMediaCount: number
@@ -37,7 +38,7 @@ const TopToolbar: React.FC<TopToolbarProps> = ({
   loading, sourceFile, mediaInfo, clips, projectFilePath, projectDirty, recentProjects,
   canUndo, canRedo, onUndo, onRedo, onOpenFiles, onNewProject, onOpenProject, onSaveProject,
   onSaveProjectAs, onOpenRecentProject, onOpenExport, onClearCache, cacheLabel,
-  missingMediaCount, onRelinkMissingMedia, exportButtonRef
+  missingMediaCount, onRelinkMissingMedia, exportButtonRef, onOpenHelp
 }) => {
   const { language, theme, t, toggleLanguage, toggleTheme } = usePreferences()
   const fileName = sourceFile ? sourceFile.split(/[\\/]/).pop() : null
@@ -47,8 +48,8 @@ const TopToolbar: React.FC<TopToolbarProps> = ({
   const projectItems: MenuItem[] = [
     { id: 'new', label: t('新建项目', 'New project'), icon: <FilePlus aria-hidden {...iconProps} />, shortcut: 'Ctrl+N', onSelect: onNewProject },
     { id: 'open', label: t('打开项目…', 'Open project…'), icon: <FolderOpen aria-hidden {...iconProps} />, shortcut: 'Ctrl+O', onSelect: onOpenProject },
-    { id: 'save', label: t('保存项目', 'Save project'), icon: <Save aria-hidden {...iconProps} />, shortcut: 'Ctrl+S', disabled: clips.length === 0, onSelect: onSaveProject },
-    { id: 'save-as', label: t('项目另存为…', 'Save project as…'), icon: <SaveAll aria-hidden {...iconProps} />, disabled: clips.length === 0, onSelect: onSaveProjectAs },
+    { id: 'save', label: t('保存项目', 'Save project'), icon: <Save aria-hidden {...iconProps} />, shortcut: 'Ctrl+S', disabled: loading, onSelect: onSaveProject },
+    { id: 'save-as', label: t('项目另存为…', 'Save project as…'), icon: <SaveAll aria-hidden {...iconProps} />, disabled: loading, onSelect: onSaveProjectAs },
     ...recentProjects.map((project, index) => ({
       id: `recent-${project.filePath}`,
       label: project.name,
@@ -70,7 +71,7 @@ const TopToolbar: React.FC<TopToolbarProps> = ({
       </div>
       <div className="mx-1 h-5 w-px bg-border-subtle" />
       <Button onClick={onOpenFiles} disabled={loading} leadingIcon={<FilePlus2 aria-hidden {...iconProps} />}>{t('导入媒体', 'Import media')}</Button>
-      <IconButton label={t('保存项目 (Ctrl+S)', 'Save project (Ctrl+S)')} icon={<Save aria-hidden {...iconProps} />} disabled={clips.length === 0} onClick={onSaveProject} tooltipSide="bottom" />
+      <IconButton label={t('保存项目 (Ctrl+S)', 'Save project (Ctrl+S)')} icon={<Save aria-hidden {...iconProps} />} disabled={loading} onClick={onSaveProject} tooltipSide="bottom" />
       <div className="flex items-center rounded-md border border-border-subtle bg-bg-base/45 p-0.5">
         <IconButton label={t('撤销 (Ctrl+Z)', 'Undo (Ctrl+Z)')} icon={<Undo2 aria-hidden {...iconProps} />} disabled={!canUndo} onClick={onUndo} size="sm" tooltipSide="bottom" />
         <IconButton label={t('重做 (Ctrl+Y)', 'Redo (Ctrl+Y)')} icon={<Redo2 aria-hidden {...iconProps} />} disabled={!canRedo} onClick={onRedo} size="sm" tooltipSide="bottom" />
@@ -83,6 +84,7 @@ const TopToolbar: React.FC<TopToolbarProps> = ({
         </div>
       )}
       <div className="flex-1" />
+      <IconButton label={t('快捷键 (F1)', 'Keyboard shortcuts (F1)')} icon={<Keyboard aria-hidden {...iconProps} />} onClick={onOpenHelp} tooltipSide="bottom" />
       <div className="flex shrink-0 items-center rounded-md border border-border-subtle bg-bg-base/45 p-0.5" role="group" aria-label={t('界面偏好', 'Interface preferences')}>
         <IconButton
           label={theme === 'dark' ? t('切换为浅色模式', 'Switch to light mode') : t('切换为深色模式', 'Switch to dark mode')}
