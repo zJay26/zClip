@@ -85,11 +85,18 @@ Projects can be saved as `.zclip` files and reopened by double-clicking. Autosav
 
 ### What is new in {{TAG}}
 
-- Delete clips and close newly empty time, or close all gaps, while shifting every track together and preserving occupied time
-- Copy transitions, audio fades, and linked clips; select all, jump between cuts, and open keyboard help with F1
-- Save and recover empty projects, coalesce repeated saves, and prevent stale saves from changing another project
-- Improve export errors and cancellation, dialog input focus, long-timeline fitting, and horizontal trackpad scrolling
-- Refresh dependencies and add editing, persistence, export lifecycle, and packaged UI regression checks
+- Add Software updates in the toolbar, with optional six-hour checks for stable releases and manual checking
+- Let users choose whether to download and when to quit and install; updates are never forced
+- Remember the download directory, show release notes and progress, and support cancellation and retry
+- Verify SHA-256 after download and again before installation, with the existing unsaved-project confirmation
+
+### Updating zClip
+
+Open **Software updates** using the up-arrow icon in the toolbar. On first launch, or when a check is overdue, zClip checks after about 10 seconds; subsequent checks run every six hours while the app is open. It does not wake or connect when closed. Uncheck **Automatically check every 6 hours** to disable scheduled checks; manual checks remain available.
+
+Use **Choose…** to select the download directory, then **Download update**. Each installer is saved in its own subfolder. Closing the panel allows downloading to continue; use **Cancel download** to stop. Only **Quit and install** starts the normal Windows installer, after confirming any unsaved project. You can keep editing and update later. Downloaded installers remain on disk and can also be opened manually after restarting the app.
+
+Update checks only contact this repository's GitHub Releases and installer assets. No media or projects are uploaded, and editing and exporting remain available offline. Versions 2.7.0 and earlier need one manual installation from Releases before this feature becomes available.
 
 ## What it does not try to replace
 

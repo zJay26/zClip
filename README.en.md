@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.7.0/zClip.Setup.2.7.0.exe"><strong>Download for Windows</strong></a>
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.8.0/zClip.Setup.2.8.0.exe"><strong>Download for Windows</strong></a>
   ·
   <a href="#demo">Demo</a>
   ·
@@ -30,7 +30,7 @@
 </p>
 
 > [!WARNING]
-> The Windows installer for `v2.7.0` is not commercially code-signed. Windows may show an “Unknown publisher” or SmartScreen warning. Download only from this repository and verify it with `SHA256SUMS.txt`; see [First launch on Windows](#first-launch-on-windows).
+> The Windows installer for `v2.8.0` is not commercially code-signed. Windows may show an “Unknown publisher” or SmartScreen warning. Download only from this repository and verify it with `SHA256SUMS.txt`; see [First launch on Windows](#first-launch-on-windows).
 
 ## The problems zClip is built for
 
@@ -54,17 +54,17 @@
 
 ## Download
 
-Current version: `2.7.0`. Supported platform: Windows 10/11 x64.
+Current version: `2.8.0`. Supported platform: Windows 10/11 x64.
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.7.0/zClip.Setup.2.7.0.exe">
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.8.0/zClip.Setup.2.8.0.exe">
     <img src="https://img.shields.io/badge/Download_for_Windows-6D5DFB?style=for-the-badge&logo=windows&logoColor=white" alt="Download for Windows" />
   </a>
 </p>
 
-- [Read the release notes](https://github.com/zJay26/zClip/releases/tag/v2.7.0)
-- [Download SHA-256 checksums](https://github.com/zJay26/zClip/releases/download/v2.7.0/SHA256SUMS.txt)
-- [Check the signing status](https://github.com/zJay26/zClip/releases/download/v2.7.0/SIGNING_STATUS.txt)
+- [Read the release notes](https://github.com/zJay26/zClip/releases/tag/v2.8.0)
+- [Download SHA-256 checksums](https://github.com/zJay26/zClip/releases/download/v2.8.0/SHA256SUMS.txt)
+- [Check the signing status](https://github.com/zJay26/zClip/releases/download/v2.8.0/SIGNING_STATUS.txt)
 
 ## Start editing in three steps
 
@@ -83,13 +83,20 @@ Projects can be saved as `.zclip` files and reopened by double-clicking. Autosav
 - Apply seven transitions and position footage directly in the preview
 - Export the full timeline, selected clips, or a custom range with progress, speed, and ETA
 
-### What is new in v2.7.0
+### What is new in v2.8.0
 
-- Delete clips and close newly empty time, or close all gaps, while shifting every track together and preserving occupied time
-- Copy transitions, audio fades, and linked clips; select all, jump between cuts, and open keyboard help with F1
-- Save and recover empty projects, coalesce repeated saves, and prevent stale saves from changing another project
-- Improve export errors and cancellation, dialog input focus, long-timeline fitting, and horizontal trackpad scrolling
-- Refresh dependencies and add editing, persistence, export lifecycle, and packaged UI regression checks
+- Add Software updates in the toolbar, with optional six-hour checks for stable releases and manual checking
+- Let users choose whether to download and when to quit and install; updates are never forced
+- Remember the download directory, show release notes and progress, and support cancellation and retry
+- Verify SHA-256 after download and again before installation, with the existing unsaved-project confirmation
+
+### Updating zClip
+
+Open **Software updates** using the up-arrow icon in the toolbar. On first launch, or when a check is overdue, zClip checks after about 10 seconds; subsequent checks run every six hours while the app is open. It does not wake or connect when closed. Uncheck **Automatically check every 6 hours** to disable scheduled checks; manual checks remain available.
+
+Use **Choose…** to select the download directory, then **Download update**. Each installer is saved in its own subfolder. Closing the panel allows downloading to continue; use **Cancel download** to stop. Only **Quit and install** starts the normal Windows installer, after confirming any unsaved project. You can keep editing and update later. Downloaded installers remain on disk and can also be opened manually after restarting the app.
+
+Update checks only contact this repository's GitHub Releases and installer assets. No media or projects are uploaded, and editing and exporting remain available offline. Versions 2.7.0 and earlier need one manual installation from Releases before this feature becomes available.
 
 ## What it does not try to replace
 

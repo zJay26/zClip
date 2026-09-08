@@ -19,8 +19,17 @@ import type {
   TimelinePreviewResult
 } from '../shared/types'
 import type { AppCloseDecision } from '../shared/types'
+import type { UpdateState } from '../shared/update-types'
 
 export interface ElectronAPI {
+  getUpdateState: () => Promise<UpdateState>
+  setUpdateAutoCheck: (enabled: boolean) => Promise<UpdateState>
+  selectUpdateDirectory: () => Promise<UpdateState>
+  checkForUpdates: () => Promise<UpdateState>
+  downloadUpdate: () => Promise<UpdateState>
+  cancelUpdateDownload: () => Promise<void>
+  installUpdate: () => Promise<boolean>
+  onUpdateState: (callback: (state: UpdateState) => void) => () => void
   // File operations
   openFile: () => Promise<string | null>
   openFiles: () => Promise<string[] | null>
@@ -62,6 +71,18 @@ export interface ElectronAPI {
 }
 
 const api: ElectronAPI = {
+  getUpdateState: () => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_GET_STATE),
+  setUpdateAutoCheck: (enabled) => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_SET_AUTO_CHECK, enabled),
+  selectUpdateDirectory: () => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_SELECT_DIRECTORY),
+  checkForUpdates: () => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_CHECK),
+  downloadUpdate: () => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_DOWNLOAD),
+  cancelUpdateDownload: () => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_CANCEL_DOWNLOAD),
+  installUpdate: () => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_INSTALL),
+  onUpdateState: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: UpdateState): void => callback(state)
+    ipcRenderer.on(IPC_CHANNELS.UPDATE_STATE, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.UPDATE_STATE, handler)
+  },
   openFile: () => ipcRenderer.invoke(IPC_CHANNELS.SHOW_OPEN_DIALOG),
   openFiles: () => ipcRenderer.invoke(IPC_CHANNELS.SHOW_OPEN_DIALOG_MULTI),
   resolveDroppedFiles: (files) => {

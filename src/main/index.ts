@@ -24,6 +24,8 @@ import {
 import { clearFileCapabilities, grantFileCapability } from './security/file-capabilities'
 import type { AppCloseDecision } from '../shared/types'
 import { createRendererAssetResponse } from './renderer-asset-response'
+import { registerUpdateHandlers } from './ipc/update'
+import type { AppUpdater } from './services/app-updater'
 
 let mainWindow: BrowserWindow | null = null
 let isQuitting = false
@@ -31,6 +33,8 @@ let closeRequestPending = false
 let unresponsivePromptPending = false
 let shutdownPromise: Promise<void> | null = null
 let rendererReady = false
+let appUpdater: AppUpdater | null = null
+let updateInstallPending = false
 const pendingOpenFiles: string[] = []
 const smokeTestMode = process.argv.includes('--smoke-test')
 
@@ -39,7 +43,7 @@ async function shutdownAndQuit(): Promise<void> {
   isQuitting = true
   closeRequestPending = false
   shutdownPromise = (async () => {
-    await Promise.allSettled([cancelExport(), cancelAllMediaJobs()])
+    await Promise.allSettled([cancelExport(), cancelAllMediaJobs(), appUpdater?.dispose()])
     clearAuthorizedMediaPaths()
     clearFileCapabilities()
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy()
@@ -62,8 +66,19 @@ ipcMain.on(IPC_CHANNELS.APP_CLOSE_RESPONSE, async (event, decision: AppCloseDeci
     return
   }
   if (!closeRequestPending || (decision !== 'close' && decision !== 'cancel')) return
+  if (decision === 'cancel') {
+    closeRequestPending = false
+    updateInstallPending = false
+    return
+  }
+  if (updateInstallPending) {
+    updateInstallPending = false
+    if (!await appUpdater?.install()) {
+      closeRequestPending = false
+      return
+    }
+  }
   closeRequestPending = false
-  if (decision === 'cancel') return
   await shutdownAndQuit()
 })
 
@@ -322,7 +337,7 @@ function createWindow(): void {
   })
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   void enforceCachePolicies()
   protocol.handle('zclip-app', (request) =>
     createRendererAssetResponse(join(__dirname, '../renderer'), request)
@@ -356,6 +371,12 @@ app.whenReady().then(() => {
   })
 
   registerAllHandlers()
+  appUpdater = await registerUpdateHandlers(() => {
+    if (!mainWindow || mainWindow.isDestroyed() || !rendererReady || closeRequestPending || isQuitting) return false
+    updateInstallPending = true
+    requestAppClose()
+    return true
+  })
   const initialFiles = extractFilePaths(process.argv)
   if (initialFiles.length > 0) sendOpenFiles(initialFiles)
   createWindow()

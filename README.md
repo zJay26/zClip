@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.7.0/zClip.Setup.2.7.0.exe"><strong>下载 Windows 安装包</strong></a>
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.8.0/zClip.Setup.2.8.0.exe"><strong>下载 Windows 安装包</strong></a>
   ·
   <a href="#demo">Demo</a>
   ·
@@ -30,7 +30,7 @@
 </p>
 
 > [!WARNING]
-> `v2.7.0` 的 Windows 安装包尚未进行商业代码签名，Windows 可能显示“未知发布者”或 SmartScreen 提示。请只从本仓库 Releases 下载，并用同一页面的 `SHA256SUMS.txt` 核对文件；详情见[首次运行说明](#windows-首次运行提示)。
+> `v2.8.0` 的 Windows 安装包尚未进行商业代码签名，Windows 可能显示“未知发布者”或 SmartScreen 提示。请只从本仓库 Releases 下载，并用同一页面的 `SHA256SUMS.txt` 核对文件；详情见[首次运行说明](#windows-首次运行提示)。
 
 ## zClip 解决什么麻烦
 
@@ -54,17 +54,17 @@
 
 ## 下载
 
-当前版本：`2.7.0`，支持 Windows 10/11 x64。
+当前版本：`2.8.0`，支持 Windows 10/11 x64。
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.7.0/zClip.Setup.2.7.0.exe">
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.8.0/zClip.Setup.2.8.0.exe">
     <img src="https://img.shields.io/badge/下载_Windows_安装包-6D5DFB?style=for-the-badge&logo=windows&logoColor=white" alt="下载 Windows 安装包" />
   </a>
 </p>
 
-- [查看本版本说明](https://github.com/zJay26/zClip/releases/tag/v2.7.0)
-- [下载 SHA-256 校验和](https://github.com/zJay26/zClip/releases/download/v2.7.0/SHA256SUMS.txt)
-- [查看签名状态](https://github.com/zJay26/zClip/releases/download/v2.7.0/SIGNING_STATUS.txt)
+- [查看本版本说明](https://github.com/zJay26/zClip/releases/tag/v2.8.0)
+- [下载 SHA-256 校验和](https://github.com/zJay26/zClip/releases/download/v2.8.0/SHA256SUMS.txt)
+- [查看签名状态](https://github.com/zJay26/zClip/releases/download/v2.8.0/SIGNING_STATUS.txt)
 
 ## 三步开始剪辑
 
@@ -83,13 +83,20 @@
 - 使用七种转场，并直接在预览画面中拖动定位
 - 导出整条时间线、选中片段或自定义范围，显示进度、速度与预计剩余时间
 
-### v2.7.0 有什么新变化
+### v2.8.0 有什么新变化
 
-- 新增“删除并关闭空隙”和“消除全部空隙”，所有轨道同步移动，并保留仍有素材覆盖的时间段
-- 复制粘贴保留转场、音频淡化和音画链接，支持全选、剪辑点跳转及 F1 快捷键帮助
-- 支持保存和恢复空项目，防止重复保存和切换项目时的异步状态错乱
-- 改进导出异常与取消处理、弹窗输入焦点，以及长时间线适配和触控板滚动
-- 更新依赖并补充编辑流程、项目保存、导出生命周期和打包界面的回归检查
+- 新增工具栏“软件更新”，默认在应用运行时每 6 小时检查正式版本，可随时关闭或手动检查
+- 发现新版本只提示，由用户选择是否下载、何时退出并安装，不强制更新
+- 支持选择并记住更新下载目录、查看版本说明、下载进度、取消和失败重试
+- 下载后和安装前校验 SHA-256，安装沿用未保存项目确认流程
+
+### 如何更新
+
+点击顶部向上箭头图标打开“软件更新”。首次运行或距上次检查已超过 6 小时时，会在启动约 10 秒后检查；其余时间按 6 小时间隔检查，关闭应用时不会唤醒或联网。可以取消勾选“每 6 小时自动检查更新”，手动检查仍然可用。
+
+点击“选择…”配置下载目录，再点击“下载更新”。安装包保存在所选目录的独立子文件夹中，关闭设置窗口不会停止下载；可使用“取消下载”停止。下载完成后，点击“退出并安装”才会打开普通 Windows 安装向导，未保存项目会先询问是否保存。也可以稍后更新并继续使用当前版本。已下载文件会保留，重启应用后也可从下载目录手动运行安装包。
+
+自动检查仅访问本仓库的 GitHub Release 信息和安装包，不上传媒体或项目；剪辑与导出继续支持离线使用。v2.7.0 及更早版本需要先从 Release 手动安装一次，之后即可使用此功能。
 
 ## 它不打算替代什么
 

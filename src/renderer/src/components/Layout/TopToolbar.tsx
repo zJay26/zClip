@@ -4,6 +4,7 @@ import { formatFileSize } from '../../lib/utils'
 import { usePreferences } from '../../contexts/preferences'
 import { Badge, Button, IconButton, Menu, type MenuItem } from '../ui'
 import type { MediaInfo, RecentProject, TimelineClip } from '../../../../shared/types'
+import UpdateControl from './UpdateControl'
 
 interface TopToolbarProps {
   loading: boolean
@@ -84,6 +85,7 @@ const TopToolbar: React.FC<TopToolbarProps> = ({
         </div>
       )}
       <div className="flex-1" />
+      <UpdateControl />
       <IconButton label={t('快捷键 (F1)', 'Keyboard shortcuts (F1)')} icon={<Keyboard aria-hidden {...iconProps} />} onClick={onOpenHelp} tooltipSide="bottom" />
       <div className="flex shrink-0 items-center rounded-md border border-border-subtle bg-bg-base/45 p-0.5" role="group" aria-label={t('界面偏好', 'Interface preferences')}>
         <IconButton

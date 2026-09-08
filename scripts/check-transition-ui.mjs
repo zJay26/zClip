@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { checkEditorWorkflow } from './check-editor-workflow-ui.mjs'
+import { checkUpdateUi } from './check-update-ui.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const rootDir = path.resolve(path.dirname(__filename), '..')
@@ -276,6 +277,7 @@ async function main() {
       throw new Error(`${error instanceof Error ? error.message : String(error)}\nRenderer diagnostics: ${JSON.stringify(diagnostics)}`)
     }
     console.log('Transition UI QA: project loaded')
+    await checkUpdateUi(cdp, profileDir, screenshotPath)
     if (process.argv.includes('--editor-workflow-only')) {
       await checkEditorWorkflow(cdp, projectPath, screenshotPath)
       await cdp.capture(screenshotPath)
