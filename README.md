@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.8.0/zClip.Setup.2.8.0.exe"><strong>下载 Windows 安装包</strong></a>
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.9.0/zClip.Setup.2.9.0.exe"><strong>下载 Windows 安装包</strong></a>
   ·
   <a href="#demo">Demo</a>
   ·
@@ -30,7 +30,7 @@
 </p>
 
 > [!WARNING]
-> `v2.8.0` 的 Windows 安装包尚未进行商业代码签名，Windows 可能显示“未知发布者”或 SmartScreen 提示。请只从本仓库 Releases 下载，并用同一页面的 `SHA256SUMS.txt` 核对文件；详情见[首次运行说明](#windows-首次运行提示)。
+> `v2.9.0` 的 Windows 安装包尚未进行商业代码签名，Windows 可能显示“未知发布者”或 SmartScreen 提示。请只从本仓库 Releases 下载，并用同一页面的 `SHA256SUMS.txt` 核对文件；详情见[首次运行说明](#windows-首次运行提示)。
 
 ## zClip 解决什么麻烦
 
@@ -54,17 +54,17 @@
 
 ## 下载
 
-当前版本：`2.8.0`，支持 Windows 10/11 x64。
+当前版本：`2.9.0`，支持 Windows 10/11 x64。
 
 <p align="center">
-  <a href="https://github.com/zJay26/zClip/releases/download/v2.8.0/zClip.Setup.2.8.0.exe">
+  <a href="https://github.com/zJay26/zClip/releases/download/v2.9.0/zClip.Setup.2.9.0.exe">
     <img src="https://img.shields.io/badge/下载_Windows_安装包-6D5DFB?style=for-the-badge&logo=windows&logoColor=white" alt="下载 Windows 安装包" />
   </a>
 </p>
 
-- [查看本版本说明](https://github.com/zJay26/zClip/releases/tag/v2.8.0)
-- [下载 SHA-256 校验和](https://github.com/zJay26/zClip/releases/download/v2.8.0/SHA256SUMS.txt)
-- [查看签名状态](https://github.com/zJay26/zClip/releases/download/v2.8.0/SIGNING_STATUS.txt)
+- [查看本版本说明](https://github.com/zJay26/zClip/releases/tag/v2.9.0)
+- [下载 SHA-256 校验和](https://github.com/zJay26/zClip/releases/download/v2.9.0/SHA256SUMS.txt)
+- [查看签名状态](https://github.com/zJay26/zClip/releases/download/v2.9.0/SIGNING_STATUS.txt)
 
 ## 三步开始剪辑
 
@@ -83,12 +83,10 @@
 - 使用七种转场，并直接在预览画面中拖动定位
 - 导出整条时间线、选中片段或自定义范围，显示进度、速度与预计剩余时间
 
-### v2.8.0 有什么新变化
+### v2.9.0 有什么新变化
 
-- 新增工具栏“软件更新”，默认在应用运行时每 6 小时检查正式版本，可随时关闭或手动检查
-- 发现新版本只提示，由用户选择是否下载、何时退出并安装，不强制更新
-- 支持选择并记住更新下载目录、查看版本说明、下载进度、取消和失败重试
-- 下载后和安装前校验 SHA-256，安装沿用未保存项目确认流程
+- 在右侧“字幕”页从播放头添加多行文字，调整起止时间，播放或拖动时间线即可预览。
+- 字幕随项目保存，支持撤销和重做。视频和动图导出会烧录字幕，选区和范围导出会自动裁切字幕时间。
 
 ### 如何更新
 

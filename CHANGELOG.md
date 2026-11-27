@@ -4,6 +4,10 @@ All notable changes to zClip are documented in this file.
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-11-28
+
+- Add offline manual subtitle editing, timed previews and caption burn-in for timeline, selection and range exports. Existing schema v1 projects remain compatible.
+
 ## [2.7.0] - 2026-09-07
 
 ### Added

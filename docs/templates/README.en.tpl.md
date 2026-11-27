@@ -85,10 +85,8 @@ Projects can be saved as `.zclip` files and reopened by double-clicking. Autosav
 
 ### What is new in {{TAG}}
 
-- Add Software updates in the toolbar, with optional six-hour checks for stable releases and manual checking
-- Let users choose whether to download and when to quit and install; updates are never forced
-- Remember the download directory, show release notes and progress, and support cancellation and retry
-- Verify SHA-256 after download and again before installation, with the existing unsaved-project confirmation
+- Add multiline captions at the playhead in the Subtitles tab. Edit their text and timing, then play or scrub the timeline to preview.
+- Save captions in the project and undo or redo edits. Video and animated image exports burn in captions and trim their times to the exported range.
 
 ### Updating zClip
 
