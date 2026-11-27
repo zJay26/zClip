@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
-import { Clapperboard, Layers3, SlidersHorizontal } from 'lucide-react'
+import { SlidersHorizontal } from 'lucide-react'
+import SubtitleControl from '../Controls/SubtitleControl'
 import TrimControl from '../Controls/TrimControl'
 import SpeedControl from '../Controls/SpeedControl'
 import VolumeControl from '../Controls/VolumeControl'
@@ -15,7 +16,7 @@ import { clamp, formatTime } from '../../lib/utils'
 import { usePreferences } from '../../contexts/preferences'
 import type { SpeedParams, VolumeParams, PitchParams } from '../../../../shared/types'
 
-type InspectorTab = 'clip' | 'canvas' | 'transitions'
+type InspectorTab = 'clip' | 'canvas' | 'transitions' | 'subtitles'
 const INSPECTOR_TAB_KEY = 'zclip.ui.inspector-tab.v1'
 
 interface InlineValueInputProps {
@@ -67,13 +68,13 @@ const InlineValueInput: React.FC<InlineValueInputProps> = ({ value, unit = '', m
 function readInitialTab(): InspectorTab {
   try {
     const value = window.localStorage.getItem(INSPECTOR_TAB_KEY)
-    return value === 'canvas' || value === 'transitions' ? value : 'clip'
+    return value === 'canvas' || value === 'transitions' || value === 'subtitles' ? value : 'clip'
   } catch {
     return 'clip'
   }
 }
 
-const InspectorPanel: React.FC = () => {
+const InspectorPanel: React.FC<{ seekTo: (time: number) => void }> = ({ seekTo }) => {
   const { t } = usePreferences()
   const {
     operations, audioOperations, setSpeed, setVolume, setPitch,
@@ -115,13 +116,15 @@ const InspectorPanel: React.FC = () => {
       <div className="border-b border-border-subtle px-3 pb-3 pt-3">
         <SegmentedControl
           idPrefix="inspector"
+          className="[&_button]:px-0.5"
           label={t('检查器内容', 'Inspector content')}
           value={tab}
           onChange={selectTab}
           options={[
-            { value: 'clip', label: t('片段', 'Clip'), icon: <SlidersHorizontal aria-hidden size={14} /> },
-            { value: 'canvas', label: t('画布', 'Canvas'), icon: <Layers3 aria-hidden size={14} /> },
-            { value: 'transitions', label: t('转场', 'Transitions'), icon: <Clapperboard aria-hidden size={14} /> }
+            { value: 'clip', label: t('片段', 'Clip') },
+            { value: 'canvas', label: t('画布', 'Canvas') },
+            { value: 'transitions', label: t('转场', 'Transitions') },
+            { value: 'subtitles', label: t('字幕', 'Subtitles') }
           ]}
         />
       </div>
@@ -180,6 +183,8 @@ const InspectorPanel: React.FC = () => {
             )}
           </>
         )}
+
+        {tab === 'subtitles' && <SubtitleControl seekTo={seekTo} />}
 
         {tab === 'canvas' && (
           <div className="p-4">

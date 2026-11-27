@@ -3,6 +3,7 @@ import type {
   MediaInfo,
   MediaOperation,
   ProjectData,
+  SubtitleCue,
   TimelineClip,
   TimelineTransition
 } from './types'
@@ -111,9 +112,31 @@ export function isAudioFadeSegment(value: unknown): value is AudioFadeSegment {
     finite(value.endOffset, value.startOffset as number, 3600) && value.endOffset > value.startOffset
 }
 
+export const MAX_SUBTITLE_CUES = 2000
+export const MAX_SUBTITLE_TEXT = 500
+
+/** One ordered lane; adjacent cues may share an endpoint. */
+export function isSubtitleLane(value: unknown): value is SubtitleCue[] {
+  if (!Array.isArray(value) || value.length > MAX_SUBTITLE_CUES) return false
+  const ids = new Set<string>()
+  let lastEnd = 0
+  for (const cue of value) {
+    if (!object(cue) || !validId(cue.id) || ids.has(cue.id) ||
+        !finite(cue.startTime, lastEnd, 60 * 60 * 24 * 365) ||
+        !finite(cue.endTime, cue.startTime, 60 * 60 * 24 * 365) ||
+        cue.endTime <= cue.startTime ||
+        typeof cue.text !== 'string' || cue.text.length > MAX_SUBTITLE_TEXT ||
+        !cue.text.trim() || /[\u0000-\u0009\u000b-\u001f\u007f]/.test(cue.text)) return false
+    ids.add(cue.id)
+    lastEnd = cue.endTime
+  }
+  return true
+}
+
 export function isProjectData(value: unknown): value is ProjectData {
   if (!object(value) || value.schemaVersion !== 1 || !Array.isArray(value.clips)) return false
   if (typeof value.savedAt !== 'string' || value.savedAt.length === 0 || value.savedAt.length > 64 || !Number.isFinite(Date.parse(value.savedAt))) return false
+  if (value.subtitles !== undefined && !isSubtitleLane(value.subtitles)) return false
   if (value.clips.length > 10_000 || !value.clips.every(isTimelineClip)) return false
   if (!object(value.operationsByClip) || !object(value.linkedGroups)) return false
   const clipIds = new Set(value.clips.map((item) => item.id))

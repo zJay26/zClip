@@ -15,7 +15,7 @@ import type {
 } from '../../shared/types'
 import { buildFFmpegArgs } from './media-engine'
 import { resolveExportEncodingOptions } from './export-quality'
-import { buildTimelineFFmpegArgs, runExportJob } from './export-service'
+import { buildTimelineFFmpegArgs, runExportJob, startTimelineExport } from './export-service'
 import { ffmpegPath, ffprobePath } from './ffmpeg'
 import { detectPreferredH264Encoder } from './hardware-encoder'
 import { IPC_CHANNELS } from '../../shared/types'
@@ -26,6 +26,46 @@ afterEach(async () => {
 })
 
 describe('bundled FFmpeg', () => {
+  it('burns plain text only inside the rebased range in MP4 and two-pass GIF, and preserves audio-only export', async () => {
+    directory = await mkdtemp(path.join(os.tmpdir(), "zclip-字幕 [test]'"))
+    const source = path.join(directory, 'source.mp4')
+    const generated = spawnSync(ffmpegPath, [
+      '-y', '-f', 'lavfi', '-i', 'color=black:s=320x180:r=20:d=2',
+      '-f', 'lavfi', '-i', 'sine=duration=2', '-c:v', 'libx264', '-c:a', 'aac', source
+    ], { encoding: 'utf8', timeout: 20_000, windowsHide: true })
+    expect(generated.status, generated.stderr).toBe(0)
+    const mediaInfo: MediaInfo = { duration: 2, width: 320, height: 180, fps: 20, videoCodec: 'h264',
+      audioCodec: 'aac', sampleRate: 44100, fileSize: (await stat(source)).size,
+      filePath: source, hasVideo: true, hasAudio: true }
+    const clip: TimelineClip = { id: 'v', groupId: 'v', filePath: source, duration: 2,
+      startTime: 0, trackIndex: 0, track: 'video', mediaInfo }
+    const win = { isDestroyed: () => false, webContents: { send: () => {} } } as unknown as BrowserWindow
+    const cues = [{ id: 'subtitle', text: '{\\an8}中文 100% <tag>\nSecond line: \\N', startTime: 0.75, endTime: 1.25 }]
+    for (const format of ['mp4', 'gif', 'wav'] as const) {
+      const outputPath = path.join(directory, 'out.' + format)
+      // An opaque upper track covers the lower clip during the MP4 sample.
+      const clips = format === 'mp4'
+        ? [clip, { ...clip, id: 'upper', groupId: 'upper', trackIndex: 1, startTime: 0.85, duration: 0.5, embeddedAudioEnabled: false }]
+        : [clip]
+      await startTimelineExport(clips, {}, { format, resolution: 'original', quality: 'high',
+        range: { startTime: 0.5, endTime: 1.5 }, outputPath }, win, [], [], cues)
+      if (format === 'wav') {
+        const streams = spawnSync(ffprobePath, ['-v', 'error', '-show_entries', 'stream=codec_type',
+          '-of', 'csv=p=0', outputPath], { encoding: 'utf8', windowsHide: true, timeout: 20_000 })
+        expect(streams.stdout.trim()).toBe('audio')
+        continue
+      }
+      for (const [time, visible] of [[0.1, false], [0.4, true], [0.85, false]] as const) {
+        const frame = spawnSync(ffmpegPath, ['-v', 'error', '-i', outputPath, '-ss', String(time),
+          '-frames:v', '1', '-pix_fmt', 'gray', '-f', 'rawvideo', 'pipe:1'], { windowsHide: true, timeout: 20_000 })
+        expect(frame.status, frame.stderr.toString()).toBe(0)
+        expect(frame.stdout.length).toBe(320 * 180)
+        expect(frame.stdout.subarray(0, 320 * 90).some((v) => v > 128)).toBe(false)
+        expect(frame.stdout.subarray(320 * 90).some((v) => v > 128)).toBe(visible)
+      }
+    }
+  })
+
   it('can render a small synthetic media file', async () => {
     directory = await mkdtemp(path.join(os.tmpdir(), 'zclip-ffmpeg-'))
     const output = path.join(directory, 'smoke.mp4')

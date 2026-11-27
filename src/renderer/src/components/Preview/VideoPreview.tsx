@@ -356,6 +356,9 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
     commitHistoryTransaction: state.commitHistoryTransaction
   })))
 
+  const subtitle = useProjectStore((state) => state.subtitles.find(
+    (cue) => cue.startTime <= state.currentTime && state.currentTime < cue.endTime
+  ))
   const canvasRef = useRef<HTMLDivElement>(null)
   const transformDragRef = useRef<{
     pointerId: number
@@ -630,7 +633,7 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
     )
   }
 
-  if (!sourceFile) {
+  if (!sourceFile && !(hasVideoBuffers && subtitle)) {
     return (
       <div className="flex-1 flex flex-col min-h-0">
         <div
@@ -658,7 +661,7 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
           data-active-transition-id={activeTransitionPreview?.transition.id || ''}
         >
         {!hasActiveVideoClip && !hasTransitionPreview && (
-          <div className="absolute inset-0 bg-black" />
+          <div className="absolute inset-0" style={{ backgroundColor: projectSettings.canvas.backgroundColor }} />
         )}
         {supportingVideoLayers
           .filter((clip) => !activeTransitionPreview || (
@@ -719,6 +722,11 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({
             style={{ ...transitionMatteStyle, zIndex: transitionLayerZ + 2 }}
           />
         )}
+        {subtitle && <div className="pointer-events-none absolute inset-0" style={{ containerType: 'size', zIndex: activeVideoLayers.length * 3 + 4 }}>
+          <div className="absolute inset-x-[5%] bottom-[5%] whitespace-pre-wrap break-words text-center text-white"
+            style={{ fontFamily: '"Microsoft YaHei", sans-serif', fontSize: '5cqh', lineHeight: 1.15,
+              WebkitTextStroke: '0.5cqh black', paintOrder: 'stroke fill' }}>{subtitle.text}</div>
+        </div>}
         {hasActiveVideoClip && (
           <div
             role="group"

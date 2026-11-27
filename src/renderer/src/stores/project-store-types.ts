@@ -1,6 +1,7 @@
 import type {
   AudioFadeKind,
   AudioFadeSegment,
+  SubtitleCue,
   ExportProgress,
   FadeParams,
   MediaInfo,
@@ -20,6 +21,7 @@ export interface ProjectSnapshot {
   operationsByClip: Record<string, MediaOperation[]>
   transitions: TimelineTransition[]
   audioFades: AudioFadeSegment[]
+  subtitles: SubtitleCue[]
   selectedTransitionId: string | null
   selectedClipId: string | null
   selectedClipIds: string[]
@@ -40,6 +42,7 @@ export interface ProjectStore {
   clips: TimelineClip[]
   transitions: TimelineTransition[]
   audioFades: AudioFadeSegment[]
+  subtitles: SubtitleCue[]
   selectedTransitionId: string | null
   selectedClipId: string | null
   selectedClipIds: string[]
@@ -147,6 +150,8 @@ export interface ProjectStore {
     options?: HistoryEditOptions
   ) => void
   deleteAudioFade: (id: string) => void
+  saveSubtitle: (cue: SubtitleCue) => boolean
+  deleteSubtitle: (id: string) => void
   setProjectSettings: (settings: Partial<ProjectSettings>, options?: HistoryEditOptions) => void
   toggleOperation: (type: string, enabled: boolean) => void
 

@@ -8,6 +8,7 @@ import fs from 'fs/promises'
 import { IPC_CHANNELS } from '../../shared/types'
 import type {
   AudioFadeSegment,
+  SubtitleCue,
   MediaInfo,
   MediaOperation,
   ExportOptions,
@@ -18,6 +19,7 @@ import { startExport, startTimelineExport, cancelExport } from '../services/expo
 import { assertNonEmptyString, assertPlainObject, assertTrustedIpcEvent } from '../security/ipc-security'
 import {
   isAudioFadeSegment,
+  isSubtitleLane,
   isMediaInfo,
   isMediaOperation,
   isTimelineClip,
@@ -158,6 +160,7 @@ export function registerExportHandlers(): void {
         operationsByClip?: Record<string, MediaOperation[]>
         transitions?: TimelineTransition[]
         audioFades?: AudioFadeSegment[]
+        subtitles?: SubtitleCue[]
         exportOptions: ExportOptions
       }
     ) => {
@@ -172,6 +175,9 @@ export function registerExportHandlers(): void {
         validateExportOptions(payload.exportOptions)
         if (!hasFileCapability('export-write', payload.exportOptions.outputPath)) {
           throw new Error('导出路径未授权，请重新选择保存位置')
+        }
+        if (payload.subtitles !== undefined && !isSubtitleLane(payload.subtitles)) {
+          throw new Error('字幕数据无效')
         }
         if (payload.clips && (!Array.isArray(payload.clips) || payload.clips.length > 10_000 || !payload.clips.every(isTimelineClip))) {
           throw new Error('时间线片段数据无效')
@@ -212,7 +218,8 @@ export function registerExportHandlers(): void {
             payload.exportOptions,
             win,
             safeTransitions,
-            payload.audioFades || []
+            payload.audioFades || [],
+            payload.subtitles || []
           )
         } else if (payload.mediaInfo && isMediaInfo(payload.mediaInfo) && payload.operations) {
           await authorizeExportSources([payload.mediaInfo.filePath], payload.exportOptions.outputPath)

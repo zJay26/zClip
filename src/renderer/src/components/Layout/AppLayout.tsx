@@ -769,7 +769,10 @@ const AppLayout: React.FC = () => {
             >
               <div className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-border-subtle transition-colors group-hover:bg-accent group-focus:bg-accent" />
             </div>
-            <InspectorPanel />
+            <InspectorPanel seekTo={(time) => {
+              if (useProjectStore.getState().playing) togglePlay()
+              seekTo(time)
+            }} />
           </div>
         )}
       </div>

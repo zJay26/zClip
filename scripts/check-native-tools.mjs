@@ -47,7 +47,7 @@ if (!/^ffprobe version 8\.1\.2\b/m.test(ffprobeVersion)) {
 }
 
 const filters = run(ffmpegPath, ['-hide_banner', '-filters'], 'FFmpeg filter inventory')
-for (const requiredFilter of ['rubberband', 'palettegen', 'paletteuse', 'overlay']) {
+for (const requiredFilter of ['rubberband', 'palettegen', 'paletteuse', 'overlay', 'ass']) {
   if (!new RegExp(`\\b${requiredFilter}\\b`).test(filters)) {
     throw new Error(`Bundled FFmpeg is missing required filter: ${requiredFilter}`)
   }

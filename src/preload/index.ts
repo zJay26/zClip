@@ -8,6 +8,7 @@ import type {
   MediaInfo,
   MediaOperation,
   AudioFadeSegment,
+  SubtitleCue,
   CacheStats,
   ExportOptions,
   ExportProgress,
@@ -59,6 +60,7 @@ export interface ElectronAPI {
     operationsByClip?: Record<string, MediaOperation[]>
     transitions?: TimelineTransition[]
     audioFades?: AudioFadeSegment[]
+    subtitles?: SubtitleCue[]
     exportOptions: ExportOptions
   }) => Promise<{ success: boolean; error?: string }>
   cancelExport: () => void
