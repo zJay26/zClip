@@ -2,8 +2,8 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - 'publish/v2.9.0'
 
 permissions:
   contents: read
@@ -18,6 +18,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: 74045b41e6ee0a3dea7a5523195e78be9b3041c8
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22.12.0
@@ -28,7 +30,7 @@ jobs:
         shell: pwsh
         run: |
           $expected = "v$((Get-Content -Raw -LiteralPath package.json | ConvertFrom-Json).version)"
-          if ($env:GITHUB_REF_NAME -ne $expected) { throw "Tag $env:GITHUB_REF_NAME does not match package version $expected" }
+          if ('v2.9.0' -ne $expected) { throw "Tag $env:GITHUB_REF_NAME does not match package version $expected" }
       - run: npm run release:prepare
       - name: Verify generated documentation is committed
         run: git diff --exit-code -- README.md README.en.md README.zh.md
@@ -154,21 +156,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="2.9.0"
           installer="release-assets/zClip.Setup.${version}.exe"
           if grep -q 'UNSIGNED' release-assets/SIGNING_STATUS.txt; then
             installer_label='Windows installer (unsigned)'
           else
             installer_label='Windows installer (Authenticode signed)'
           fi
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "v$version" \
             "${installer}#${installer_label}" \
             release-assets/zClip.sbom.cdx.json \
             release-assets/THIRD_PARTY_NOTICES.md \
             release-assets/FFMPEG_SOURCE.json \
             release-assets/SIGNING_STATUS.txt \
             release-assets/SHA256SUMS.txt \
-            --verify-tag \
+            --target 74045b41e6ee0a3dea7a5523195e78be9b3041c8 \
             --fail-on-no-commits \
             --generate-notes \
             --notes-file release-assets/RELEASE_NOTES.md \
