@@ -13,6 +13,7 @@ import type {
   ExportFormat,
   GifLoopMode
 } from '../../../shared/types'
+import { sliceSubtitles } from '../../../shared/subtitles'
 import { getClipTimelineRange } from '../../../shared/timeline-utils'
 import { translate } from '../contexts/preferences'
 
@@ -39,6 +40,7 @@ export function useExport(opts?: UseExportOptions) {
     operationsByClip,
     transitions,
     audioFades,
+    subtitles,
     projectSettings,
     exporting,
     exportProgress,
@@ -53,6 +55,7 @@ export function useExport(opts?: UseExportOptions) {
     operationsByClip: state.operationsByClip,
     transitions: state.transitions,
     audioFades: state.audioFades,
+    subtitles: state.subtitles,
     projectSettings: state.projectSettings,
     exporting: state.exporting,
     exportProgress: state.exportProgress,
@@ -112,6 +115,7 @@ export function useExport(opts?: UseExportOptions) {
       let exportClips = clips
       let exportOpsByClip = operationsByClip
       let exportTransitions = transitions
+      let exportSubtitles = subtitles
       let exportAudioFades = audioFades
       let range: ExportOptions['range'] | undefined
       if (scope.mode === 'selection') {
@@ -123,6 +127,8 @@ export function useExport(opts?: UseExportOptions) {
         }
         const starts = exportClips.map((clip) => getClipTimelineRange(clip, operationsByClip).start)
         const minStart = Math.min(...starts)
+        const maxEnd = Math.max(...exportClips.map((clip) => getClipTimelineRange(clip, operationsByClip).end))
+        exportSubtitles = sliceSubtitles(subtitles, minStart, maxEnd)
         exportClips = exportClips.map((clip) => ({
           ...clip,
           startTime: Math.max(0, clip.startTime - minStart)
@@ -163,7 +169,7 @@ export function useExport(opts?: UseExportOptions) {
         const result = await window.api.startExport({
           mediaInfo: mediaInfo ?? undefined, operations, clips: exportClips,
           operationsByClip: exportOpsByClip, transitions: exportTransitions,
-          audioFades: exportAudioFades, exportOptions
+          audioFades: exportAudioFades, subtitles: exportSubtitles, exportOptions
         })
         if (job.canceled) return false
         if (!result.success) throw new Error(result.error || translate('未知错误', 'Unknown error'))
@@ -194,6 +200,7 @@ export function useExport(opts?: UseExportOptions) {
       operationsByClip,
       transitions,
       audioFades,
+      subtitles,
       projectSettings,
       setExporting,
       setExportProgress,

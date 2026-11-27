@@ -132,13 +132,14 @@ export function probe(
 export function runFFmpeg(
   args: string[],
   durationSeconds: number,
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  cwd?: string
 ): { process: ChildProcess; promise: Promise<void> } {
   const outputArg = args[args.length - 1]
   const progressArgs = outputArg
     ? [...args.slice(0, -1), '-progress', 'pipe:1', '-nostats', outputArg]
     : args
-  const proc = spawn(ffmpegPath, progressArgs, { windowsHide: true })
+  const proc = spawn(ffmpegPath, progressArgs, { windowsHide: true, cwd })
 
   const promise = new Promise<void>((resolve, reject) => {
     let stderr = ''

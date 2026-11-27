@@ -3,6 +3,7 @@
 // 单一 store 覆盖项目、播放、操作、导出所有状态
 // ============================================================
 
+import { isSubtitleLane } from '../../../shared/project-validation'
 import { create } from 'zustand'
 import type {
   AudioFadeKind,
@@ -320,7 +321,7 @@ function normalizeProjectData(data: ProjectData): ProjectData {
 }
 
 const DOCUMENT_STATE_KEYS: ReadonlyArray<keyof ProjectStore> = [
-  'clips', 'operationsByClip', 'transitions', 'audioFades', 'linkedGroups',
+  'clips', 'operationsByClip', 'transitions', 'audioFades', 'subtitles', 'linkedGroups',
   'videoTrackCount', 'audioTrackCount', 'projectSettings'
 ]
 
@@ -466,6 +467,7 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
   clipboard: null,
   transitions: [],
   audioFades: [],
+  subtitles: [],
   historyPast: [],
   historyFuture: [],
   timelineDuration: 0,
@@ -1994,6 +1996,25 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
       }
     }),
 
+  saveSubtitle: (cue) => {
+    const state = get()
+    const previous = state.subtitles.find((item) => item.id === cue.id)
+    if (previous && previous.text === cue.text && previous.startTime === cue.startTime &&
+        previous.endTime === cue.endTime) return true
+    const subtitles = [...state.subtitles.filter((item) => item.id !== cue.id), { ...cue }]
+      .sort((left, right) => left.startTime - right.startTime)
+    if (cue.endTime > state.timelineDuration || !isSubtitleLane(subtitles)) return false
+    set({ subtitles, historyPast: appendHistory(state.historyPast, takeSnapshot(state)), historyFuture: [] })
+    return true
+  },
+
+  deleteSubtitle: (id) => {
+    const state = get()
+    const subtitles = state.subtitles.filter((cue) => cue.id !== id)
+    if (subtitles.length === state.subtitles.length) return
+    set({ subtitles, historyPast: appendHistory(state.historyPast, takeSnapshot(state)), historyFuture: [] })
+  },
+
   setProjectSettings: (settings, options) =>
     set((state) => {
       const historyPast = historyPastForEdit(state, options)
@@ -2224,6 +2245,7 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
       transitions: normalized.transitions || [],
       selectedTransitionId: null,
       audioFades: normalized.audioFades || [],
+      subtitles: normalized.subtitles ?? [],
       selectedClipId,
       selectedClipIds: selectedClipId ? [selectedClipId] : [],
       lastSelectedClipId: selectedClipId,
@@ -2437,6 +2459,7 @@ export const useProjectStore = create<ProjectStore>((baseSet, get) => {
       clips: [],
       transitions: [],
       audioFades: [],
+      subtitles: [],
       selectedTransitionId: null,
       selectedClipId: null,
       selectedClipIds: [],

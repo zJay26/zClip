@@ -43,6 +43,20 @@ describe('project validation', () => {
     expect(sanitized.clips[0].embeddedAudioEnabled).toBe(false)
   })
 
+  it('accepts legacy projects and adjacent subtitle cues; rejects malformed lanes', () => {
+    const value = project()
+    const a = { id: 'a', startTime: 0, endTime: 1, text: '第一行\nSecond line' }
+    const b = { id: 'b', startTime: 1, endTime: 1.5, text: '100% {literal}' }
+    expect(isProjectData(value)).toBe(true)
+    expect(isProjectData({ ...value, subtitles: [a, b] })).toBe(true)
+    for (const subtitles of [
+      null, {}, [null], [a, a], [b, a], [a, { ...b, startTime: 0.99 }],
+      [{ ...b, endTime: 1 }], [{ ...b, startTime: -1 }], [{ ...b, endTime: Infinity }],
+      [{ ...a, text: ' ' }], [{ ...a, text: 'x\0y' }], [{ ...a, text: 'a'.repeat(501) }],
+      Array(2001).fill(a)
+    ]) expect(isProjectData({ ...value, subtitles })).toBe(false)
+  })
+
   it('rejects invalid operation parameters and dangling references', () => {
     const value = project()
     value.operationsByClip.clip[1].params = { rate: 0 }

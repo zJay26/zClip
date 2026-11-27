@@ -88,6 +88,7 @@ export function buildProjectData(state: ProjectStore): ProjectData {
     operationsByClip: structuredClone(state.operationsByClip),
     transitions: structuredClone(state.transitions),
     audioFades: structuredClone(state.audioFades),
+    subtitles: structuredClone(state.subtitles),
     linkedGroups: { ...state.linkedGroups },
     videoTrackCount: state.videoTrackCount,
     audioTrackCount: state.audioTrackCount,
@@ -152,6 +153,7 @@ export function takeSnapshot(state: ProjectStore): ProjectSnapshot {
     operationsByClip: structuredClone(state.operationsByClip),
     transitions: structuredClone(state.transitions),
     audioFades: structuredClone(state.audioFades),
+    subtitles: structuredClone(state.subtitles),
     selectedTransitionId: state.selectedTransitionId,
     selectedClipId: state.selectedClipId,
     selectedClipIds: [...state.selectedClipIds],
@@ -186,6 +188,7 @@ export function applySnapshot(
     operationsByClip: snapshot.operationsByClip,
     transitions: snapshot.transitions,
     audioFades: snapshot.audioFades,
+    subtitles: snapshot.subtitles,
     selectedTransitionId: snapshot.selectedTransitionId && snapshot.transitions.some(
       (transition) => transition.id === snapshot.selectedTransitionId
     ) ? snapshot.selectedTransitionId : null,

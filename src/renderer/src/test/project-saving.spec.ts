@@ -32,6 +32,35 @@ describe('project save lifecycle', () => {
     expect(useProjectStore.getState()).toMatchObject({ projectDirty: false, projectFilePath: 'D:\\edit.zclip', autosaveReady: false })
   })
 
+  test('subtitle edits survive save, autosave, restore, undo and redo', async () => {
+    const store = useProjectStore.getState
+    useProjectStore.setState({ timelineDuration: 4 })
+    const cue = { id: 'cue', startTime: 1, endTime: 3, text: '你好' }
+    expect(store().saveSubtitle(cue)).toBe(true)
+    expect(store()).toMatchObject({ projectDirty: true, documentRevision: 1 })
+    expect(store().saveSubtitle({ ...cue, id: 'overlap' })).toBe(false)
+    const revised = { ...cue, startTime: 1.5, endTime: 2.5, text: '你好，世界' }
+    expect(store().saveSubtitle(revised)).toBe(true)
+    store().deleteSubtitle(cue.id)
+    store().undo()
+    expect(store().subtitles).toEqual([revised])
+    store().undo()
+    expect(store().subtitles).toEqual([cue])
+    store().redo()
+    expect(store().subtitles).toEqual([revised])
+    await store().autosaveNow()
+    expect(await store().saveProject()).toBe(true)
+    const saved = api.saveProjectFile.mock.calls[0][1]
+    expect(saved.subtitles).toEqual([revised])
+    expect(api.saveAutosave.mock.calls[0][0].subtitles).toEqual([revised])
+    store().reset()
+    store().restoreProjectData(saved)
+    expect(store().subtitles).toEqual([revised])
+    delete saved.subtitles
+    store().restoreProjectData(saved)
+    expect(store().subtitles).toEqual([])
+  })
+
   test('repeated saves share one picker and capture edits made while the picker is open', async () => {
     const picker = deferred<string>()
     api.showProjectSaveDialog.mockReturnValue(picker.promise)

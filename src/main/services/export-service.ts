@@ -2,9 +2,12 @@
 // Export Service — 执行导出任务，管理进度与取消
 // ============================================================
 
+import { sliceSubtitles } from '../../shared/subtitles'
+import { buildSubtitleScript } from './subtitle-script'
 import { BrowserWindow } from 'electron'
 import type {
   AudioFadeSegment,
+  SubtitleCue,
   MediaInfo,
   MediaOperation,
   ExportOptions,
@@ -610,6 +613,7 @@ function buildEta(
 }
 
 interface ExportJobOptions {
+  workingDirectory?: string
   prepass?: {
     args: string[]
     duration: number
@@ -679,7 +683,8 @@ export async function runExportJob(
     const launched = runFFmpeg(
       stageArgs,
       stageDuration,
-      (progress) => onProgress(progress, progressOffset, progressSpan)
+      (progress) => onProgress(progress, progressOffset, progressSpan),
+      options.workingDirectory
     )
     currentExportProcess = launched.process
     try {
@@ -883,7 +888,8 @@ export async function startTimelineExport(
   exportOptions: ExportOptions,
   win: BrowserWindow,
   transitions: TimelineTransition[] = [],
-  audioFades: AudioFadeSegment[] = []
+  audioFades: AudioFadeSegment[] = [],
+  subtitles: SubtitleCue[] = []
 ): Promise<void> {
   const resolution = RESOLUTION_MAP[exportOptions.resolution]
   const encoding = resolveExportEncodingOptions(exportOptions)
@@ -907,60 +913,32 @@ export async function startTimelineExport(
   const palettePath = exportOptions.format === 'gif'
     ? path.join(os.tmpdir(), `zclip-palette-${process.pid}-${randomUUID()}.png`)
     : null
-  const compiledArgs = buildTimelineFFmpegArgs(
-    sliced.clips,
-    sliced.operationsByClip,
-    exportOptions.outputPath,
-    outputSize,
-    timelineDuration,
-    sliced.transitions,
-    sliced.audioFades,
-    encoding,
-    exportOptions.format,
-    exportOptions.gifLoop,
-    exportOptions.projectSettings,
-    palettePath ? { mode: 'use', palettePath } : undefined,
-    h264Encoder
-  )
-  const compiledPaletteArgs = palettePath
-    ? buildTimelineFFmpegArgs(
-        sliced.clips,
-        sliced.operationsByClip,
-        palettePath,
-        outputSize,
-        timelineDuration,
-        sliced.transitions,
-        sliced.audioFades,
-        encoding,
-        exportOptions.format,
-        exportOptions.gifLoop,
-        exportOptions.projectSettings,
-        { mode: 'generate', palettePath },
-        'software'
-      )
-    : null
-  const compiledFallbackArgs = h264Encoder !== 'software'
-    ? buildTimelineFFmpegArgs(
-        sliced.clips,
-        sliced.operationsByClip,
-        exportOptions.outputPath,
-        outputSize,
-        timelineDuration,
-        sliced.transitions,
-        sliced.audioFades,
-        encoding,
-        exportOptions.format,
-        exportOptions.gifLoop,
-        exportOptions.projectSettings,
-        undefined,
-        'software'
-      )
-    : null
+  const start = exportOptions.range?.startTime ?? 0
+  const cues = audioOnlyFormat ? [] : sliceSubtitles(subtitles, start, start + timelineDuration)
+  const workingDirectory = cues.length
+    ? await fs.mkdtemp(path.join(os.tmpdir(), 'zclip-subtitles-'))
+    : undefined
 
-  const materialized = await materializeFilterGraph(compiledArgs)
+  const compile = (
+    output: string,
+    encoder: H264EncoderKind,
+    palette?: { mode: 'use' | 'generate'; palettePath: string }
+  ): string[] => buildTimelineFFmpegArgs(
+    sliced.clips, sliced.operationsByClip, output, outputSize, timelineDuration,
+    sliced.transitions, sliced.audioFades, encoding, exportOptions.format,
+    exportOptions.gifLoop, exportOptions.projectSettings, palette, encoder, !!workingDirectory
+  )
+  let materialized: Awaited<ReturnType<typeof materializeFilterGraph>> | undefined
   let materializedPalette: Awaited<ReturnType<typeof materializeFilterGraph>> | null = null
   let materializedFallback: Awaited<ReturnType<typeof materializeFilterGraph>> | null = null
   try {
+    if (workingDirectory && outputSize) {
+      await fs.writeFile(path.join(workingDirectory, 'captions.ass'), buildSubtitleScript(cues, outputSize), 'utf8')
+    }
+    const compiledArgs = compile(exportOptions.outputPath, h264Encoder, palettePath ? { mode: 'use', palettePath } : undefined)
+    const compiledPaletteArgs = palettePath ? compile(palettePath, 'software', { mode: 'generate', palettePath }) : null
+    const compiledFallbackArgs = h264Encoder === 'software' ? null : compile(exportOptions.outputPath, 'software')
+    materialized = await materializeFilterGraph(compiledArgs)
     materializedPalette = compiledPaletteArgs
       ? await materializeFilterGraph(compiledPaletteArgs)
       : null
@@ -975,6 +953,7 @@ export async function startTimelineExport(
       audioOnlyFormat ? 'audio' : 'video',
       exportOptions.format,
       {
+        workingDirectory,
         fallbackArgs: materializedFallback?.args,
         ...(materializedPalette && palettePath
           ? {
@@ -990,7 +969,8 @@ export async function startTimelineExport(
       }
     )
   } finally {
-    if (materialized.scriptPath) await fs.unlink(materialized.scriptPath).catch(() => {})
+    if (workingDirectory) await fs.rm(workingDirectory, { recursive: true, force: true }).catch(() => {})
+    if (materialized?.scriptPath) await fs.unlink(materialized.scriptPath).catch(() => {})
     if (materializedPalette?.scriptPath) await fs.unlink(materializedPalette.scriptPath).catch(() => {})
     if (materializedFallback?.scriptPath) await fs.unlink(materializedFallback.scriptPath).catch(() => {})
     if (palettePath) await fs.unlink(palettePath).catch(() => {})
@@ -1045,7 +1025,8 @@ export function buildTimelineFFmpegArgs(
   gifLoop?: ExportOptions['gifLoop'],
   projectSettings?: ProjectSettings,
   gifPalettePass?: { mode: 'generate' | 'use'; palettePath: string },
-  h264Encoder: H264EncoderKind = 'software'
+  h264Encoder: H264EncoderKind = 'software',
+  burnSubtitles = false
 ): string[] {
   const args: string[] = ['-y']
   const audioOnlyFormat = isAudioFormat(format)
@@ -1327,6 +1308,11 @@ export function buildTimelineFFmpegArgs(
     videoOutLabel = current
   }
 
+  if (burnSubtitles && videoOutLabel) {
+    // Fixed basename inside a per-export directory; neither paths nor cue text enter the graph.
+    filterParts.push(`[${videoOutLabel}]ass=filename=captions.ass[captioned]`)
+    videoOutLabel = 'captioned'
+  }
   if (gifFormat && videoOutLabel) {
     const palette = getGifPaletteOptions(encoding)
     if (gifPalettePass?.mode === 'generate') {

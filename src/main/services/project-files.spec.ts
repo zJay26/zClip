@@ -17,6 +17,7 @@ import {
   clearAutosave,
   getAutosavePath,
   getRecentProjects,
+  readAutosave,
   writeAutosave,
   writeProjectFile,
   readProjectFile
@@ -72,6 +73,18 @@ describe('project file operation ordering', () => {
     await writeProjectFile(target, { ...emptyProject, projectSettings: { ...emptyProject.projectSettings, frameRate: 60 } })
     expect((await readProjectFile(target)).projectSettings.frameRate).toBe(60)
     expect(JSON.parse(await fs.readFile(`${target}.bak`, 'utf8')).projectSettings.frameRate).toBe(30)
+  })
+
+  test('opens a legacy project and round-trips plain-text subtitles through disk and recovery', async () => {
+    const target = path.join(electronState.userData, 'captions.zclip')
+    await fs.writeFile(target, JSON.stringify(emptyProject))
+    const legacy = await readProjectFile(target)
+    expect(legacy.subtitles).toBeUndefined()
+    const subtitles = [{ id: 'one', startTime: 0.75, endTime: 2, text: '你好\n100% {literal}' }]
+    await writeProjectFile(target, { ...legacy, subtitles })
+    await writeAutosave({ ...legacy, subtitles })
+    expect((await readProjectFile(target)).subtitles).toEqual(subtitles)
+    expect((await readAutosave())?.subtitles).toEqual(subtitles)
   })
 
   test('oversized saves leave both the project and its prior recovery file intact', async () => {

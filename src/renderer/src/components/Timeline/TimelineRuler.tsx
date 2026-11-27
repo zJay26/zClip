@@ -3,6 +3,7 @@
 // ============================================================
 
 import React, { useCallback, useEffect, useState } from 'react'
+import { useProjectStore } from '../../stores/project-store'
 import { formatTime } from '../../lib/utils'
 import { RULER_HEIGHT, TIMELINE_TAIL_PX, getTickInterval } from './timeline-constants'
 
@@ -27,6 +28,7 @@ const TimelineRuler: React.FC<TimelineRulerProps> = ({
   scrollLeft,
   containerRect
 }) => {
+  const subtitles = useProjectStore((state) => state.subtitles)
   const [scrubbing, setScrubbing] = useState(false)
 
   const getTimeFromClientX = useCallback(
@@ -98,6 +100,11 @@ const TimelineRuler: React.FC<TimelineRulerProps> = ({
     >
       {/* Ruler background */}
       <div className="absolute inset-0 bg-surface-light border-b border-surface-border" />
+
+      {subtitles.filter((cue) => cue.startTime < Math.min(visibleEnd, timelineDuration) && cue.endTime > visibleStart)
+        .map((cue) => <span key={cue.id} title={cue.text}
+          className="absolute bottom-0 z-10 h-1 rounded-sm bg-accent"
+          style={{ left: timeToX(cue.startTime), width: Math.max(1, (Math.min(cue.endTime, timelineDuration) - cue.startTime) * pixelsPerSecond - 1) }} />)}
 
       {/* Tick marks */}
       {ticks.map((tick, i) => (

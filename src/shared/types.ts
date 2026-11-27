@@ -219,6 +219,14 @@ export interface ProjectSettings {
   frameRate?: number
 }
 
+/** One plain-text cue on the project timeline, in seconds [startTime, endTime). */
+export interface SubtitleCue {
+  id: string
+  startTime: number
+  endTime: number
+  text: string
+}
+
 export interface ExportRange {
   startTime: number
   endTime: number
@@ -241,6 +249,7 @@ export interface TimelineExportPayload {
   operationsByClip: Record<string, MediaOperation[]>
   transitions?: TimelineTransition[]
   audioFades?: AudioFadeSegment[]
+  subtitles?: SubtitleCue[]
   exportOptions: ExportOptions
 }
 
@@ -252,6 +261,7 @@ export interface ProjectData {
   operationsByClip: Record<string, MediaOperation[]>
   transitions?: TimelineTransition[]
   audioFades?: AudioFadeSegment[]
+  subtitles?: SubtitleCue[]
   linkedGroups: Record<string, boolean>
   videoTrackCount: number
   audioTrackCount: number

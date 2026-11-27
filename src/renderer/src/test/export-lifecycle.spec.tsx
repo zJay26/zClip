@@ -30,6 +30,22 @@ describe('export lifecycle', () => {
     vi.useRealTimers()
   })
 
+  test('selection export clips and rebases project subtitles to the first selected clip', async () => {
+    const mediaInfo = useProjectStore.getState().mediaInfo!
+    const clip = { id: 'selected', groupId: 'g', filePath: mediaInfo.filePath, mediaInfo,
+      startTime: 2, duration: 4, track: 'video' as const, trackIndex: 0 }
+    const cue = { id: 'boundary', startTime: 1, endTime: 3.5, text: '保留' }
+    useProjectStore.setState({ clips: [clip], selectedClipIds: [clip.id], timelineDuration: 6,
+      subtitles: [{ ...cue, id: 'before', startTime: 0, endTime: 1 }, cue,
+        { ...cue, id: 'last', startTime: 5, endTime: 7 }] })
+    api.startExport.mockResolvedValueOnce({ success: true })
+    const { result } = renderHook(() => useExport())
+    await act(async () => { await result.current.startExport('original', 'high', 'mp4', 'infinite', { mode: 'selection' }) })
+    expect(api.startExport.mock.calls[0][0].subtitles).toEqual([
+      { ...cue, startTime: 0, endTime: 1.5 }, { ...cue, id: 'last', startTime: 3, endTime: 4 }
+    ])
+  })
+
   test('picker exceptions reset busy state and permit retry', async () => {
     api.showSaveDialog.mockRejectedValueOnce(new Error('picker failed'))
     const { result } = renderHook(() => useExport())
